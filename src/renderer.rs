@@ -13,6 +13,14 @@ use crate::{
     color::{TerminalTheme, dim},
 };
 
+mod batch;
+
+pub use batch::BevyGridBatchPlugin as BevyGridPlugin;
+pub use batch::{
+    BevyGridBatchPlugin, TerminalBatchOutput, TerminalBatchPresentation, TerminalBatchRoot,
+    TerminalBatchStats,
+};
+
 /// Visual shape used for Ratatui's cursor.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CursorStyle {
@@ -25,7 +33,7 @@ pub enum CursorStyle {
     Underline,
 }
 
-/// Configuration for converting terminal cells into Bevy UI nodes.
+/// Configuration for converting terminal cells into Bevy-rendered geometry and text.
 ///
 /// `cell_size` is intentionally explicit. Bevy can shape several fallback
 /// fonts in one run, so there is no single font metric that is guaranteed to
@@ -76,7 +84,7 @@ pub struct TerminalRoot;
 /// Public system set for ordering application systems around terminal syncing.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, SystemSet)]
 pub enum TerminalSystems {
-    /// Copies the latest Ratatui surface state into Bevy UI entities.
+    /// Copies the latest Ratatui surface state into the active renderer representation.
     Sync,
     /// Applies cursor and text blink phases.
     Blink,
@@ -111,12 +119,12 @@ pub struct TerminalRenderStats {
 ///
 /// The application must also install Bevy's UI, text, time, and camera plugins
 /// (normally through `DefaultPlugins`) and spawn a suitable camera.
-pub struct BevyGridPlugin {
+pub struct RetainedBevyGridPlugin {
     surface: TerminalSurface,
     config: TerminalRenderConfig,
 }
 
-impl BevyGridPlugin {
+impl RetainedBevyGridPlugin {
     /// Creates a renderer using [`TerminalRenderConfig::default`].
     #[must_use]
     pub fn new(surface: TerminalSurface) -> Self {
@@ -134,7 +142,7 @@ impl BevyGridPlugin {
     }
 }
 
-impl Plugin for BevyGridPlugin {
+impl Plugin for RetainedBevyGridPlugin {
     fn build(&self, app: &mut App) {
         self.surface
             .set_cell_size(self.config.cell_size.x, self.config.cell_size.y);
@@ -1247,6 +1255,7 @@ struct ResolvedStyle {
     crossed_out: bool,
     slow_blink: bool,
     rapid_blink: bool,
+    hidden: bool,
 }
 
 impl ResolvedStyle {
@@ -1275,6 +1284,7 @@ impl ResolvedStyle {
             crossed_out: cell.modifier.contains(Modifier::CROSSED_OUT),
             slow_blink: cell.modifier.contains(Modifier::SLOW_BLINK),
             rapid_blink: cell.modifier.contains(Modifier::RAPID_BLINK),
+            hidden: cell.modifier.contains(Modifier::HIDDEN),
         }
     }
 
@@ -1440,6 +1450,7 @@ mod tests {
         cell.modifier.insert(Modifier::HIDDEN);
         let hidden = ResolvedStyle::new(&cell, &theme);
         assert_eq!(hidden.foreground, hidden.background);
+        assert!(hidden.hidden);
 
         let mut reversed = Cell::new("X");
         reversed.set_style(
@@ -1537,7 +1548,7 @@ mod tests {
 
         let surface = backend.surface();
         let mut app = App::new();
-        app.add_plugins(BevyGridPlugin::new(surface));
+        app.add_plugins(RetainedBevyGridPlugin::new(surface));
         app.update();
         let initial_stats = *app.world().resource::<TerminalRenderStats>();
         assert_eq!(initial_stats.changed_rows, 1);
@@ -1597,7 +1608,7 @@ mod tests {
             .unwrap();
 
         let mut app = App::new();
-        app.add_plugins(BevyGridPlugin::new(backend.surface()));
+        app.add_plugins(RetainedBevyGridPlugin::new(backend.surface()));
         app.update();
         let (text_entity, solid_entity) = {
             let rendered = app.world().resource::<RenderedEntities>();
@@ -1642,7 +1653,7 @@ mod tests {
         let mut backend = crate::BevyBackend::new(1, 1);
         backend.show_cursor().unwrap();
         let mut app = App::new();
-        app.add_plugins(BevyGridPlugin::new(backend.surface()));
+        app.add_plugins(RetainedBevyGridPlugin::new(backend.surface()));
         app.update();
 
         let cursor = app

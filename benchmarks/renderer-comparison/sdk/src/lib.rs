@@ -4,6 +4,7 @@ use std::{
     collections::BTreeMap,
     error::Error,
     fmt,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -15,6 +16,7 @@ use bevy::{
     prelude::*,
     render::{
         RenderPlugin,
+        gpu_readback::{Readback, ReadbackComplete},
         render_resource::{Extent3d, PollType, TextureDimension, TextureFormat, TextureUsages},
         renderer::{RenderAdapterInfo, RenderDevice},
     },
@@ -113,6 +115,9 @@ pub struct BenchConfig {
     pub workload: Workload,
     /// Wait for all work submitted to Bevy's WGPU device every frame.
     pub gpu_sync: bool,
+    /// Optional PNG path written after all timed frames.
+    #[serde(skip)]
+    pub capture_path: Option<PathBuf>,
 }
 
 impl Default for BenchConfig {
@@ -127,6 +132,7 @@ impl Default for BenchConfig {
             measured_frames: 120,
             workload: Workload::DenseAscii,
             gpu_sync: true,
+            capture_path: None,
         }
     }
 }
@@ -156,12 +162,13 @@ impl BenchConfig {
                 "--frames" => config.measured_frames = value()?.parse()?,
                 "--workload" => config.workload = value()?.parse()?,
                 "--gpu-sync" => config.gpu_sync = parse_bool(&value()?)?,
+                "--capture" => config.capture_path = Some(value()?.into()),
                 "--help" | "-h" => {
                     println!(
                         "--cols N --rows N --cell-width PX --cell-height PX \
                          --font-size PX --warmup N --frames N \
                          --workload static|sparse|dense_ascii|dense_styled|unicode \
-                         --gpu-sync true|false"
+                         --gpu-sync true|false [--capture PATH]"
                     );
                     std::process::exit(0);
                 }
@@ -295,6 +302,19 @@ pub trait RendererAdapter: Sized {
     /// Actual renderer-owned texture or output dimensions.
     fn output_size(&self, config: &BenchConfig) -> (u32, u32) {
         (config.target_width(), config.target_height())
+    }
+
+    /// Read the final renderer-owned output as tightly packed RGBA8 after timed frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the renderer cannot read its completed output.
+    fn capture_rgba(
+        &mut self,
+        _sub_apps: &mut SubApps,
+        _config: &BenchConfig,
+    ) -> BenchResult<Vec<u8>> {
+        Err("this adapter does not implement capture_rgba".into())
     }
 
     /// Static adapter identity and measurement scope.
@@ -493,6 +513,29 @@ pub fn run<A: RendererAdapter>() -> BenchResult<()> {
     }
 
     let (output_width, output_height) = adapter.output_size(&config);
+    if let Some(path) = config.capture_path.clone() {
+        wait_for_bevy_gpu(sub_apps.main.world())?;
+        let rgba = adapter.capture_rgba(&mut sub_apps, &config)?;
+        let expected_len = output_width as usize * output_height as usize * 4;
+        if rgba.len() != expected_len {
+            return Err(format!(
+                "capture contained {} bytes, expected {expected_len} for {output_width}x{output_height} RGBA8",
+                rgba.len()
+            )
+            .into());
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        image::save_buffer_with_format(
+            path,
+            &rgba,
+            output_width,
+            output_height,
+            image::ColorType::Rgba8,
+            image::ImageFormat::Png,
+        )?;
+    }
     let report = BenchReport {
         schema_version: SCHEMA_VERSION,
         adapter: adapter.metadata(),
@@ -505,6 +548,103 @@ pub fn run<A: RendererAdapter>() -> BenchResult<()> {
     };
     println!("{}", serde_json::to_string(&report)?);
     Ok(())
+}
+
+/// Read a render-world Bevy image into tightly packed RGBA8 pixels.
+///
+/// The image must include [`TextureUsages::COPY_SRC`]. BGRA images are converted to RGBA.
+///
+/// # Errors
+///
+/// Returns an error when the render image is unavailable, its format is unsupported, or WGPU
+/// readback fails.
+pub fn read_bevy_image_rgba(sub_apps: &mut SubApps, image: Handle<Image>) -> BenchResult<Vec<u8>> {
+    const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
+
+    let descriptor = sub_apps
+        .main
+        .world()
+        .resource::<Assets<Image>>()
+        .get(&image)
+        .ok_or("requested Bevy image asset is unavailable")?
+        .texture_descriptor
+        .clone();
+    let width = descriptor.size.width;
+    let height = descriptor.size.height;
+    let format = descriptor.format;
+    if !matches!(
+        format,
+        TextureFormat::Rgba8Unorm
+            | TextureFormat::Rgba8UnormSrgb
+            | TextureFormat::Bgra8Unorm
+            | TextureFormat::Bgra8UnormSrgb
+    ) {
+        return Err(format!("unsupported capture texture format {format:?}").into());
+    }
+    if !descriptor.usage.contains(TextureUsages::COPY_SRC) {
+        return Err("capture texture is missing COPY_SRC usage".into());
+    }
+
+    let unpadded_bytes_per_row = width * 4;
+    let align = COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+    let entity = sub_apps
+        .main
+        .world_mut()
+        .spawn(Readback::texture(image))
+        .observe(move |event: On<ReadbackComplete>| {
+            let _ = sender.try_send(event.to_vec());
+        })
+        .id();
+    let mut padded = None;
+    for _ in 0..120 {
+        sub_apps.update();
+        wait_for_bevy_gpu(sub_apps.main.world())?;
+        if let Ok(data) = receiver.try_recv() {
+            padded = Some(data);
+            break;
+        }
+    }
+    sub_apps.main.world_mut().despawn(entity);
+    let padded = padded.ok_or("Bevy GPU capture did not complete within 120 frames")?;
+    let mut rgba = vec![0; width as usize * height as usize * 4];
+    for row in 0..height as usize {
+        let source_start = row * padded_bytes_per_row as usize;
+        let target_start = row * unpadded_bytes_per_row as usize;
+        rgba[target_start..target_start + unpadded_bytes_per_row as usize].copy_from_slice(
+            padded
+                .get(source_start..source_start + unpadded_bytes_per_row as usize)
+                .ok_or("Bevy GPU capture returned a truncated padded row")?,
+        );
+    }
+    if matches!(
+        format,
+        TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb
+    ) {
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+    }
+    Ok(rgba)
+}
+
+/// Convert tightly packed linear RGBA8 pixels to sRGB in place, preserving alpha.
+///
+/// Any trailing bytes that do not form a complete pixel are left unchanged.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn linear_rgba8_to_srgb(rgba: &mut [u8]) {
+    for pixel in rgba.chunks_exact_mut(4) {
+        for channel in &mut pixel[..3] {
+            let linear = f32::from(*channel) / 255.0;
+            let srgb = if linear <= 0.003_130_8 {
+                12.92 * linear
+            } else {
+                1.055 * linear.powf(1.0 / 2.4) - 0.055
+            };
+            *channel = (srgb * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+    }
 }
 
 fn headless_bevy_app() -> App {
@@ -902,5 +1042,12 @@ mod tests {
     fn percentile_uses_nearest_rank() {
         assert_eq!(percentile(&[1, 2, 3, 4], 50), 2);
         assert_eq!(percentile(&[1, 2, 3, 4], 95), 4);
+    }
+
+    #[test]
+    fn linear_capture_conversion_preserves_alpha_and_trailing_bytes() {
+        let mut rgba = [0, 55, 255, 17, 9];
+        linear_rgba8_to_srgb(&mut rgba);
+        assert_eq!(rgba, [0, 128, 255, 17, 9]);
     }
 }

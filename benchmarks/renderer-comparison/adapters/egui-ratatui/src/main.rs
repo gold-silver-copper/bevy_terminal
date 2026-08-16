@@ -1,6 +1,7 @@
 use std::hint::black_box;
 
 use bevy::{
+    app::SubApps,
     asset::RenderAssetUsages,
     image::ImageSampler,
     prelude::*,
@@ -139,6 +140,20 @@ impl RendererAdapter for EguiRatatuiAdapter {
 
     fn output_size(&self, _config: &BenchConfig) -> (u32, u32) {
         self.output_size
+    }
+
+    fn capture_rgba(
+        &mut self,
+        sub_apps: &mut SubApps,
+        _config: &BenchConfig,
+    ) -> BenchResult<Vec<u8>> {
+        sub_apps
+            .main
+            .world()
+            .resource::<Assets<Image>>()
+            .get(self.image.as_ref().ok_or("missing Bevy image")?)
+            .and_then(|image| image.data.clone())
+            .ok_or_else(|| "egui_ratatui capture image has no CPU pixels".into())
     }
 
     fn metadata(&self) -> AdapterMetadata {

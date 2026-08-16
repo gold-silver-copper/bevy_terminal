@@ -1,18 +1,24 @@
 # `bevy_grid`
 
-`bevy_grid` is a Ratatui backend that renders terminal cells with Bevy's own UI
-nodes and text pipeline. There is no software framebuffer, texture upload, egui,
-or custom graphics pipeline in the runtime path.
+`bevy_grid` is a Ratatui backend that renders a terminal texture with Bevy's own
+text shaping, font fallback, glyph atlases, render device, and render world. Its
+normal dependency list is only `bevy` and `ratatui`; there is no software
+framebuffer, Egui bridge, or external font/rendering engine in the runtime path.
 
 The backend retains a Ratatui `Buffer` behind a small thread-safe surface handle.
-A Bevy system reads that surface and creates exact UI rectangles for backgrounds
-plus absolutely positioned Bevy text runs. Ordinary unit-width cells with the
-same style are batched. Wide graphemes get their own run anchored at their exact
-column, so font fallback cannot shift the content that follows them. Combining
-marks remain part of Ratatui's original cell string and are shaped together by
-Bevy. Common Ratatui box-drawing sets and full or fractional block elements are
-emitted as exact Bevy UI geometry, which avoids the hairline seams that font
-glyph bearings can introduce.
+One Bevy system copies only dirty cells, anchors each cell string to its exact
+terminal column, and builds a compact quad scene. A dedicated Bevy render-world
+pass draws that scene into a renderer-owned `Image`. The default UI presentation
+is one `ImageNode`, while `BevyGridBatchPlugin::headless` exposes the same texture
+without a camera or UI node.
+
+Glyphs are shaped and rasterized through Bevy's public text pipeline, then cached
+in one renderer-owned atlas so dense frames normally need one ordered draw.
+Combining marks remain in Ratatui's original cell string and are
+shaped together. Common box-drawing sets and full, fractional, or quadrant block
+elements are emitted as exact pixel geometry, avoiding hairline seams from font
+bearings. `RetainedBevyGridPlugin` keeps the original Bevy-UI-per-primitive path
+available as a reference implementation.
 
 ```no_run
 use bevy::prelude::*;
@@ -56,9 +62,9 @@ Mixed-weight and dashed box-drawing characters, shaded blocks, and braille
 glyphs require a font designed to fill its advance and a line height matching
 `cell_size.y`; otherwise the font itself may introduce visible seams. The
 standard Ratatui single, heavy, and double border sets plus common full,
-fractional, and quadrant blocks are rendered as UI geometry and do not depend
-on glyph bearings. Rounded corners retain their font shape while their
-adjoining geometry overlaps the cell boundary to prevent seams.
+fractional, and quadrant blocks are rendered as exact geometry and do not depend
+on glyph bearings. Rounded corners retain their font shape while adjoining
+geometry overlaps the cell boundary to prevent seams.
 
 All Ratatui colors are supported, including the ANSI 256-color cube and true
 color. Bold, dim, italic, underline, reverse, hidden, crossed-out, slow-blink,
@@ -84,8 +90,8 @@ cargo run --example image_export
 ```
 
 Early frames contain the complete 72×22 scene. Later frames shrink the backend
-to 60×18 so the exported sequence also catches row-stride errors and stale UI
-entities after a resize.
+to 60×18 so the exported sequence also catches row-stride errors and stale
+texture pixels after a resize.
 
 The normal dependency list is deliberately limited to `bevy` and `ratatui`.
 

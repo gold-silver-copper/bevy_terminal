@@ -1,9 +1,11 @@
 use bevy::{
+    app::SubApps,
     prelude::*,
     render::renderer::{RenderDevice, RenderQueue},
 };
 use parley_ratatui::{
-    FontOptions, GpuRenderer, ParleyBackend, TerminalRenderer, TextureTarget, Theme,
+    FontOptions, GpuRenderer, ParleyBackend, TerminalRenderer, TextureReadback, TextureTarget,
+    Theme,
     vello::{Scene, wgpu},
 };
 use ratatui::Terminal;
@@ -120,6 +122,20 @@ impl RendererAdapter for ParleyRatatuiAdapter {
 
     fn output_size(&self, _config: &BenchConfig) -> (u32, u32) {
         self.output_size
+    }
+
+    fn capture_rgba(
+        &mut self,
+        sub_apps: &mut SubApps,
+        _config: &BenchConfig,
+    ) -> BenchResult<Vec<u8>> {
+        let world = sub_apps.main.world();
+        let device = world.resource::<RenderDevice>().wgpu_device();
+        let queue = world.resource::<RenderQueue>();
+        let target = self.target.as_ref().ok_or("missing texture target")?;
+        let mut rgba = Vec::new();
+        TextureReadback::new().read_texture_to_rgba8_into(device, queue, target, &mut rgba)?;
+        Ok(rgba)
     }
 
     fn metadata(&self) -> AdapterMetadata {

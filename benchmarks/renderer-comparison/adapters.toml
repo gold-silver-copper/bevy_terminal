@@ -7,7 +7,7 @@ status = "enabled"
 package = "bench-bevy-grid"
 binary = "bench-bevy-grid"
 source = "../../"
-render_path = "Bevy UI nodes and Bevy text"
+render_path = "Compact Bevy text-atlas quad batch into a renderer-owned texture"
 matched_font_size = 18
 
 [[adapter]]

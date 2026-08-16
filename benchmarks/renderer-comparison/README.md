@@ -10,7 +10,7 @@ The enabled adapters are:
 
 | Adapter | Measured path |
 |---|---|
-| `bevy_grid` | Ratatui diff → retained Bevy UI/text → offscreen Bevy UI render |
+| `bevy_grid` | Ratatui diff → compact Bevy text-atlas batch → renderer-owned texture |
 | `soft_ratatui` | Ratatui diff → CPU raster → RGBA conversion → Bevy image upload/render |
 | `egui_ratatui` | soft raster → egui texture/tessellation → Bevy image upload/render |
 | `parley_ratatui` | Ratatui buffer → Parley/Vello → texture on Bevy's WGPU device |
@@ -47,12 +47,25 @@ controller writes a timestamped directory beneath `results/` containing:
 - `results.jsonl`: full reports and raw per-frame samples;
 - `summary.csv`: one comparable row per adapter/workload/size/repeat, including
   p50 draw, preparation, submission, Bevy-update, GPU-wait, and total timings;
-- `summary.md`: a compact human-readable table;
-- `run.json`: controller, platform, adapter status, and failures.
+- `aggregate.csv`: nearest-rank percentiles recomputed from every raw frame
+  across repetitions;
+- `summary.md`: per-process and aggregate human-readable tables;
+- `parity.md`: aggregate `bevy_grid`/`bevy_tui_texture` ratios and gate status;
+- `captures/`: one PNG captured after timed frames for every successful case;
+- `run.json`: source fingerprint, Git state, controller, platform, adapter
+  status, and failures.
 
 Use `--output PATH` for a stable destination. The controller continues after an
 individual adapter failure so the run record is complete, but exits non-zero by
 default; `--allow-failures` changes only that final exit status.
+
+Adapter order rotates deterministically between cases and advances again for
+each repetition, so every case samples multiple process positions. `--order-offset N`
+changes the initial position for an independent rotated run. Release binaries
+are rejected when any of their relevant adapter, SDK, patch, or library sources
+are newer; `--no-build` therefore cannot silently benchmark stale code. Use
+`--no-captures` only for exploratory iterations—the PNG readback and encoding
+are already outside the measured loop.
 
 ## What is measured
 
@@ -73,7 +86,8 @@ Disable it only for queue-pressure experiments with `--no-gpu-sync`; such
 results should not be compared with synchronized runs.
 
 There is no swapchain, OS window, compositor, vsync, screenshot readback, or PNG
-encoding in a sample. Bevy renders to offscreen images. The direct Vello adapter
+encoding in a sample. Post-timing captures use Bevy GPU readback (or the
+renderer-owned CPU pixels where applicable). Bevy renders to offscreen images. The direct Vello adapter
 uses Bevy's own WGPU device and queue, so its explicit completion wait covers its
 commands too.
 
@@ -137,8 +151,10 @@ For a Bevy 0.19 renderer in this workspace:
 3. Render `render_workload` inside the backend's ordinary Ratatui draw call.
 4. Put CPU preparation/submission into the matching `AdapterFrame` phases; let
    renderer Bevy systems run during the shared update.
-5. Add the package/binary to `adapters.toml` and the workspace members.
-6. Run SDK tests, `cargo check --workspace`, then at least the quick profile.
+5. Implement `capture_rgba` so visual validation covers the renderer's completed
+   native-size output outside timing.
+6. Add the package/binary to `adapters.toml` and the workspace members.
+7. Run SDK tests, `cargo check --workspace`, then at least the quick profile.
 
 For an incompatible Bevy/Ratatui version, use a standalone Cargo workspace and
 emit the same JSON schema as documented in `PROTOCOL.md`; extend the registry

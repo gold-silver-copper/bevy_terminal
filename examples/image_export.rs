@@ -14,7 +14,7 @@ use bevy::{
     window::WindowResolution,
 };
 use bevy_grid::{
-    BevyBackend, BevyGridPlugin, TerminalRenderConfig, TerminalSurface, TerminalSystems,
+    BevyBackend, BevyGridBatchPlugin, TerminalRenderConfig, TerminalSurface, TerminalSystems,
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 
@@ -50,7 +50,7 @@ fn main() {
                     ..default()
                 }),
             export_plugin,
-            BevyGridPlugin::new(surface).with_config(config),
+            BevyGridBatchPlugin::new(surface).with_config(config),
         ))
         .add_systems(Startup, setup_export)
         .add_systems(Update, resize_for_qa.before(TerminalSystems::Sync))

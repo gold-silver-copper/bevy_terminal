@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use bevy::prelude::*;
+use bevy::{app::SubApps, prelude::*};
 use bevy_tui_texture::{
     Font as TerminalFont, Fonts, TerminalConfig, TerminalPlugin, Tui, TuiRequest,
 };
 use renderer_bench_sdk::{
     AdapterFrame, AdapterMetadata, BenchConfig, BenchResult, RendererAdapter, SharedFontFixture,
-    measure, render_workload, run,
+    measure, read_bevy_image_rgba, render_workload, run,
 };
 
 struct BevyTuiTextureAdapter {
@@ -77,6 +77,22 @@ impl RendererAdapter for BevyTuiTextureAdapter {
 
     fn output_size(&self, _config: &BenchConfig) -> (u32, u32) {
         self.output_size
+    }
+
+    fn capture_rgba(
+        &mut self,
+        sub_apps: &mut SubApps,
+        _config: &BenchConfig,
+    ) -> BenchResult<Vec<u8>> {
+        let entity = self.entity.ok_or("adapter not initialized")?;
+        let image = sub_apps
+            .main
+            .world()
+            .get::<Tui>(entity)
+            .ok_or("Tui component disappeared")?
+            .image_handle()
+            .clone();
+        read_bevy_image_rgba(sub_apps, image)
     }
 
     fn metadata(&self) -> AdapterMetadata {

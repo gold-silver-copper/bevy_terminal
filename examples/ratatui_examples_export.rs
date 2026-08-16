@@ -14,7 +14,7 @@ use bevy::{
     },
     window::WindowResolution,
 };
-use bevy_grid::{BevyGridPlugin, TerminalRenderConfig, TerminalSurface, TerminalSystems};
+use bevy_grid::{BevyGridBatchPlugin, TerminalRenderConfig, TerminalSurface, TerminalSystems};
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 
 const CELL_WIDTH: f32 = 9.6;
@@ -69,7 +69,7 @@ fn main() {
                     ..default()
                 }),
             export_plugin,
-            BevyGridPlugin::new(surface).with_config(config),
+            BevyGridBatchPlugin::new(surface).with_config(config),
         ))
         .add_systems(Startup, setup_export)
         .add_systems(Update, advance_capture.before(TerminalSystems::Sync))

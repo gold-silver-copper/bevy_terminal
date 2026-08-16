@@ -402,6 +402,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bench-empty-bevy"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "ratatui",
+ "renderer-bench-sdk",
+]
+
+[[package]]
 name = "bench-parley-ratatui"
 version = "0.1.0"
 dependencies = [
@@ -5273,6 +5282,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "fontdb",
+ "image",
  "ratatui",
  "serde",
  "serde_json",

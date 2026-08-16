@@ -33,6 +33,7 @@ impl TerminalSurface {
                 cell_size: None,
                 pixel_size: Size::ZERO,
                 revision: 0,
+                dirty_cells: vec![false; usize::from(columns) * usize::from(rows)],
             })),
         }
     }
@@ -56,7 +57,7 @@ impl TerminalSurface {
     }
 
     pub(crate) fn update_snapshot(&self, snapshot: &mut TerminalSnapshot) -> SnapshotUpdate {
-        let state = self.lock();
+        let mut state = self.lock();
         if snapshot.size() != state.size() {
             let changed_cells = state.buffer.content.len();
             let changed_rows = (0..state.buffer.area.height).collect();
@@ -66,6 +67,7 @@ impl TerminalSurface {
                 cursor_visible: state.cursor_visible,
                 revision: state.revision,
             };
+            state.dirty_cells.fill(false);
             return SnapshotUpdate {
                 changed_rows,
                 changed_cells,
@@ -83,8 +85,9 @@ impl TerminalSurface {
             let end = start + width;
             let mut row_changed = false;
             for index in start..end {
-                if snapshot.buffer.content[index] != state.buffer.content[index] {
+                if state.dirty_cells[index] {
                     snapshot.buffer.content[index] = state.buffer.content[index].clone();
+                    state.dirty_cells[index] = false;
                     changed_cells += 1;
                     row_changed = true;
                 }
@@ -185,6 +188,7 @@ struct SurfaceState {
     cell_size: Option<(f32, f32)>,
     pixel_size: Size,
     revision: u64,
+    dirty_cells: Vec<bool>,
 }
 
 impl SurfaceState {
@@ -205,12 +209,32 @@ impl SurfaceState {
             return;
         }
         for column in 0..self.buffer.area.width {
-            self.buffer[(column, row)].reset();
+            let index =
+                usize::from(row) * usize::from(self.buffer.area.width) + usize::from(column);
+            if self.buffer.content[index] != Cell::EMPTY {
+                self.buffer.content[index].reset();
+                self.dirty_cells[index] = true;
+            }
+        }
+    }
+
+    fn mark_cell_dirty(&mut self, x: u16, y: u16) {
+        let index = usize::from(y) * usize::from(self.buffer.area.width) + usize::from(x);
+        if let Some(dirty) = self.dirty_cells.get_mut(index) {
+            *dirty = true;
+        }
+    }
+
+    fn mark_rows_dirty(&mut self, rows: Range<u16>) {
+        let width = usize::from(self.buffer.area.width);
+        for row in rows.start.min(self.buffer.area.height)..rows.end.min(self.buffer.area.height) {
+            let start = usize::from(row) * width;
+            self.dirty_cells[start..start + width].fill(true);
         }
     }
 }
 
-/// A Ratatui [`Backend`] whose output is consumed by Bevy UI.
+/// A Ratatui [`Backend`] whose output is consumed by the Bevy renderer.
 ///
 /// Clone [`Self::surface`] before moving the backend into a
 /// [`ratatui::Terminal`], then pass that handle to [`crate::BevyGridPlugin`].
@@ -261,6 +285,7 @@ impl BevyBackend {
             }
         }
         state.pixel_size = surface_pixel_size(state.size(), state.cell_size);
+        state.dirty_cells = vec![true; usize::from(columns) * usize::from(rows)];
         state.cursor_position.x = state.cursor_position.x.min(columns.saturating_sub(1));
         state.cursor_position.y = state.cursor_position.y.min(rows.saturating_sub(1));
         state.touch();
@@ -291,6 +316,7 @@ impl BevyBackend {
         for y in end - count..end {
             state.reset_row(y);
         }
+        state.mark_rows_dirty(start..end);
     }
 
     fn scroll_down(state: &mut SurfaceState, region: Range<u16>, line_count: u16) {
@@ -312,6 +338,7 @@ impl BevyBackend {
         for y in start..start + count {
             state.reset_row(y);
         }
+        state.mark_rows_dirty(start..end);
     }
 }
 
@@ -352,6 +379,7 @@ impl Backend for BevyBackend {
 
             if state.buffer[(x, y)] != *cell {
                 state.buffer[(x, y)] = cell.clone();
+                state.mark_cell_dirty(x, y);
                 changed = true;
             }
 
@@ -369,6 +397,7 @@ impl Backend for BevyBackend {
                     .set_diff_option(CellDiffOption::Skip);
                 if state.buffer[(continuation_x, y)] != continuation {
                     state.buffer[(continuation_x, y)] = continuation;
+                    state.mark_cell_dirty(continuation_x, y);
                     changed = true;
                 }
             }
@@ -419,6 +448,7 @@ impl Backend for BevyBackend {
         let changed = state.buffer.content.iter().any(|cell| cell != &Cell::EMPTY);
         if changed {
             state.buffer.reset();
+            state.dirty_cells.fill(true);
             state.touch();
         }
         Ok(())
@@ -446,9 +476,10 @@ impl Backend for BevyBackend {
             ClearType::UntilNewLine => cursor_index..line_end,
         };
         let mut changed = false;
-        for cell in &mut state.buffer.content[range] {
-            if cell != &Cell::EMPTY {
-                cell.reset();
+        for index in range {
+            if state.buffer.content[index] != Cell::EMPTY {
+                state.buffer.content[index].reset();
+                state.dirty_cells[index] = true;
                 changed = true;
             }
         }
