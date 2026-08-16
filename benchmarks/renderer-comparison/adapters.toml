@@ -1,0 +1,74 @@
+schema_version = 1
+
+[[adapter]]
+id = "bevy_grid"
+name = "bevy_grid"
+status = "enabled"
+package = "bench-bevy-grid"
+binary = "bench-bevy-grid"
+source = "../../"
+render_path = "Bevy UI nodes and Bevy text"
+matched_font_size = 18
+
+[[adapter]]
+id = "soft_ratatui"
+name = "soft_ratatui"
+status = "enabled"
+package = "bench-soft-ratatui"
+binary = "bench-soft-ratatui"
+source = "https://github.com/gold-silver-copper/soft_ratatui"
+render_path = "CPU raster followed by Bevy Image upload"
+matched_font_size = 18
+
+[[adapter]]
+id = "egui_ratatui"
+name = "egui_ratatui"
+status = "enabled"
+package = "bench-egui-ratatui"
+binary = "bench-egui-ratatui"
+source = "https://github.com/gold-silver-copper/egui_ratatui"
+render_path = "soft_ratatui through egui texture preparation and Bevy Image presentation"
+matched_font_size = 18
+
+[[adapter]]
+id = "parley_ratatui"
+name = "parley_ratatui"
+status = "enabled"
+package = "bench-parley-ratatui"
+binary = "bench-parley-ratatui"
+source = "https://github.com/gold-silver-copper/parley_ratatui"
+render_path = "Parley/Vello texture on Bevy's WGPU device"
+matched_font_size = 18
+
+[[adapter]]
+id = "bevy_tui_texture"
+name = "bevy_tui_texture"
+status = "enabled"
+package = "bench-bevy-tui-texture"
+binary = "bench-bevy-tui-texture"
+source = "https://github.com/tt-toe/bevy_tui_texture"
+render_path = "Native Bevy render-world WGPU terminal texture"
+matched_font_size = 20
+
+[[adapter]]
+id = "ratatui_wgpu"
+name = "ratatui-wgpu"
+status = "unsupported"
+source = "https://github.com/Jesterhearts/ratatui-wgpu"
+render_path = "WGPU texture/surface backend"
+reason = "ratatui-wgpu 0.5.0 seals RenderSurface and exposes its offscreen HeadlessSurface/build_headless API only under cfg(test). Its public API therefore requires an OS presentation surface, which would violate this suite's windowless protocol. Add an adapter when upstream exposes a public offscreen texture target or Bevy-device constructor."
+
+[[excluded]]
+id = "raclettui"
+source = "https://github.com/Harzu/raclettui"
+reason = "Wayland layer-shell application/renderer rather than a reusable Bevy texture backend; it cannot run without a compositor."
+
+[[excluded]]
+id = "ratzilla"
+source = "https://github.com/ratatui/ratzilla"
+reason = "DOM/canvas/WebGL browser backend rather than a Bevy texture renderer."
+
+[[excluded]]
+id = "mousefood"
+source = "https://github.com/ratatui/mousefood"
+reason = "embedded-graphics terminal backend; no desktop Bevy texture presentation path of its own."

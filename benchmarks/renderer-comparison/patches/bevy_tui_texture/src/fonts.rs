@@ -1,0 +1,672 @@
+//! Font loading and management with Unicode support.
+//!
+//! This module provides font handling for terminal text rendering, including:
+//!
+//! - **TrueType Font Loading** - Load TTF fonts from embedded or external data
+//! - **Font Fallback** - Automatic fallback for missing glyphs across multiple fonts
+//! - **Style Support** - Regular, bold, italic, and bold-italic font variants
+//! - **Unicode Shaping** - Full Unicode support using `rustybuzz` for complex text layout
+//! - **CJK Support** - Proper rendering of Chinese, Japanese, and Korean characters
+//!
+//! ## Basic Usage
+//!
+//! ```no_run
+//! use bevy_tui_texture::Font;
+//! use bevy_tui_texture::Fonts;
+//! use std::sync::Arc;
+//!
+//! // Load font from embedded bytes
+//! let font_data = include_bytes!("../examples/assets/fonts/Mplus1Code-Regular.ttf");
+//! let font = Font::new(font_data).expect("Failed to load font");
+//!
+//! // Create font collection with 16px height
+//! let fonts = Arc::new(Fonts::new(font, 16));
+//! ```
+//!
+//! ## Font Fallback
+//!
+//! The `Fonts` collection supports multiple fonts with automatic fallback:
+//!
+//! ```no_run
+//! # use bevy_tui_texture::{Font, Fonts};
+//! # let primary_font_data: &[u8] = &[];
+//! # let cjk_font_data: &[u8] = &[];
+//! let primary = Font::new(primary_font_data).unwrap();
+//! let cjk = Font::new(cjk_font_data).unwrap();
+//!
+//! let mut fonts = Fonts::new(primary, 16);
+//! fonts.add_regular_fonts([cjk]);  // Fallback for CJK characters
+//! ```
+
+use std::hash::BuildHasher;
+use std::hash::Hasher;
+use std::hash::RandomState;
+use std::sync::Arc;
+use std::sync::Mutex;
+
+use bevy::asset::io::Reader;
+use bevy::asset::{Asset, AssetLoader, LoadContext};
+use bevy::reflect::TypePath;
+use tracing::warn;
+use ratatui::buffer::Cell;
+use rustybuzz::Face;
+
+/// A TrueType font that can be used for text rendering.
+///
+/// Fonts are loaded either from static byte slices (typically embedded via
+/// `include_bytes!`, see [`Font::new`]) or from owned bytes read at runtime
+/// (see [`Font::from_vec`]) and are identified by a unique hash for caching
+/// purposes.
+///
+/// # Example
+///
+/// ```no_run
+/// use bevy_tui_texture::Font;
+///
+/// // Embedded font data
+/// let font_data = include_bytes!("../examples/assets/fonts/Mplus1Code-Regular.ttf");
+/// let font = Font::new(font_data).expect("Failed to load font");
+///
+/// // Runtime-loaded font data (no leaking required)
+/// let bytes = std::fs::read("examples/assets/fonts/Mplus1Code-Regular.ttf").unwrap();
+/// let font = Font::from_vec(bytes).expect("Failed to load font");
+/// ```
+#[derive(Clone)]
+pub struct Font {
+    // NOTE: declared before `_data` so the Face drops first.
+    font: Face<'static>,
+    advance: f32,
+    id: u64,
+    /// Keeps runtime-loaded font bytes alive for the lifetime of the `Face`
+    /// (`None` for `&'static` data). `Clone` clones the `Arc`, so every copy
+    /// of the `Face` keeps the backing allocation alive.
+    _data: Option<std::sync::Arc<[u8]>>,
+}
+
+impl Font {
+    /// Load a font from a static byte slice (e.g. `include_bytes!`).
+    pub fn new(data: &'static [u8]) -> Option<Self> {
+        Self::build(data, None)
+    }
+
+    /// Load a font from owned bytes (e.g. `std::fs::read` at runtime).
+    ///
+    /// Unlike [`Font::new`], this does not require `'static` data — the bytes
+    /// are kept alive internally for as long as the font (or any clone of it)
+    /// exists. No leaking required.
+    pub fn from_vec(data: Vec<u8>) -> Option<Self> {
+        let data: std::sync::Arc<[u8]> = data.into();
+        // SAFETY: `slice` points into the Arc's heap allocation, which
+        // - is never moved (Arc contents are heap-stable),
+        // - is never mutated (`Arc<[u8]>` is immutable),
+        // - outlives the `Face`: the Arc is stored in `_data` next to the
+        //   `Face`, `Clone` clones the Arc alongside the Face, and the field
+        //   order makes the Face drop first.
+        // The `Face` is never handed out with the `'static` lifetime beyond
+        // `&self` borrows (`Font::font()` is crate-private).
+        let slice: &'static [u8] = unsafe { std::mem::transmute::<&[u8], &'static [u8]>(&data) };
+        Self::build(slice, Some(data))
+    }
+
+    fn build(data: &'static [u8], keep_alive: Option<std::sync::Arc<[u8]>>) -> Option<Self> {
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write(data);
+
+        Face::from_slice(data, 0).map(|font| {
+            let advance = font
+                .glyph_hor_advance(font.glyph_index('m').unwrap_or_default())
+                .unwrap_or_default() as f32;
+            Self {
+                font,
+                advance,
+                id: hasher.finish(),
+                _data: keep_alive,
+            }
+        })
+    }
+}
+
+impl Font {
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(crate) fn font(&self) -> &Face<'static> {
+        &self.font
+    }
+
+    pub(crate) fn char_width(&self, height_px: u32) -> u32 {
+        let scale = height_px as f32 / self.font.height() as f32;
+        (self.advance * scale) as u32
+    }
+}
+
+/// Font bytes loadable via the `AssetServer` - `Font::from_vec` +
+/// `std::fs::read` doesn't work on Wasm, so this is the Wasm-safe path.
+/// Carries only the raw TTF bytes; convert to `Arc<Fonts>` synchronously
+/// once loaded via [`Fonts::from_asset`] - there is deliberately no
+/// "waiting for font" spawn state, so a terminal's spawn APIs keep taking
+/// `Arc<Fonts>` directly.
+#[derive(Asset, TypePath)]
+pub struct TerminalFontAsset {
+    bytes: Vec<u8>,
+}
+
+/// Loads `.ttf` files as [`TerminalFontAsset`]. Registered automatically by
+/// `TerminalPlugin`.
+#[derive(Default, TypePath)]
+pub(crate) struct TerminalFontAssetLoader;
+
+impl AssetLoader for TerminalFontAssetLoader {
+    type Asset = TerminalFontAsset;
+    type Settings = ();
+    type Error = std::io::Error;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        Ok(TerminalFontAsset { bytes })
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["ttf"]
+    }
+}
+
+/// Shared CPU-side glyph cache state: the `Atlas` LRU slot allocator, the
+/// rustybuzz `PlanCache`, and queued-but-not-yet-uploaded glyph
+/// rasterizations. Owned by `Fonts` (behind a lazily-initialized `Mutex`,
+/// see [`Fonts::with_shared_cpu_state`]) rather than by each terminal's
+/// `BevyTerminalBackend`, so every terminal sharing the same `Arc<Fonts>`
+/// rasterizes and uploads each glyph exactly once instead of once per
+/// terminal (IMPROVEMENT.md C3). Living inside `Fonts` - reachable from
+/// `self.fonts` alone - rather than an external resource is what lets
+/// `BevyTerminalBackend`'s `ratatui::backend::Backend::flush` implementation
+/// reach it: that trait method's signature (`fn flush(&mut self)`) is fixed
+/// by ratatui and cannot take an extra Bevy system parameter, and shaping
+/// happens there - inside user-called `Tui::draw()` - not inside a
+/// library-owned system.
+pub(crate) struct SharedFontCpuState {
+    pub(crate) cached: crate::utils::text_atlas::Atlas,
+    pub(crate) plan_cache: crate::utils::plan_cache::PlanCache,
+    pub(crate) pending_cache_updates: Vec<(crate::utils::text_atlas::CacheRect, Vec<u32>)>,
+}
+
+impl SharedFontCpuState {
+    fn new(fonts: &Fonts) -> Self {
+        use crate::backend::{CACHE_HEIGHT, CACHE_WIDTH};
+        Self {
+            cached: crate::utils::text_atlas::Atlas::new(fonts, CACHE_WIDTH, CACHE_HEIGHT),
+            plan_cache: crate::utils::plan_cache::PlanCache::new(fonts.count().max(2)),
+            pending_cache_updates: Vec::new(),
+        }
+    }
+}
+
+/// A collection of fonts to use for rendering. Supports font fallback.
+pub struct Fonts {
+    char_width: u32,
+    char_height: u32,
+
+    last_resort: Font,
+
+    regular: Vec<Font>,
+    bold: Vec<Font>,
+    italic: Vec<Font>,
+    bold_italic: Vec<Font>,
+
+    /// See [`SharedFontCpuState`]. `None` until first use -
+    /// `SharedFontCpuState::new` needs `&Fonts`, which doesn't exist yet
+    /// mid-construction in `Fonts::new`.
+    shared_cpu_state: Mutex<Option<SharedFontCpuState>>,
+}
+
+impl Fonts {
+    /// Create a new, empty set of fonts. The provided font will be used as a
+    /// last-resort fallback if no other fonts can render a particular
+    /// character. Rendering will attempt to fake bold/italic styles using this
+    /// font where appropriate.
+    ///
+    /// The provided size_px will be the rendered height in pixels of all fonts
+    /// in this collection.
+    pub fn new(font: Font, size_px: u32) -> Self {
+        Self {
+            char_width: font.char_width(size_px),
+            char_height: size_px,
+            last_resort: font,
+            regular: vec![],
+            bold: vec![],
+            italic: vec![],
+            bold_italic: vec![],
+            shared_cpu_state: Mutex::new(None),
+        }
+    }
+
+    /// Stable identity for this `Fonts` instance - used to key the
+    /// render-world's per-font shared GPU atlas store (IMPROVEMENT.md C3).
+    /// Two terminals share GPU (and, via [`Fonts::with_shared_cpu_state`],
+    /// CPU) glyph-cache state exactly when they hold the same `Arc<Fonts>`
+    /// (this returns the same value for any two `&Fonts` borrowed from
+    /// clones of the same `Arc`, since they deref to the same address).
+    pub(crate) fn identity(&self) -> usize {
+        self as *const Self as usize
+    }
+
+    /// Runs `f` against this `Fonts`' shared CPU-side glyph cache state,
+    /// creating it on first use. Locks for the duration of `f` - callers
+    /// should do all of one flush's shaping/rasterization work inside a
+    /// single call rather than re-locking per row, since a flush touching
+    /// several rows would otherwise re-acquire the lock that many times.
+    pub(crate) fn with_shared_cpu_state<R>(
+        &self,
+        f: impl FnOnce(&mut SharedFontCpuState) -> R,
+    ) -> R {
+        let mut guard = self
+            .shared_cpu_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = guard.get_or_insert_with(|| SharedFontCpuState::new(self));
+        f(state)
+    }
+
+    /// Build from a loaded [`TerminalFontAsset`].
+    /// Synchronous - call once `Assets<TerminalFontAsset>::get` returns
+    /// `Some` for the handle you loaded via `asset_server.load(...)`, the
+    /// same "wait until loaded, then use" pattern every bevy user already
+    /// writes for glTF. `size_px` stays a parameter here rather than living
+    /// on the asset, since spawn APIs take the resulting `Arc<Fonts>`
+    /// directly (already sized) and would have nowhere to put a
+    /// per-asset size.
+    pub fn from_asset(
+        asset: &TerminalFontAsset,
+        size_px: u32,
+    ) -> Result<Arc<Fonts>, crate::TerminalError> {
+        let font = Font::from_vec(asset.bytes.clone())
+            .ok_or_else(|| crate::TerminalError::Font("failed to parse font data".to_string()))?;
+        Ok(Arc::new(Fonts::new(font, size_px)))
+    }
+
+    /// The height (in pixels) of all fonts.
+    #[inline]
+    pub fn height_px(&self) -> u32 {
+        self.char_height
+    }
+
+    /// Debug: Log font metrics
+    #[cfg(debug_assertions)]
+    pub fn debug_metrics(&self) {
+        eprintln!(
+            "FONT METRICS: char_width={}, char_height={}",
+            self.char_width, self.char_height
+        );
+        eprintln!(
+            "  last_resort font: 'm' width={}",
+            self.last_resort.char_width(self.char_height)
+        );
+    }
+
+    /// Change the height of all fonts in this collection to the specified
+    /// height in pixels.
+    pub fn set_size_px(&mut self, height_px: u32) {
+        self.char_height = height_px;
+
+        self.char_width = std::iter::once(&self.last_resort)
+            .chain(self.regular.iter())
+            .chain(self.bold.iter())
+            .chain(self.italic.iter())
+            .chain(self.bold_italic.iter())
+            .map(|font| font.char_width(height_px))
+            .min()
+            .unwrap_or_default();
+    }
+
+    /// Add a collection of fonts for various styles. They will automatically be
+    /// added to the appropriate fallback font list based on the font's
+    /// bold/italic properties. Note that this will automatically organize fonts
+    /// by relative width in order to optimize fallback rendering quality. The
+    /// ordering of already provided fonts will remain unchanged.
+    pub fn add_fonts(&mut self, fonts: impl IntoIterator<Item = Font>) {
+        let bold_italic_len = self.bold_italic.len();
+        let italic_len = self.italic.len();
+        let bold_len = self.bold.len();
+        let regular_len = self.regular.len();
+
+        for font in fonts {
+            if !font.font().is_monospaced() {
+                warn!("Non monospace font used in add_fonts, this may cause unexpected rendering.");
+            }
+
+            self.char_width = self.char_width.min(font.char_width(self.char_height));
+            if font.font().is_italic() && font.font().is_bold() {
+                self.bold_italic.push(font);
+            } else if font.font().is_italic() {
+                self.italic.push(font);
+            } else if font.font().is_bold() {
+                self.bold.push(font);
+            } else {
+                self.regular.push(font);
+            }
+        }
+
+        self.bold_italic[bold_italic_len..].sort_by_key(|font| font.char_width(self.char_height));
+        self.italic[italic_len..].sort_by_key(|font| font.char_width(self.char_height));
+        self.bold[bold_len..].sort_by_key(|font| font.char_width(self.char_height));
+        self.regular[regular_len..].sort_by_key(|font| font.char_width(self.char_height));
+    }
+
+    /// Add a new collection of fonts for regular styled text. These fonts will
+    /// come _after_ previously provided fonts in the fallback order.
+    pub fn add_regular_fonts(&mut self, fonts: impl IntoIterator<Item = Font>) {
+        self.char_width = self.char_width.min(Self::add_fonts_internal(
+            &mut self.regular,
+            fonts,
+            self.char_height,
+        ));
+    }
+
+    /// TODO
+    /// Add a new collection of fonts for bold styled text. These fonts will
+    /// come _after_ previously provided fonts in the fallback order.
+    ///
+    /// You do not have to provide these for bold text to be supported. If no
+    /// bold fonts are supplied, rendering will fallback to the regular fonts
+    /// with fake bolding.
+    pub fn add_bold_fonts(&mut self, fonts: impl IntoIterator<Item = Font>) {
+        self.char_width = self.char_width.min(Self::add_fonts_internal(
+            &mut self.bold,
+            fonts,
+            self.char_height,
+        ));
+    }
+
+    /// TODO
+    /// Add a new collection of fonts for italic styled text. These fonts will
+    /// come _after_ previously provided fonts in the fallback order.
+    ///
+    /// It is recommended, but not required, that you provide italic fonts if
+    /// your application intends to make use of italics. If no italic fonts
+    /// are supplied, rendering will fallback to the regular fonts with fake
+    /// italics.
+    pub fn add_italic_fonts(&mut self, fonts: impl IntoIterator<Item = Font>) {
+        self.char_width = self.char_width.min(Self::add_fonts_internal(
+            &mut self.italic,
+            fonts,
+            self.char_height,
+        ));
+    }
+
+    /// TODO
+    /// Add a new collection of fonts for bold italic styled text. These fonts
+    /// will come _after_ previously provided fonts in the fallback order.
+    ///
+    /// You do not have to provide these for bold text to be supported. If no
+    /// bold fonts are supplied, rendering will fallback to the italic fonts
+    /// with fake bolding.
+    pub fn add_bold_italic_fonts(&mut self, fonts: impl IntoIterator<Item = Font>) {
+        self.char_width = self.char_width.min(Self::add_fonts_internal(
+            &mut self.bold_italic,
+            fonts,
+            self.char_height,
+        ));
+    }
+}
+
+impl Fonts {
+    /// The minimum width (in pixels) across all fonts.
+    pub fn min_width_px(&self) -> u32 {
+        self.char_width
+    }
+
+    /// Get the last resort font's ID (for programmatic glyph rendering)
+    pub(crate) fn last_resort_id(&self) -> u64 {
+        self.last_resort.id()
+    }
+
+    pub(crate) fn count(&self) -> usize {
+        1 + self.bold.len() + self.italic.len() + self.bold_italic.len() + self.regular.len()
+    }
+
+    pub(crate) fn font_for_cell(&self, cell: &Cell) -> (&Font, bool, bool) {
+        let is_bold = cell.modifier.contains(ratatui::style::Modifier::BOLD);
+        let is_italic = cell.modifier.contains(ratatui::style::Modifier::ITALIC);
+
+
+
+        // Build priority-ordered list of fonts to try
+        let mut fonts_to_try = Vec::new();
+
+        if is_bold && is_italic {
+            // Bold + Italic: try bold_italic first, then fall back with fake styling
+            fonts_to_try.extend(self.bold_italic.iter().map(|f| (f, false, false)));
+            fonts_to_try.extend(self.bold.iter().map(|f| (f, false, true)));
+            fonts_to_try.extend(self.italic.iter().map(|f| (f, true, false)));
+            fonts_to_try.extend(self.regular.iter().map(|f| (f, true, true)));
+        } else if is_bold {
+            // Bold only: try bold, then fake bold on regular
+            fonts_to_try.extend(self.bold.iter().map(|f| (f, false, false)));
+            fonts_to_try.extend(self.regular.iter().map(|f| (f, true, false)));
+            fonts_to_try.extend(self.italic.iter().map(|f| (f, true, false)));
+            fonts_to_try.extend(self.bold_italic.iter().map(|f| (f, false, false)));
+        } else if is_italic {
+            // Italic only: try italic, then fake italic on regular
+            fonts_to_try.extend(self.italic.iter().map(|f| (f, false, false)));
+            fonts_to_try.extend(self.regular.iter().map(|f| (f, false, true)));
+            fonts_to_try.extend(self.bold.iter().map(|f| (f, false, true)));
+            fonts_to_try.extend(self.bold_italic.iter().map(|f| (f, false, false)));
+        } else {
+            // Regular: try regular, then any other
+            fonts_to_try.extend(self.regular.iter().map(|f| (f, false, false)));
+            fonts_to_try.extend(self.bold.iter().map(|f| (f, false, false)));
+            fonts_to_try.extend(self.italic.iter().map(|f| (f, false, false)));
+            fonts_to_try.extend(self.bold_italic.iter().map(|f| (f, false, false)));
+        }
+
+        // Select font with fake styling as last resort
+        self.select_font(
+            cell.symbol(),
+            fonts_to_try,
+            is_bold,   // Use fake bold if no real bold font found
+            is_italic, // Use fake italic if no real italic font found
+        )
+    }
+
+    fn select_font<'fonts>(
+        &'fonts self,
+        cluster: &str,
+        fonts: impl IntoIterator<Item = (&'fonts Font, bool, bool)>,
+        last_resort_fake_bold: bool,
+        last_resort_fake_italic: bool,
+    ) -> (&'fonts Font, bool, bool) {
+        let mut max = 0;
+        let mut font = None;
+        for (candidate, fake_bold, fake_italic) in fonts.into_iter().chain(std::iter::once((
+            &self.last_resort,
+            last_resort_fake_bold,
+            last_resort_fake_italic,
+        ))) {
+            let (count, last_idx) =
+                cluster
+                    .chars()
+                    .enumerate()
+                    .fold((0, 0), |(mut count, _), (idx, ch)| {
+                        count += usize::from(candidate.font().glyph_index(ch).is_some());
+                        (count, idx)
+                    });
+            if count > max {
+                max = count;
+                font = Some((candidate, fake_bold, fake_italic));
+            }
+
+            if count == last_idx + 1 {
+                break;
+            }
+        }
+
+        *font.get_or_insert((
+            &self.last_resort,
+            last_resort_fake_bold,
+            last_resort_fake_italic,
+        ))
+    }
+
+    fn add_fonts_internal(
+        target: &mut Vec<Font>,
+        fonts: impl IntoIterator<Item = Font>,
+        char_height: u32,
+    ) -> u32 {
+        let len = target.len();
+        target.extend(fonts);
+
+        target[len..]
+            .iter()
+            .map(|font| font.char_width(char_height))
+            .min()
+            .unwrap_or(u32::MAX)
+    }
+}
+
+// ============================================================================
+// Test: font_for_cell's per-style fallback order (P2-4). Pure CPU - loads
+// the shipped M+ font multiple times (each load gets a fresh random `id()`,
+// see `Font::build`'s `RandomState::new()` per call) to stand in for
+// distinct "regular"/"bold"/"italic"/"bold_italic" font slots, and checks
+// which slot's `id()` wins for each `Modifier` combination.
+// ============================================================================
+
+#[cfg(test)]
+mod font_for_cell_tests {
+    use super::*;
+    use ratatui::buffer::Cell;
+    use ratatui::style::Modifier;
+
+    const FONT_DATA: &[u8] = include_bytes!("../examples/assets/fonts/Mplus1Code-Regular.ttf");
+
+    /// A fresh `Font` with its own random `id()` - loading the same bytes
+    /// twice via `Font::from_vec` yields two distinguishable `Font`s (see
+    /// module doc comment), letting tests tell "which slot was picked"
+    /// apart without needing physically different font files.
+    fn fresh_font() -> Font {
+        Font::from_vec(FONT_DATA.to_vec()).expect("failed to load test font")
+    }
+
+    fn cell_with(modifier: Modifier) -> Cell {
+        let mut cell = Cell::default();
+        cell.set_symbol("a");
+        cell.modifier = modifier;
+        cell
+    }
+
+    #[test]
+    fn regular_cell_prefers_the_regular_slot() {
+        let mut fonts = Fonts::new(fresh_font(), 16); // last_resort
+        let regular = fresh_font();
+        let regular_id = regular.id();
+        fonts.add_regular_fonts([regular]);
+
+        let (font, fake_bold, fake_italic) = fonts.font_for_cell(&cell_with(Modifier::empty()));
+        assert_eq!(font.id(), regular_id);
+        assert!(!fake_bold && !fake_italic);
+    }
+
+    #[test]
+    fn bold_cell_prefers_the_bold_slot_over_regular() {
+        let mut fonts = Fonts::new(fresh_font(), 16);
+        let bold = fresh_font();
+        let bold_id = bold.id();
+        fonts.add_regular_fonts([fresh_font()]);
+        fonts.add_bold_fonts([bold]);
+
+        let (font, fake_bold, fake_italic) = fonts.font_for_cell(&cell_with(Modifier::BOLD));
+        assert_eq!(
+            font.id(),
+            bold_id,
+            "a real bold font must win over faking bold on the regular font"
+        );
+        assert!(!fake_bold && !fake_italic, "a real bold font needs no faking");
+    }
+
+    #[test]
+    fn bold_cell_falls_back_to_faking_bold_on_regular_when_no_bold_slot() {
+        let mut fonts = Fonts::new(fresh_font(), 16);
+        let regular = fresh_font();
+        let regular_id = regular.id();
+        fonts.add_regular_fonts([regular]);
+        // No bold font registered at all.
+
+        let (font, fake_bold, fake_italic) = fonts.font_for_cell(&cell_with(Modifier::BOLD));
+        assert_eq!(
+            font.id(),
+            regular_id,
+            "with no bold font, the regular font must be reused"
+        );
+        assert!(fake_bold, "bold must be faked on top of the regular font");
+        assert!(!fake_italic);
+    }
+
+    #[test]
+    fn bold_cell_falls_back_to_last_resort_when_nothing_else_registered() {
+        let last_resort = fresh_font();
+        let last_resort_id = last_resort.id();
+        let fonts = Fonts::new(last_resort, 16); // no regular/bold/italic added at all
+
+        let (font, fake_bold, _) = fonts.font_for_cell(&cell_with(Modifier::BOLD));
+        assert_eq!(font.id(), last_resort_id);
+        assert!(fake_bold, "bold must be faked on the last-resort font too");
+    }
+
+    #[test]
+    fn italic_cell_prefers_the_italic_slot_over_regular() {
+        let mut fonts = Fonts::new(fresh_font(), 16);
+        let italic = fresh_font();
+        let italic_id = italic.id();
+        fonts.add_regular_fonts([fresh_font()]);
+        fonts.add_italic_fonts([italic]);
+
+        let (font, fake_bold, fake_italic) = fonts.font_for_cell(&cell_with(Modifier::ITALIC));
+        assert_eq!(font.id(), italic_id);
+        assert!(!fake_bold && !fake_italic);
+    }
+
+    #[test]
+    fn bold_italic_cell_prefers_the_bold_italic_slot_over_everything() {
+        let mut fonts = Fonts::new(fresh_font(), 16);
+        let bold_italic = fresh_font();
+        let bold_italic_id = bold_italic.id();
+        fonts.add_regular_fonts([fresh_font()]);
+        fonts.add_bold_fonts([fresh_font()]);
+        fonts.add_italic_fonts([fresh_font()]);
+        fonts.add_bold_italic_fonts([bold_italic]);
+
+        let (font, fake_bold, fake_italic) =
+            fonts.font_for_cell(&cell_with(Modifier::BOLD | Modifier::ITALIC));
+        assert_eq!(font.id(), bold_italic_id);
+        assert!(!fake_bold && !fake_italic);
+    }
+
+    #[test]
+    fn bold_italic_cell_falls_back_to_bold_slot_with_faked_italic() {
+        let mut fonts = Fonts::new(fresh_font(), 16);
+        let bold = fresh_font();
+        let bold_id = bold.id();
+        fonts.add_regular_fonts([fresh_font()]);
+        fonts.add_bold_fonts([bold]);
+        // No bold_italic or italic-only slot registered.
+
+        let (font, fake_bold, fake_italic) =
+            fonts.font_for_cell(&cell_with(Modifier::BOLD | Modifier::ITALIC));
+        assert_eq!(
+            font.id(),
+            bold_id,
+            "with no bold_italic slot, the bold font is the next-best fallback"
+        );
+        assert!(
+            !fake_bold && fake_italic,
+            "bold is real (no faking needed) but italic must be faked on top"
+        );
+    }
+}

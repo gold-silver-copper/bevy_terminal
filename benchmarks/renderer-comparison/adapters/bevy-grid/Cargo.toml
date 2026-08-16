@@ -1,0 +1,15 @@
+[package]
+name = "bench-bevy-grid"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy.workspace = true
+bevy_grid = { path = "../../../.." }
+ratatui.workspace = true
+renderer-bench-sdk.workspace = true
+
+[lints.clippy]
+all = "warn"

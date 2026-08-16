@@ -1,0 +1,17 @@
+[package]
+name = "parley_ratatui"
+version = "0.3.4"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+description = "Render Ratatui buffers through Parley and Vello into WGPU textures."
+documentation = "https://docs.rs/parley_ratatui"
+repository = "https://github.com/gold-silver-copper/parley_ratatui"
+
+[dependencies]
+parley = "0.10.0"
+ratatui = { version = "0.30.2", default-features = false }
+swash = "0.2.9"
+unicode-width = "0.2.2"
+vello = "0.9.0"
+naga = { version = "29.0.3", features = ["termcolor"] }

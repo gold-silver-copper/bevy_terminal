@@ -1,0 +1,47 @@
+[package]
+name = "bevy_tui_texture"
+version = "0.3.4"
+edition = "2024"
+rust-version = "1.96"
+authors = ["TTT"]
+license = "MIT"
+description = "A Bevy plugin for rendering terminal-style UIs using ratatui and WGPU"
+repository = "https://github.com/tt-toe/bevy_tui_texture"
+
+[features]
+default = ["2d", "3d", "keyboard_input", "mouse_input"]
+2d = ["bevy/bevy_ui_render", "bevy/bevy_sprite", "bevy/bevy_sprite_render"]
+3d = ["bevy/bevy_pbr", "bevy/bevy_picking", "bevy/mesh_picking"]
+keyboard_input = []
+mouse_input = []
+bold_italic_fonts = []
+emoji = ["dep:unicode-properties"]
+ascii_fast_shaping = []
+crossterm-compat = ["dep:crossterm"]
+
+[dependencies]
+bevy = { version = "0.19", default-features = false, features = ["bevy_render", "bevy_core_pipeline"] }
+ratatui = { version = "0.30.2", default-features = false }
+wgpu = { version = "29.0", default-features = false, features = ["wgsl", "webgl"] }
+rustybuzz = "0.20"
+raqote = { version = "0.8", default-features = false }
+tiny-skia = "0.11"
+bytemuck = { version = "1.23", features = ["derive"] }
+bitvec = { version = "1.0", default-features = false, features = ["std"] }
+indexmap = { version = "2.11", default-features = false, features = ["std"] }
+evictor = { version = "0.5", default-features = false }
+unicode-width = "0.2"
+web-time = "1.1"
+tracing = "0.1"
+thiserror = "2.0"
+unicode-properties = { version = "0.1", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+crossterm = { version = "0.29", optional = true, default-features = false, features = ["events", "bracketed-paste"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "KeyboardEvent", "console"] }
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.2", features = ["js"] }

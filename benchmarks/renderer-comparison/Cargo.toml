@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = [
+    "sdk",
+    "adapters/bevy-grid",
+    "adapters/soft-ratatui",
+    "adapters/egui-ratatui",
+    "adapters/parley-ratatui",
+    "adapters/bevy-tui-texture",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+
+[workspace.dependencies]
+bevy = { version = "0.19.1", default-features = false, features = [
+    "2d",
+    "ui",
+    "bevy_winit",
+    "system_font_discovery",
+] }
+ratatui = { version = "0.30.2", default-features = false, features = ["scrolling-regions", "std"] }
+renderer-bench-sdk = { path = "sdk" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = 1
+
+[patch.crates-io]
+bevy_tui_texture = { path = "patches/bevy_tui_texture" }
+egui_ratatui = { path = "patches/egui_ratatui" }
+parley_ratatui = { path = "patches/parley_ratatui" }
+soft_ratatui = { path = "patches/soft_ratatui" }

@@ -1,0 +1,16 @@
+[package]
+name = "egui_ratatui"
+version = "2.2.0"
+edition = "2024"
+authors = ["gold-silver-copper"]
+description = "WASM ratatui with egui works with bevy and macroquad and eframe"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/gold-silver-copper/egui_ratatui"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+egui = { version = "~0.34.0", default-features = false }
+ratatui-core = { version = "0.1", default-features = false }
+soft_ratatui = { version = "~0.2.0", default-features = false }

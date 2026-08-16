@@ -1,0 +1,15 @@
+[package]
+name = "bench-bevy-tui-texture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy.workspace = true
+bevy_tui_texture = { version = "0.3.4", default-features = false }
+ratatui.workspace = true
+renderer-bench-sdk.workspace = true
+
+[lints.clippy]
+all = "warn"
