@@ -9,7 +9,7 @@ pub use color::TerminalTheme;
 pub use renderer::{
     BevyGridBatchPlugin, BevyGridPlugin, CursorStyle, RetainedBevyGridPlugin, TerminalBatchOutput,
     TerminalBatchPresentation, TerminalBatchRoot, TerminalBatchStats, TerminalRenderConfig,
-    TerminalRenderStats, TerminalRoot, TerminalSystems,
+    TerminalRenderScale, TerminalRenderStats, TerminalRoot, TerminalSystems,
 };
 
 /// Convenient imports for applications using `bevy_grid`.
@@ -17,6 +17,7 @@ pub mod prelude {
     pub use crate::{
         BevyBackend, BevyGridBatchPlugin, BevyGridPlugin, CursorStyle, TerminalBatchOutput,
         TerminalBatchPresentation, TerminalBatchRoot, TerminalBatchStats, TerminalRenderConfig,
-        TerminalRenderStats, TerminalRoot, TerminalSnapshot, TerminalSurface, TerminalTheme,
+        TerminalRenderScale, TerminalRenderStats, TerminalRoot, TerminalSnapshot, TerminalSurface,
+        TerminalTheme,
     };
 }

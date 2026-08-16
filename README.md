@@ -52,8 +52,27 @@ App::new()
 several fallback fonts and there is no single metric valid for every Unicode
 glyph. Pick a primary monospace font and a cell width matching its unit advance.
 The default uses Bevy's generic system monospace family with a cell size suited
-to an 18 px font. For deterministic production rendering, supply a font family
-or loaded font asset and configure its measured cell dimensions.
+to an 18 px font. Integer logical cell dimensions are recommended. The compact
+renderer snaps the corresponding physical cell and font dimensions to whole
+pixels so cell edges cannot accumulate subpixel drift. For deterministic
+production rendering, supply a font family or loaded font asset and configure
+its measured cell dimensions.
+
+`TerminalRenderConfig::render_scale` defaults to
+`TerminalRenderScale::Automatic`. An on-screen batch renderer then shapes text
+and builds its terminal texture at the primary window's physical-to-logical
+scale factor. For example, an 18 logical-pixel font is rasterized at 36 physical
+pixels on a 2× display and the terminal image is presented at half its physical
+dimensions. A non-default Bevy `UiScale` is included in this calculation. The
+terminal image uses nearest sampling, so that final presentation does not blur
+glyph atlas texels or exact box/block geometry. Its UI origin is also snapped to
+the physical pixel grid.
+
+Headless mode deliberately resolves `Automatic` to `1.0`, keeping benchmarks
+and image exports deterministic. Use `TerminalRenderScale::Fixed(value)` when a
+custom camera or output target has a known scale; that target should present the
+texture at the same scale. `TerminalBatchOutput` reports `size` in physical
+pixels, `logical_size` in Bevy UI pixels, and the active `raster_scale`.
 
 Wide Ratatui cells are anchored to two columns regardless of the fallback
 glyph's natural advance. This prevents column drift, but a poorly matched font
@@ -87,11 +106,16 @@ The `image_export` example uses the Git development dependency
 
 ```text
 cargo run --example image_export
+cargo run --example high_dpi_export
 ```
 
 Early frames contain the complete 72×22 scene. Later frames shrink the backend
 to 60×18 so the exported sequence also catches row-stride errors and stale
 texture pixels after a resize.
+
+`high_dpi_export` writes the renderer-owned 1584×880 terminal texture under
+`target/render-qa-2x/`, exercising native 2× font rasterization without a
+camera resampling stage.
 
 The normal dependency list is deliberately limited to `bevy` and `ratatui`.
 

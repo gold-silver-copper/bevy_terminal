@@ -14,19 +14,21 @@ use bevy::{
     window::WindowResolution,
 };
 use bevy_grid::{
-    BevyBackend, BevyGridBatchPlugin, TerminalRenderConfig, TerminalSurface, TerminalSystems,
+    BevyBackend, BevyGridBatchPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalSurface,
+    TerminalSystems,
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 
-const WIDTH: u32 = 818;
+const WIDTH: u32 = 832;
 const HEIGHT: u32 = 480;
 const EXPORT_FRAMES: u32 = 12;
 
 fn main() {
     let surface = common::demo_surface();
     let config = TerminalRenderConfig {
-        cell_size: Vec2::new(10.8, 20.0),
+        cell_size: Vec2::new(11.0, 20.0),
         font_size: 18.0,
+        render_scale: TerminalRenderScale::Fixed(1.0),
         origin: Vec2::new(20.0, 20.0),
         cursor_blink_hz: None,
         ..default()
@@ -39,7 +41,8 @@ fn main() {
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        resolution: WindowResolution::new(WIDTH, HEIGHT),
+                        resolution: WindowResolution::new(WIDTH, HEIGHT)
+                            .with_scale_factor_override(1.0),
                         visible: false,
                         ..default()
                     }),

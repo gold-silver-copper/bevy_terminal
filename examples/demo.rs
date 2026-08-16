@@ -8,7 +8,7 @@ use bevy_grid::{BevyGridPlugin, TerminalRenderConfig};
 fn main() {
     let surface = common::demo_surface();
     let config = TerminalRenderConfig {
-        cell_size: Vec2::new(10.8, 20.0),
+        cell_size: Vec2::new(11.0, 20.0),
         font_size: 18.0,
         origin: Vec2::new(20.0, 20.0),
         ..default()
@@ -19,7 +19,7 @@ fn main() {
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "bevy_grid Ratatui backend".into(),
-                    resolution: WindowResolution::new(818, 480),
+                    resolution: WindowResolution::new(832, 480),
                     resizable: false,
                     ..default()
                 }),

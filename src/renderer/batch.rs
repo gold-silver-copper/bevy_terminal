@@ -28,13 +28,14 @@ use bevy::{
         ComputedTextBlock, FontAtlasSet, FontCx, FontHinting, LayoutCx, LetterSpacing, LineBreak,
         LineHeight, ScaleCx, TextBounds, TextLayoutInfo, TextPipeline,
     },
+    window::PrimaryWindow,
 };
 use ratatui::buffer::{CellDiffOption, CellWidth};
 
 use super::{
-    PixelGeometry, ResolvedStyle, TerminalRenderConfig, TextRun, block_geometry,
-    cursor_should_be_visible, line_glyph, push_block, push_line_glyph, push_quadrants,
-    quadrant_mask, row_cells, text_font,
+    PixelGeometry, ResolvedStyle, TerminalRenderConfig, TerminalRenderScale, TextRun,
+    block_geometry, cursor_should_be_visible, line_glyph, push_block, push_line_glyph,
+    push_quadrants, quadrant_mask, row_cells, text_font,
 };
 use crate::{TerminalSnapshot, TerminalSurface};
 
@@ -56,9 +57,16 @@ pub enum TerminalBatchPresentation {
 #[derive(Clone, Debug, Resource)]
 pub struct TerminalBatchOutput {
     /// Render-world image containing the completed terminal.
+    ///
+    /// The handle changes when the grid dimensions or raster scale change, so
+    /// custom presentation code should observe this resource for changes.
     pub image: Handle<Image>,
     /// Physical pixel dimensions of `image`.
     pub size: UVec2,
+    /// Logical dimensions used by the optional Bevy UI presentation node.
+    pub logical_size: Vec2,
+    /// Physical pixels per logical pixel used to rasterize `image`.
+    pub raster_scale: f32,
 }
 
 /// Marker on the optional UI image node used to present a compact terminal batch.
@@ -154,10 +162,13 @@ impl BevyGridBatchPlugin {
 
 impl Plugin for BevyGridBatchPlugin {
     fn build(&self, app: &mut App) {
+        let raster_scale = resolve_raster_scale(self.config.render_scale, self.presentation, None);
+        let raster_config = physical_config(&self.config, raster_scale);
+        let logical_cell_size = raster_config.cell_size / raster_scale;
         self.surface
-            .set_cell_size(self.config.cell_size.x, self.config.cell_size.y);
+            .set_cell_size(logical_cell_size.x, logical_cell_size.y);
         let snapshot = self.surface.snapshot();
-        let size = terminal_pixel_size(&snapshot, &self.config);
+        let size = terminal_pixel_size(&snapshot, &raster_config);
         let output_image = make_target_image(size);
         let output = app
             .world_mut()
@@ -175,7 +186,7 @@ impl Plugin for BevyGridBatchPlugin {
                         TerminalBatchRoot,
                         super::TerminalRoot,
                         ImageNode::new(output.clone()),
-                        presentation_node(size, &self.config),
+                        presentation_node(size, &self.config, raster_scale),
                     ))
                     .id(),
             )
@@ -188,8 +199,17 @@ impl Plugin for BevyGridBatchPlugin {
             .insert_resource(TerminalBatchOutput {
                 image: output.clone(),
                 size,
+                logical_size: size.as_vec2() / raster_scale,
+                raster_scale,
             })
-            .insert_resource(BatchMainState::new(output, glyph_atlas, ui_root))
+            .insert_resource(BatchMainState::new(
+                output,
+                glyph_atlas,
+                ui_root,
+                self.presentation,
+                raster_scale,
+                raster_config,
+            ))
             .init_resource::<TerminalBatchStats>()
             .add_systems(
                 Update,
@@ -240,6 +260,9 @@ fn make_target_image(size: UVec2) -> Image {
     );
     image.texture_descriptor.usage =
         TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC;
+    // The terminal is rasterized at its final physical resolution. Filtering it again in the UI
+    // presentation stage softens glyph edges and can open seams between exact geometry cells.
+    image.sampler = ImageSampler::nearest();
     image
 }
 
@@ -259,16 +282,44 @@ fn make_glyph_atlas_image() -> Image {
     image
 }
 
-fn presentation_node(size: UVec2, config: &TerminalRenderConfig) -> Node {
+fn presentation_node(size: UVec2, config: &TerminalRenderConfig, raster_scale: f32) -> Node {
+    let origin = (config.origin * raster_scale).round() / raster_scale;
     Node {
         position_type: PositionType::Absolute,
-        left: px(config.origin.x),
-        top: px(config.origin.y),
-        width: px(size.x as f32),
-        height: px(size.y as f32),
+        left: px(origin.x),
+        top: px(origin.y),
+        width: px(size.x as f32 / raster_scale),
+        height: px(size.y as f32 / raster_scale),
         overflow: Overflow::clip(),
         ..default()
     }
+}
+
+fn resolve_raster_scale(
+    configured: TerminalRenderScale,
+    presentation: TerminalBatchPresentation,
+    window_scale: Option<f32>,
+) -> f32 {
+    let requested = match configured {
+        TerminalRenderScale::Automatic if presentation == TerminalBatchPresentation::Ui => {
+            window_scale.unwrap_or(1.0)
+        }
+        TerminalRenderScale::Automatic => 1.0,
+        TerminalRenderScale::Fixed(scale) => scale,
+    };
+    if requested.is_finite() && requested > 0.0 {
+        requested.clamp(1.0, 8.0)
+    } else {
+        1.0
+    }
+}
+
+fn physical_config(config: &TerminalRenderConfig, raster_scale: f32) -> TerminalRenderConfig {
+    let mut physical = config.clone();
+    physical.cell_size = (config.cell_size * raster_scale).round().max(Vec2::ONE);
+    physical.font_size = (config.font_size * raster_scale).round().max(1.0);
+    physical.origin = Vec2::ZERO;
+    physical
 }
 
 #[derive(Clone)]
@@ -444,6 +495,9 @@ impl ShapeCaches {
 struct BatchMainState {
     output: Handle<Image>,
     ui_root: Option<Entity>,
+    presentation: TerminalBatchPresentation,
+    raster_scale: f32,
+    raster_config: TerminalRenderConfig,
     last_snapshot: Option<TerminalSnapshot>,
     pending: Option<BatchScene>,
     shapes: ShapeCaches,
@@ -454,10 +508,20 @@ struct BatchMainState {
 }
 
 impl BatchMainState {
-    fn new(output: Handle<Image>, glyph_atlas: Handle<Image>, ui_root: Option<Entity>) -> Self {
+    fn new(
+        output: Handle<Image>,
+        glyph_atlas: Handle<Image>,
+        ui_root: Option<Entity>,
+        presentation: TerminalBatchPresentation,
+        raster_scale: f32,
+        raster_config: TerminalRenderConfig,
+    ) -> Self {
         Self {
             output,
             ui_root,
+            presentation,
+            raster_scale,
+            raster_config,
             last_snapshot: None,
             pending: None,
             shapes: ShapeCaches::default(),
@@ -485,6 +549,7 @@ struct QuadInstance {
 
 struct BatchScene {
     destination: AssetId<Image>,
+    destination_size: UVec2,
     instances: Vec<QuadInstance>,
     batches: Vec<DrawBatch>,
     clear: bool,
@@ -532,7 +597,9 @@ fn sync_batch_terminal(
     mut font_cx: ResMut<FontCx>,
     mut layout_cx: ResMut<LayoutCx>,
     mut scale_cx: ResMut<ScaleCx>,
-    mut ui_nodes: Query<&mut Node, With<TerminalBatchRoot>>,
+    mut ui_nodes: Query<(&mut Node, &mut ImageNode), With<TerminalBatchRoot>>,
+    primary_window: Query<&Window, With<PrimaryWindow>>,
+    ui_scale: Res<UiScale>,
     time: Option<Res<Time>>,
 ) {
     stats.sync_frames = stats.sync_frames.wrapping_add(1);
@@ -553,9 +620,20 @@ fn sync_batch_terminal(
     stats.pipeline_switches = 0;
     stats.atlas_bindings = 0;
 
-    let text_assets_changed = config.is_changed() || fonts.is_changed();
-    if config.is_changed() {
-        surface.set_cell_size(config.cell_size.x, config.cell_size.y);
+    let raster_scale = resolve_raster_scale(
+        config.render_scale,
+        state.presentation,
+        primary_window
+            .iter()
+            .next()
+            .map(|window| window.scale_factor() * ui_scale.0),
+    );
+    let scale_changed = state.raster_scale != raster_scale;
+    let text_assets_changed = config.is_changed() || fonts.is_changed() || scale_changed;
+    if config.is_changed() || scale_changed {
+        state.raster_config = physical_config(&config, raster_scale);
+        let logical_cell_size = state.raster_config.cell_size / raster_scale;
+        surface.set_cell_size(logical_cell_size.x, logical_cell_size.y);
     }
     if text_assets_changed {
         state.shapes.clear();
@@ -617,16 +695,23 @@ fn sync_batch_terminal(
     // lost when that payload is superseded.
     full |= state.pending.is_some();
 
-    let new_size = terminal_pixel_size(&snapshot, &config);
+    let new_size = terminal_pixel_size(&snapshot, &state.raster_config);
     let output_resized = output.size != new_size;
     if output_resized {
-        let _ = images.insert(state.output.id(), make_target_image(new_size));
+        // Use a new asset identity when the dimensions change. Render-asset and Bevy UI texture
+        // caches can otherwise retain views or bind groups for the old allocation for a frame.
+        let resized = images.add(make_target_image(new_size));
+        state.output = resized.clone();
+        output.image = resized;
         output.size = new_size;
     }
+    output.logical_size = new_size.as_vec2() / raster_scale;
+    output.raster_scale = raster_scale;
     if let Some(root) = state.ui_root
-        && let Ok(mut node) = ui_nodes.get_mut(root)
+        && let Ok((mut node, mut image_node)) = ui_nodes.get_mut(root)
     {
-        *node = presentation_node(new_size, &config);
+        image_node.image = state.output.clone();
+        *node = presentation_node(new_size, &config, raster_scale);
     }
 
     let rows: Vec<u16> = if full {
@@ -637,6 +722,7 @@ fn sync_batch_terminal(
     let scene_start = Instant::now();
     let destination = state.output.id();
     let BatchMainState {
+        raster_config,
         shapes,
         glyph_atlas,
         scratch,
@@ -644,7 +730,8 @@ fn sync_batch_terminal(
     } = &mut *state;
     let mut scene = build_scene(
         &snapshot,
-        &config,
+        raster_config,
+        raster_scale,
         &rows,
         full,
         destination,
@@ -686,12 +773,14 @@ fn sync_batch_terminal(
     state.pending = Some(scene);
     state.last_snapshot = Some(snapshot);
     state.blink = blink;
+    state.raster_scale = raster_scale;
 }
 
 #[allow(clippy::too_many_arguments)]
 fn build_scene(
     snapshot: &TerminalSnapshot,
     config: &TerminalRenderConfig,
+    raster_scale: f32,
     rows: &[u16],
     full: bool,
     destination: AssetId<Image>,
@@ -747,6 +836,7 @@ fn build_scene(
                     cells[background_start].symbol(),
                     &styles[background_start],
                     blink,
+                    raster_scale,
                 )
                 .is_some()
             {
@@ -762,6 +852,7 @@ fn build_scene(
                         cells[background_end].symbol(),
                         &styles[background_end],
                         blink,
+                        raster_scale,
                     )
                     .is_none())
             {
@@ -805,7 +896,7 @@ fn build_scene(
                 text: symbol.to_owned(),
                 style: style.clone(),
             };
-            let procedural = procedural_cell_code(symbol, style, blink);
+            let procedural = procedural_cell_code(symbol, style, blink, raster_scale);
             if let Some(code) = procedural {
                 foregrounds.push(procedural_cell_quad(
                     PixelGeometry {
@@ -824,7 +915,15 @@ fn build_scene(
             } else if let Some(mask) = quadrant_mask(symbol) {
                 push_quadrants(&mut exact, &exact_run(), row, config, mask, 1);
             } else if let Some(glyph) = line_glyph(symbol) {
-                push_line_glyph(&mut exact, &exact_run(), row, config, glyph, 1);
+                push_line_glyph(
+                    &mut exact,
+                    &exact_run(),
+                    row,
+                    config,
+                    glyph,
+                    1,
+                    raster_scale.round().max(1.0),
+                );
             } else if symbol != " " && !symbol.is_empty() {
                 let shaped = cached_shape(
                     symbol,
@@ -867,14 +966,15 @@ fn build_scene(
 
             let decoration_x = column as f32 * config.cell_size.x;
             let decoration_width = width as f32 * config.cell_size.x;
+            let decoration_thickness = raster_scale.round().max(1.0);
             if procedural.is_none() && style.underlined {
                 decorations.push(solid_quad(
                     PixelGeometry {
                         x: decoration_x,
                         y: f32::from(row) * config.cell_size.y
-                            + (config.cell_size.y - 2.0).max(0.0),
+                            + (config.cell_size.y - 2.0 * decoration_thickness).max(0.0),
                         width: decoration_width,
-                        height: 1.0,
+                        height: decoration_thickness,
                     },
                     style.underline,
                     size,
@@ -886,7 +986,7 @@ fn build_scene(
                         x: decoration_x,
                         y: f32::from(row) * config.cell_size.y + config.cell_size.y * 0.55,
                         width: decoration_width,
-                        height: 1.0,
+                        height: decoration_thickness,
                     },
                     style.foreground,
                     size,
@@ -901,19 +1001,20 @@ fn build_scene(
         && (full || rows.contains(&snapshot.cursor_position().y))
     {
         let position = snapshot.cursor_position();
+        let cursor_thickness = raster_scale.round().max(1.0) * 2.0;
         let (x, y, width, height) = match config.cursor_style {
             super::CursorStyle::Block => (0.0, 0.0, config.cell_size.x, config.cell_size.y),
             super::CursorStyle::Bar => (
                 0.0,
                 0.0,
-                2.0_f32.min(config.cell_size.x),
+                cursor_thickness.min(config.cell_size.x),
                 config.cell_size.y,
             ),
             super::CursorStyle::Underline => (
                 0.0,
-                (config.cell_size.y - 2.0).max(0.0),
+                (config.cell_size.y - cursor_thickness).max(0.0),
                 config.cell_size.x,
-                2.0_f32.min(config.cell_size.y),
+                cursor_thickness.min(config.cell_size.y),
             ),
         };
         cursor.push(solid_quad(
@@ -943,6 +1044,7 @@ fn build_scene(
     append_batch(&mut instances, &mut batches, primary_atlas, cursor);
     BatchScene {
         destination,
+        destination_size: size.as_uvec2(),
         instances,
         batches,
         clear: full,
@@ -1039,7 +1141,10 @@ fn cached_shape<'a>(
                 });
             Some(CachedGlyph {
                 texture,
-                offset: glyph.position - size * 0.5,
+                // Atlas texels must land on physical pixel boundaries. Bevy's layout positions
+                // can retain fractional shaping offsets even though the glyph bitmap is an
+                // integer-sized raster image.
+                offset: (glyph.position - size * 0.5).round(),
                 size,
                 uv,
                 alpha_mask: glyph.atlas_info.is_alpha_mask,
@@ -1055,14 +1160,19 @@ fn cached_shape<'a>(
 
 fn solid_quad(geometry: PixelGeometry, color: Color, target: Vec2) -> QuadInstance {
     QuadInstance {
-        rect: clip_rect(geometry, target),
+        rect: clip_rect(snap_geometry(geometry), target),
         // A negative final UV component lets the unified fragment shader skip the atlas sample.
         uv: Vec4::new(0.0, 0.0, 0.0, -1.0),
         color: color.to_linear().to_f32_array().into(),
     }
 }
 
-fn procedural_cell_code(symbol: &str, style: &ResolvedStyle, blink: BlinkPhases) -> Option<u32> {
+fn procedural_cell_code(
+    symbol: &str,
+    style: &ResolvedStyle,
+    blink: BlinkPhases,
+    raster_scale: f32,
+) -> Option<u32> {
     if style.hidden
         || blink.hides(style)
         || (style.underlined && style.underline != style.foreground)
@@ -1082,7 +1192,8 @@ fn procedural_cell_code(symbol: &str, style: &ResolvedStyle, blink: BlinkPhases)
     };
     let underline = u32::from(style.underlined) << 3;
     let crossed = u32::from(style.crossed_out) << 4;
-    Some(pattern | underline | crossed)
+    let pixel_scale = raster_scale.round().clamp(1.0, 15.0) as u32;
+    Some(pattern | underline | crossed | (pixel_scale << 5))
 }
 
 fn procedural_cell_quad(
@@ -1096,7 +1207,7 @@ fn procedural_cell_quad(
     let mut background = background.to_linear().to_f32_array();
     background[3] = -(10.0 + code as f32);
     QuadInstance {
-        rect: clip_rect(geometry, target),
+        rect: clip_rect(snap_geometry(geometry), target),
         uv: foreground.into(),
         color: background.into(),
     }
@@ -1114,9 +1225,22 @@ fn glyph_quad(
         color[3] = -1.0;
     }
     QuadInstance {
-        rect: clip_rect(geometry, target),
+        rect: clip_rect(snap_geometry(geometry), target),
         uv,
         color: color.into(),
+    }
+}
+
+fn snap_geometry(geometry: PixelGeometry) -> PixelGeometry {
+    let left = geometry.x.round();
+    let top = geometry.y.round();
+    let right = (geometry.x + geometry.width).round().max(left);
+    let bottom = (geometry.y + geometry.height).round().max(top);
+    PixelGeometry {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
     }
 }
 
@@ -1330,6 +1454,15 @@ fn render_batch_scene(
         pending.0 = Some(scene);
         return;
     };
+    let target_size = target.texture_descriptor.size;
+    if target_size.width != scene.destination_size.x
+        || target_size.height != scene.destination_size.y
+    {
+        // An Image asset replacement can coexist with its previous render asset for a frame.
+        // Keep the complete replacement scene pending until the matching GPU texture is ready.
+        pending.0 = Some(scene);
+        return;
+    }
     if scene
         .batches
         .iter()
@@ -1483,7 +1616,8 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
     if input.mode > 0i {
         let code = u32(input.mode - 1i);
         let pattern = code & 7u;
-        let pixel = vec2<u32>(floor(input.position.xy));
+        let pixel_scale = max(code >> 5u, 1u);
+        let pixel = vec2<u32>(floor(input.position.xy)) / pixel_scale;
         var foreground = false;
         switch pattern {
             case 0u: { foreground = true; }
@@ -1495,7 +1629,7 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
             case 6u: { foreground = input.local.x < 0.5; }
             default: { foreground = input.local.x >= 0.5; }
         }
-        let pixel_y = abs(dpdy(input.local.y));
+        let pixel_y = abs(dpdy(input.local.y)) * f32(pixel_scale);
         if (code & 8u) != 0u
             && input.local.y >= 1.0 - 2.0 * pixel_y
             && input.local.y < 1.0 - pixel_y {
@@ -1552,6 +1686,75 @@ mod tests {
             Vec2::new(800.0, 480.0),
         );
         assert!(cell.abs_diff_eq(Vec4::new(0.0, 0.0, 0.025, -1.0 / 12.0), 1e-6));
+    }
+
+    #[test]
+    fn terminal_target_uses_nearest_sampling() {
+        let image = make_target_image(UVec2::new(80, 40));
+        assert_eq!(image.sampler, ImageSampler::nearest());
+    }
+
+    #[test]
+    fn automatic_scale_tracks_ui_windows_but_not_headless_rendering() {
+        assert_eq!(
+            resolve_raster_scale(
+                TerminalRenderScale::Automatic,
+                TerminalBatchPresentation::Ui,
+                Some(2.0),
+            ),
+            2.0
+        );
+        assert_eq!(
+            resolve_raster_scale(
+                TerminalRenderScale::Automatic,
+                TerminalBatchPresentation::Headless,
+                Some(2.0),
+            ),
+            1.0
+        );
+        assert_eq!(
+            resolve_raster_scale(
+                TerminalRenderScale::Fixed(1.5),
+                TerminalBatchPresentation::Headless,
+                None,
+            ),
+            1.5
+        );
+        assert_eq!(
+            resolve_raster_scale(
+                TerminalRenderScale::Fixed(f32::NAN),
+                TerminalBatchPresentation::Ui,
+                None,
+            ),
+            1.0
+        );
+    }
+
+    #[test]
+    fn physical_metrics_and_geometry_are_pixel_aligned() {
+        let config = TerminalRenderConfig {
+            cell_size: Vec2::new(10.8, 19.6),
+            font_size: 17.6,
+            ..default()
+        };
+        let physical = physical_config(&config, 2.0);
+        assert_eq!(physical.cell_size, Vec2::new(22.0, 39.0));
+        assert_eq!(physical.font_size, 35.0);
+
+        assert_eq!(
+            snap_geometry(PixelGeometry {
+                x: 4.5,
+                y: 9.5,
+                width: 1.0,
+                height: 2.0,
+            }),
+            PixelGeometry {
+                x: 5.0,
+                y: 10.0,
+                width: 1.0,
+                height: 2.0,
+            }
+        );
     }
 
     #[test]
@@ -1620,7 +1823,7 @@ mod tests {
         cell.modifier.insert(ratatui::style::Modifier::HIDDEN);
         let style = ResolvedStyle::new(&cell, &super::super::TerminalTheme::default());
         assert_eq!(
-            procedural_cell_code("█", &style, BlinkPhases::default()),
+            procedural_cell_code("█", &style, BlinkPhases::default(), 1.0),
             None
         );
     }

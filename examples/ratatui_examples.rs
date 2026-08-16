@@ -8,7 +8,7 @@ mod catalog;
 use bevy::{prelude::*, window::WindowResolution};
 use bevy_grid::{BevyGridPlugin, TerminalRenderConfig};
 
-const CELL_WIDTH: f32 = 9.6;
+const CELL_WIDTH: f32 = 10.0;
 const CELL_HEIGHT: f32 = 18.0;
 const MARGIN: f32 = 20.0;
 

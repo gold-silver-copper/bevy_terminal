@@ -33,6 +33,25 @@ pub enum CursorStyle {
     Underline,
 }
 
+/// Selects the physical resolution used by the compact batch renderer.
+///
+/// The retained Bevy UI renderer already participates directly in Bevy's UI
+/// scale handling and therefore ignores this setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum TerminalRenderScale {
+    /// Match the primary window's physical-to-logical scale factor when the
+    /// terminal is presented through Bevy UI. Headless rendering uses `1.0`.
+    #[default]
+    Automatic,
+    /// Rasterize at an explicit physical-to-logical scale factor.
+    ///
+    /// Values that are non-finite or less than or equal to zero fall back to
+    /// `1.0`; valid values are clamped to `1.0..=8.0`. A custom UI or camera
+    /// should use the same scale factor so the resulting texture maps
+    /// one-to-one onto physical display pixels.
+    Fixed(f32),
+}
+
 /// Configuration for converting terminal cells into Bevy-rendered geometry and text.
 ///
 /// `cell_size` is intentionally explicit. Bevy can shape several fallback
@@ -45,6 +64,8 @@ pub struct TerminalRenderConfig {
     pub cell_size: Vec2,
     /// Rasterized font size in logical pixels.
     pub font_size: f32,
+    /// Physical raster scale used by the compact batch renderer.
+    pub render_scale: TerminalRenderScale,
     /// Bevy font source. The generic monospace family enables system fallback.
     pub font: FontSource,
     /// Position of the terminal's top-left corner in logical pixels.
@@ -64,8 +85,9 @@ pub struct TerminalRenderConfig {
 impl Default for TerminalRenderConfig {
     fn default() -> Self {
         Self {
-            cell_size: Vec2::new(10.8, 20.0),
+            cell_size: Vec2::new(11.0, 20.0),
             font_size: 18.0,
+            render_scale: TerminalRenderScale::Automatic,
             font: FontSource::Monospace,
             origin: Vec2::ZERO,
             theme: TerminalTheme::default(),
@@ -447,7 +469,7 @@ fn rebuild_row(
             continue;
         }
         if let Some(glyph) = line_glyph(&run.text) {
-            push_line_glyph(&mut solids, &run, row, config, glyph, z_index);
+            push_line_glyph(&mut solids, &run, row, config, glyph, z_index, 1.0);
             push_run_decorations(&mut solids, &run, row, config, z_index);
             continue;
         }
@@ -755,7 +777,7 @@ struct PixelGeometry {
     height: f32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum LineWeight {
     Light,
     Heavy,
@@ -985,8 +1007,9 @@ fn push_line_glyph(
     config: &TerminalRenderConfig,
     glyph: LineGlyph,
     z_index: i32,
+    pixel_scale: f32,
 ) {
-    for geometry in line_rectangles(glyph, config.cell_size) {
+    for geometry in line_rectangles(glyph, config.cell_size, pixel_scale) {
         push_solid(output, run, row, config, geometry, z_index);
     }
 }
@@ -1046,14 +1069,20 @@ fn push_solid(
     });
 }
 
-fn line_rectangles(glyph: LineGlyph, cell_size: Vec2) -> Vec<PixelGeometry> {
+fn line_rectangles(glyph: LineGlyph, cell_size: Vec2, pixel_scale: f32) -> Vec<PixelGeometry> {
+    let pixel_scale = pixel_scale.max(1.0);
     let thickness = match glyph.weight {
-        LineWeight::Light | LineWeight::Double => 1.0,
-        LineWeight::Heavy => 2.0,
+        LineWeight::Light | LineWeight::Double => pixel_scale,
+        LineWeight::Heavy => 2.0 * pixel_scale,
     };
-    let offsets: &[f32] = match glyph.weight {
-        LineWeight::Double => &[-2.0, 2.0],
-        LineWeight::Light | LineWeight::Heavy => &[0.0],
+    let offsets = match glyph.weight {
+        LineWeight::Double => [-2.0 * pixel_scale, 2.0 * pixel_scale],
+        LineWeight::Light | LineWeight::Heavy => [0.0, 0.0],
+    };
+    let offsets = if glyph.weight == LineWeight::Double {
+        &offsets[..]
+    } else {
+        &offsets[..1]
     };
     let center = cell_size * 0.5;
     let reach = offsets.last().copied().unwrap_or(0.0).abs() + thickness * 0.5;
@@ -1062,9 +1091,9 @@ fn line_rectangles(glyph: LineGlyph, cell_size: Vec2) -> Vec<PixelGeometry> {
     for offset in offsets {
         if glyph.directions & LEFT != 0 {
             rectangles.push(PixelGeometry {
-                x: -0.5,
+                x: -0.5 * pixel_scale,
                 y: center.y + offset - thickness * 0.5,
-                width: center.x + reach + 0.5,
+                width: center.x + reach + 0.5 * pixel_scale,
                 height: thickness,
             });
         }
@@ -1072,16 +1101,16 @@ fn line_rectangles(glyph: LineGlyph, cell_size: Vec2) -> Vec<PixelGeometry> {
             rectangles.push(PixelGeometry {
                 x: center.x - reach,
                 y: center.y + offset - thickness * 0.5,
-                width: cell_size.x - center.x + reach + 0.5,
+                width: cell_size.x - center.x + reach + 0.5 * pixel_scale,
                 height: thickness,
             });
         }
         if glyph.directions & UP != 0 {
             rectangles.push(PixelGeometry {
                 x: center.x + offset - thickness * 0.5,
-                y: -0.5,
+                y: -0.5 * pixel_scale,
                 width: thickness,
-                height: center.y + reach + 0.5,
+                height: center.y + reach + 0.5 * pixel_scale,
             });
         }
         if glyph.directions & DOWN != 0 {
@@ -1089,7 +1118,7 @@ fn line_rectangles(glyph: LineGlyph, cell_size: Vec2) -> Vec<PixelGeometry> {
                 x: center.x + offset - thickness * 0.5,
                 y: center.y - reach,
                 width: thickness,
-                height: cell_size.y - center.y + reach + 0.5,
+                height: cell_size.y - center.y + reach + 0.5 * pixel_scale,
             });
         }
     }
@@ -1505,6 +1534,7 @@ mod tests {
         let horizontal = line_rectangles(
             line_glyph("─").expect("known line glyph"),
             Vec2::new(10.8, 20.0),
+            1.0,
         );
         assert_eq!(horizontal.len(), 2);
         assert!(horizontal[0].x < 0.0);
@@ -1513,6 +1543,7 @@ mod tests {
         let double_cross = line_rectangles(
             line_glyph("╬").expect("known line glyph"),
             Vec2::new(10.8, 20.0),
+            1.0,
         );
         assert_eq!(double_cross.len(), 8);
         assert!(line_glyph("╭").is_none());
