@@ -30,12 +30,11 @@ use bevy::{
     },
     window::PrimaryWindow,
 };
-use ratatui::buffer::{CellDiffOption, CellWidth};
 
 use super::{
     PixelGeometry, ResolvedStyle, TerminalRenderConfig, TerminalRenderScale, TextRun,
-    block_geometry, cursor_should_be_visible, line_glyph, push_block, push_line_glyph,
-    push_quadrants, quadrant_mask, row_cells, text_font,
+    block_geometry, cell_span, cursor_should_be_visible, line_glyph, push_block, push_line_glyph,
+    push_quadrants, quadrant_mask, text_font,
 };
 use crate::{TerminalSnapshot, TerminalSurface};
 
@@ -53,13 +52,59 @@ pub enum TerminalBatchPresentation {
     Headless,
 }
 
+/// One independently rendered terminal instance.
+///
+/// Add multiple [`BevyTerminalPlugin`] values to create multiple instances. This component and
+/// its [`TerminalBatchOutput`] live on the same entity, allowing application systems to associate
+/// each renderer-owned texture with its terminal surface.
+#[derive(Clone, Component)]
+pub struct TerminalBatch {
+    surface: TerminalSurface,
+    config: TerminalRenderConfig,
+    presentation: TerminalBatchPresentation,
+}
+
+impl TerminalBatch {
+    /// Returns the surface this terminal renders.
+    #[must_use]
+    pub fn surface(&self) -> &TerminalSurface {
+        &self.surface
+    }
+
+    /// Returns whether this renderer is attached to `surface`.
+    #[must_use]
+    pub fn renders_surface(&self, surface: &TerminalSurface) -> bool {
+        self.surface.shares_state_with(surface)
+    }
+
+    /// Returns the rendering configuration for this terminal.
+    #[must_use]
+    pub const fn config(&self) -> &TerminalRenderConfig {
+        &self.config
+    }
+
+    /// Returns mutable rendering configuration for this terminal.
+    ///
+    /// Changes are detected independently and rebuild only this terminal.
+    #[must_use]
+    pub const fn config_mut(&mut self) -> &mut TerminalRenderConfig {
+        &mut self.config
+    }
+
+    /// Returns how this terminal texture is presented.
+    #[must_use]
+    pub const fn presentation(&self) -> TerminalBatchPresentation {
+        self.presentation
+    }
+}
+
 /// The renderer-owned terminal texture and its current pixel dimensions.
-#[derive(Clone, Debug, Resource)]
+#[derive(Clone, Debug, Component)]
 pub struct TerminalBatchOutput {
     /// Render-world image containing the completed terminal.
     ///
     /// The handle changes when the grid dimensions or raster scale change, so
-    /// custom presentation code should observe this resource for changes.
+    /// custom presentation code should observe this component for changes.
     pub image: Handle<Image>,
     /// Physical pixel dimensions of `image`.
     pub size: UVec2,
@@ -69,12 +114,15 @@ pub struct TerminalBatchOutput {
     pub raster_scale: f32,
 }
 
-/// Marker on the optional UI image node used to present a compact terminal batch.
+/// Marker on an optional UI image node used to present a compact terminal batch.
 #[derive(Component, Debug)]
-pub struct TerminalBatchRoot;
+pub struct TerminalBatchRoot {
+    /// Entity holding the corresponding [`TerminalBatch`] and [`TerminalBatchOutput`].
+    pub terminal: Entity,
+}
 
 /// Counters for the most recent compact scene update.
-#[derive(Clone, Copy, Debug, Default, Resource)]
+#[derive(Clone, Copy, Debug, Default, Component)]
 pub struct TerminalBatchStats {
     /// Main-world synchronization frames.
     pub sync_frames: u64,
@@ -116,58 +164,67 @@ pub struct TerminalBatchStats {
     pub atlas_bindings: u32,
 }
 
-/// Installs a compact renderer that draws one terminal texture in Bevy's render world.
+/// Installs one compact terminal renderer in Bevy's render world.
 ///
 /// Glyphs are shaped and rasterized by Bevy text. The terminal scene itself is represented by
 /// compact GPU quad instances instead of one UI entity per run or rectangle. In [`Ui`](TerminalBatchPresentation::Ui)
-/// mode, a single [`ImageNode`] places that texture in Bevy UI.
-pub struct BevyGridBatchPlugin {
-    surface: TerminalSurface,
-    config: TerminalRenderConfig,
-    presentation: TerminalBatchPresentation,
+/// mode, a single [`ImageNode`] places that texture in Bevy UI. Add the plugin more than once to
+/// create independent terminal surfaces, textures, configurations, statistics, and optional UI
+/// nodes. GPU pipelines and scratch buffers are shared between those instances.
+pub struct BevyTerminalPlugin {
+    terminal: TerminalBatch,
 }
 
-impl BevyGridBatchPlugin {
+impl BevyTerminalPlugin {
     /// Creates the compact renderer with its texture presented through Bevy UI.
     #[must_use]
     pub fn new(surface: TerminalSurface) -> Self {
         Self {
-            surface,
-            config: TerminalRenderConfig::default(),
-            presentation: TerminalBatchPresentation::Ui,
+            terminal: TerminalBatch {
+                surface,
+                config: TerminalRenderConfig::default(),
+                presentation: TerminalBatchPresentation::Ui,
+            },
         }
     }
 
     /// Replaces the renderer configuration.
     #[must_use]
     pub fn with_config(mut self, config: TerminalRenderConfig) -> Self {
-        self.config = config;
+        self.terminal.config = config;
         self
     }
 
     /// Selects texture-only rendering without creating a UI presentation node.
     #[must_use]
     pub fn headless(mut self) -> Self {
-        self.presentation = TerminalBatchPresentation::Headless;
+        self.terminal.presentation = TerminalBatchPresentation::Headless;
         self
     }
 
     /// Selects how the renderer-owned terminal texture is presented.
     #[must_use]
     pub fn with_presentation(mut self, presentation: TerminalBatchPresentation) -> Self {
-        self.presentation = presentation;
+        self.terminal.presentation = presentation;
         self
     }
 }
 
-impl Plugin for BevyGridBatchPlugin {
+impl Plugin for BevyTerminalPlugin {
     fn build(&self, app: &mut App) {
-        let raster_scale = resolve_raster_scale(self.config.render_scale, self.presentation, None);
-        let raster_config = physical_config(&self.config, raster_scale);
+        if !app.is_plugin_added::<BatchRendererPlugin>() {
+            app.add_plugins(BatchRendererPlugin);
+        }
+
+        let terminal = self.terminal.clone();
+        let raster_scale =
+            resolve_raster_scale(terminal.config.render_scale, terminal.presentation, None);
+        let raster_config = physical_config(&terminal.config, raster_scale);
         let logical_cell_size = raster_config.cell_size / raster_scale;
-        self.surface
+        terminal
+            .surface
             .set_cell_size(logical_cell_size.x, logical_cell_size.y);
-        let snapshot = self.surface.snapshot();
+        let snapshot = terminal.surface.snapshot();
         let size = terminal_pixel_size(&snapshot, &raster_config);
         let output_image = make_target_image(size);
         let output = app
@@ -179,14 +236,17 @@ impl Plugin for BevyGridBatchPlugin {
             images.add(make_glyph_atlas_image())
         };
 
-        let ui_root = if self.presentation == TerminalBatchPresentation::Ui {
+        let terminal_entity = app.world_mut().spawn_empty().id();
+        let ui_root = if terminal.presentation == TerminalBatchPresentation::Ui {
             Some(
                 app.world_mut()
                     .spawn((
-                        TerminalBatchRoot,
+                        TerminalBatchRoot {
+                            terminal: terminal_entity,
+                        },
                         super::TerminalRoot,
                         ImageNode::new(output.clone()),
-                        presentation_node(size, &self.config, raster_scale),
+                        presentation_node(size, &terminal.config, raster_scale),
                     ))
                     .id(),
             )
@@ -194,43 +254,54 @@ impl Plugin for BevyGridBatchPlugin {
             None
         };
 
-        app.insert_resource(self.surface.clone())
-            .insert_resource(self.config.clone())
-            .insert_resource(TerminalBatchOutput {
+        app.world_mut().entity_mut(terminal_entity).insert((
+            terminal.clone(),
+            TerminalBatchOutput {
                 image: output.clone(),
                 size,
                 logical_size: size.as_vec2() / raster_scale,
                 raster_scale,
-            })
-            .insert_resource(BatchMainState::new(
+            },
+            BatchMainState::new(
                 output,
                 glyph_atlas,
                 ui_root,
-                self.presentation,
+                terminal.presentation,
                 raster_scale,
                 raster_config,
-            ))
-            .init_resource::<TerminalBatchStats>()
-            .add_systems(
-                Update,
-                sync_batch_terminal.in_set(super::TerminalSystems::Sync),
-            );
+            ),
+            TerminalBatchStats::default(),
+        ));
+    }
 
+    fn is_unique(&self) -> bool {
+        false
+    }
+}
+
+struct BatchRendererPlugin;
+
+impl Plugin for BatchRendererPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            Update,
+            sync_batch_terminals.in_set(super::TerminalSystems::Sync),
+        );
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
-                .init_resource::<PendingBatchScene>()
+                .init_resource::<PendingBatchScenes>()
                 .init_resource::<BatchGpuState>()
                 .add_systems(RenderStartup, reset_batch_gpu_state)
-                .add_systems(ExtractSchedule, extract_batch_scene)
+                .add_systems(ExtractSchedule, extract_batch_scenes)
                 .add_systems(
                     Render,
-                    render_batch_scene
-                        .run_if(batch_scene_can_render_early)
+                    render_batch_scenes
+                        .run_if(batch_scenes_can_render_early)
                         .in_set(RenderSystems::ExtractCommands),
                 )
                 .add_systems(
                     Render,
-                    render_batch_scene.in_set(RenderSystems::PrepareMeshes),
+                    render_batch_scenes.in_set(RenderSystems::PrepareMeshes),
                 );
         }
     }
@@ -491,7 +562,7 @@ impl ShapeCaches {
     }
 }
 
-#[derive(Resource)]
+#[derive(Component)]
 struct BatchMainState {
     output: Handle<Image>,
     ui_root: Option<Entity>,
@@ -581,15 +652,16 @@ impl BlinkPhases {
 }
 
 #[derive(Resource, Default)]
-struct PendingBatchScene(Option<BatchScene>);
+struct PendingBatchScenes(Vec<BatchScene>);
 
 #[allow(clippy::too_many_arguments)]
-fn sync_batch_terminal(
-    surface: Res<TerminalSurface>,
-    config: Res<TerminalRenderConfig>,
-    mut state: ResMut<BatchMainState>,
-    mut output: ResMut<TerminalBatchOutput>,
-    mut stats: ResMut<TerminalBatchStats>,
+fn sync_batch_terminals(
+    mut terminals: Query<(
+        Ref<TerminalBatch>,
+        &mut BatchMainState,
+        &mut TerminalBatchOutput,
+        &mut TerminalBatchStats,
+    )>,
     fonts: Res<Assets<Font>>,
     mut images: ResMut<Assets<Image>>,
     mut text_pipeline: ResMut<TextPipeline>,
@@ -602,6 +674,56 @@ fn sync_batch_terminal(
     ui_scale: Res<UiScale>,
     time: Option<Res<Time>>,
 ) {
+    let window_scale = primary_window
+        .iter()
+        .next()
+        .map(|window| window.scale_factor() * ui_scale.0);
+    let elapsed = time.as_ref().map_or(0.0, |time| time.elapsed_secs());
+    let fonts_changed = fonts.is_changed();
+    for (terminal, mut state, mut output, mut stats) in &mut terminals {
+        let terminal_changed = terminal.is_changed();
+        sync_batch_terminal(
+            &terminal,
+            terminal_changed,
+            &mut state,
+            &mut output,
+            &mut stats,
+            &fonts,
+            fonts_changed,
+            &mut images,
+            &mut text_pipeline,
+            &mut font_atlas_set,
+            &mut font_cx,
+            &mut layout_cx,
+            &mut scale_cx,
+            &mut ui_nodes,
+            window_scale,
+            elapsed,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_batch_terminal(
+    terminal: &TerminalBatch,
+    terminal_changed: bool,
+    state: &mut BatchMainState,
+    output: &mut TerminalBatchOutput,
+    stats: &mut TerminalBatchStats,
+    fonts: &Assets<Font>,
+    fonts_changed: bool,
+    images: &mut Assets<Image>,
+    text_pipeline: &mut TextPipeline,
+    font_atlas_set: &mut FontAtlasSet,
+    font_cx: &mut FontCx,
+    layout_cx: &mut LayoutCx,
+    scale_cx: &mut ScaleCx,
+    ui_nodes: &mut Query<(&mut Node, &mut ImageNode), With<TerminalBatchRoot>>,
+    window_scale: Option<f32>,
+    elapsed: f32,
+) {
+    let surface = &terminal.surface;
+    let config = &terminal.config;
     stats.sync_frames = stats.sync_frames.wrapping_add(1);
     stats.changed_rows = 0;
     stats.snapshot_cells = 0;
@@ -620,29 +742,19 @@ fn sync_batch_terminal(
     stats.pipeline_switches = 0;
     stats.atlas_bindings = 0;
 
-    let raster_scale = resolve_raster_scale(
-        config.render_scale,
-        state.presentation,
-        primary_window
-            .iter()
-            .next()
-            .map(|window| window.scale_factor() * ui_scale.0),
-    );
+    let raster_scale = resolve_raster_scale(config.render_scale, state.presentation, window_scale);
     let scale_changed = state.raster_scale != raster_scale;
-    let text_assets_changed = config.is_changed() || fonts.is_changed() || scale_changed;
-    if config.is_changed() || scale_changed {
-        state.raster_config = physical_config(&config, raster_scale);
+    let text_assets_changed = terminal_changed || fonts_changed || scale_changed;
+    if terminal_changed || scale_changed {
+        state.raster_config = physical_config(config, raster_scale);
         let logical_cell_size = state.raster_config.cell_size / raster_scale;
         surface.set_cell_size(logical_cell_size.x, logical_cell_size.y);
     }
     if text_assets_changed {
         state.shapes.clear();
-        state.glyph_atlas.clear(&mut images);
+        state.glyph_atlas.clear(images);
     }
-    let blink = BlinkPhases::at(
-        time.as_ref().map_or(0.0, |time| time.elapsed_secs()),
-        &config,
-    );
+    let blink = BlinkPhases::at(elapsed, config);
     let blink_changed = blink != state.blink;
     if state.last_snapshot.as_ref().is_some_and(|snapshot| {
         snapshot.revision() == surface.revision() && !text_assets_changed && !blink_changed
@@ -675,7 +787,7 @@ fn sync_batch_terminal(
         (snapshot, rows, full)
     } else {
         let snapshot = surface.snapshot();
-        stats.snapshot_cells = u32::try_from(snapshot.buffer().content.len()).unwrap_or(u32::MAX);
+        stats.snapshot_cells = u32::try_from(snapshot.cells().len()).unwrap_or(u32::MAX);
         let rows = (0..snapshot.size().height).collect();
         (snapshot, rows, true)
     };
@@ -711,7 +823,7 @@ fn sync_batch_terminal(
         && let Ok((mut node, mut image_node)) = ui_nodes.get_mut(root)
     {
         image_node.image = state.output.clone();
-        *node = presentation_node(new_size, &config, raster_scale);
+        *node = presentation_node(new_size, config, raster_scale);
     }
 
     let rows: Vec<u16> = if full {
@@ -735,17 +847,17 @@ fn sync_batch_terminal(
         &rows,
         full,
         destination,
-        &fonts,
-        &mut images,
-        &mut text_pipeline,
-        &mut font_atlas_set,
-        &mut font_cx,
-        &mut layout_cx,
-        &mut scale_cx,
+        fonts,
+        images,
+        text_pipeline,
+        font_atlas_set,
+        font_cx,
+        layout_cx,
+        scale_cx,
         shapes,
         glyph_atlas,
         scratch,
-        &mut stats,
+        stats,
         blink,
     );
     // Existing GPU textures are safe to consume before Bevy's asset preparation systems. A
@@ -822,7 +934,7 @@ fn build_scene(
                 size,
             ));
         }
-        let cells = row_cells(snapshot, row);
+        let cells = snapshot.row(row);
         styles.clear();
         styles.extend(
             cells
@@ -831,7 +943,7 @@ fn build_scene(
         );
         let mut background_start = 0;
         while background_start < styles.len() {
-            if cells[background_start].diff_option != CellDiffOption::Skip
+            if !cells[background_start].is_continuation()
                 && procedural_cell_code(
                     cells[background_start].symbol(),
                     &styles[background_start],
@@ -847,7 +959,7 @@ fn build_scene(
             let mut background_end = background_start + 1;
             while background_end < styles.len()
                 && styles[background_end].background == color
-                && (cells[background_end].diff_option == CellDiffOption::Skip
+                && (cells[background_end].is_continuation()
                     || procedural_cell_code(
                         cells[background_end].symbol(),
                         &styles[background_end],
@@ -878,11 +990,11 @@ fn build_scene(
         let mut column = 0;
         while column < cells.len() {
             let cell = &cells[column];
-            if cell.diff_option == CellDiffOption::Skip {
+            if cell.is_continuation() {
                 column += 1;
                 continue;
             }
-            let width = usize::from(cell.cell_width().max(1)).min(cells.len() - column);
+            let width = cell_span(cells, column);
             let style = &styles[column];
             let symbol = cell.symbol();
             if style.hidden || blink.hides(style) {
@@ -945,6 +1057,12 @@ fn build_scene(
                     column as f32 * config.cell_size.x,
                     f32::from(row) * config.cell_size.y,
                 );
+                let cell_bounds = PixelGeometry {
+                    x: anchor.x,
+                    y: anchor.y,
+                    width: width as f32 * config.cell_size.x,
+                    height: config.cell_size.y,
+                };
                 for glyph in shaped {
                     let geometry = PixelGeometry {
                         x: anchor.x + glyph.offset.x,
@@ -952,10 +1070,14 @@ fn build_scene(
                         width: glyph.size.x,
                         height: glyph.size.y,
                     };
-                    glyphs.push((
-                        glyph.texture,
-                        glyph_quad(geometry, glyph.uv, style.foreground, glyph.alpha_mask, size),
-                    ));
+                    if let Some((geometry, uv)) =
+                        clip_glyph_to_cell(geometry, glyph.uv, cell_bounds)
+                    {
+                        glyphs.push((
+                            glyph.texture,
+                            glyph_quad(geometry, uv, style.foreground, glyph.alpha_mask, size),
+                        ));
+                    }
                 }
             }
             foregrounds.extend(
@@ -1231,6 +1353,41 @@ fn glyph_quad(
     }
 }
 
+fn clip_glyph_to_cell(
+    glyph: PixelGeometry,
+    uv: Vec4,
+    cell: PixelGeometry,
+) -> Option<(PixelGeometry, Vec4)> {
+    if glyph.width <= 0.0 || glyph.height <= 0.0 || cell.width <= 0.0 || cell.height <= 0.0 {
+        return None;
+    }
+    let left = glyph.x.max(cell.x);
+    let top = glyph.y.max(cell.y);
+    let right = (glyph.x + glyph.width).min(cell.x + cell.width);
+    let bottom = (glyph.y + glyph.height).min(cell.y + cell.height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+
+    let u_span = uv.z - uv.x;
+    let v_span = uv.w - uv.y;
+    let clipped_uv = Vec4::new(
+        ((left - glyph.x) / glyph.width).mul_add(u_span, uv.x),
+        ((top - glyph.y) / glyph.height).mul_add(v_span, uv.y),
+        ((right - glyph.x) / glyph.width).mul_add(u_span, uv.x),
+        ((bottom - glyph.y) / glyph.height).mul_add(v_span, uv.y),
+    );
+    Some((
+        PixelGeometry {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        },
+        clipped_uv,
+    ))
+}
+
 fn snap_geometry(geometry: PixelGeometry) -> PixelGeometry {
     let left = geometry.x.round();
     let top = geometry.y.round();
@@ -1291,18 +1448,24 @@ fn append_glyph_batches(
     }
 }
 
-fn extract_batch_scene(mut main_world: ResMut<MainWorld>, mut pending: ResMut<PendingBatchScene>) {
-    if pending.0.is_some() {
-        return;
+fn extract_batch_scenes(
+    mut main_world: ResMut<MainWorld>,
+    mut pending: ResMut<PendingBatchScenes>,
+) {
+    let mut terminals = main_world.query::<&mut BatchMainState>();
+    for mut state in terminals.iter_mut(&mut main_world) {
+        if let Some(scene) = state.pending.take() {
+            pending.0.push(scene);
+        }
     }
-    pending.0 = main_world.resource_mut::<BatchMainState>().pending.take();
 }
 
-fn batch_scene_can_render_early(pending: Res<PendingBatchScene>) -> bool {
-    pending
-        .0
-        .as_ref()
-        .is_some_and(|scene| !scene.requires_prepared_assets)
+fn batch_scenes_can_render_early(pending: Res<PendingBatchScenes>) -> bool {
+    !pending.0.is_empty()
+        && pending
+            .0
+            .iter()
+            .all(|scene| !scene.requires_prepared_assets)
 }
 
 #[derive(Default, Resource)]
@@ -1320,7 +1483,7 @@ impl BatchGpuState {
             return;
         }
         let texture_layout = device.create_bind_group_layout(
-            "bevy_grid batch texture layout",
+            "bevy_terminal batch texture layout",
             &[
                 BindGroupLayoutEntry {
                     binding: 0,
@@ -1362,7 +1525,7 @@ fn create_pipeline(
     blend: BlendState,
 ) -> RenderPipeline {
     let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-        label: Some("bevy_grid batch shader"),
+        label: Some("bevy_terminal batch shader"),
         source: ShaderSource::Wgsl(BATCH_SHADER.into()),
     });
     let raw_layouts = layouts
@@ -1370,7 +1533,7 @@ fn create_pipeline(
         .map(|layout| Some(&***layout))
         .collect::<Vec<_>>();
     let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-        label: Some("bevy_grid batch pipeline layout"),
+        label: Some("bevy_terminal batch pipeline layout"),
         bind_group_layouts: &raw_layouts,
         immediate_size: 0,
     });
@@ -1398,7 +1561,7 @@ fn create_pipeline(
         attributes: &ATTRIBUTES,
     }];
     device.create_render_pipeline(&RawRenderPipelineDescriptor {
-        label: Some("bevy_grid batch pipeline"),
+        label: Some("bevy_terminal batch pipeline"),
         layout: Some(&layout),
         vertex: RawVertexState {
             module: &shader,
@@ -1440,133 +1603,133 @@ fn instance_bytes(instances: &[QuadInstance]) -> Vec<u8> {
     bytes
 }
 
-fn render_batch_scene(
-    mut pending: ResMut<PendingBatchScene>,
+fn render_batch_scenes(
+    mut pending: ResMut<PendingBatchScenes>,
     mut gpu: ResMut<BatchGpuState>,
     gpu_images: Res<RenderAssets<GpuImage>>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
 ) {
-    let Some(scene) = pending.0.take() else {
-        return;
-    };
-    let Some(target) = gpu_images.get(scene.destination) else {
-        pending.0 = Some(scene);
-        return;
-    };
-    let target_size = target.texture_descriptor.size;
-    if target_size.width != scene.destination_size.x
-        || target_size.height != scene.destination_size.y
-    {
-        // An Image asset replacement can coexist with its previous render asset for a frame.
-        // Keep the complete replacement scene pending until the matching GPU texture is ready.
-        pending.0 = Some(scene);
-        return;
-    }
-    if scene
-        .batches
-        .iter()
-        .any(|batch| gpu_images.get(batch.texture).is_none())
-    {
-        pending.0 = Some(scene);
-        return;
-    }
-
-    gpu.ensure_pipeline(&device);
-    if !scene.instances.is_empty() {
-        let bytes = instance_bytes(&scene.instances);
-        let required = bytes.len() as u64;
-        if required > gpu.vertex_capacity {
-            gpu.vertex_capacity = required.next_power_of_two();
-            gpu.vertex_buffer = Some(device.create_buffer(&BufferDescriptor {
-                label: Some("bevy_grid terminal instances"),
-                size: gpu.vertex_capacity,
-                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-        }
-        queue.write_buffer(
-            gpu.vertex_buffer
-                .as_ref()
-                .expect("non-empty instances allocate a vertex buffer"),
-            0,
-            &bytes,
-        );
-    }
-
-    for batch in &scene.batches {
-        let texture = batch.texture;
-        let image = gpu_images
-            .get(texture)
-            .expect("glyph readiness was checked before bind-group creation");
-        let texture_id = image.texture.id();
-        if gpu
-            .texture_bind_groups
-            .get(&texture)
-            .is_none_or(|(cached_id, _)| *cached_id != texture_id)
+    let scenes = std::mem::take(&mut pending.0);
+    for scene in scenes {
+        let Some(target) = gpu_images.get(scene.destination) else {
+            pending.0.push(scene);
+            continue;
+        };
+        let target_size = target.texture_descriptor.size;
+        if target_size.width != scene.destination_size.x
+            || target_size.height != scene.destination_size.y
         {
-            let bind_group = device.create_bind_group(
-                "bevy_grid glyph atlas",
-                gpu.texture_layout
-                    .as_ref()
-                    .expect("pipeline initialization creates texture layout"),
-                &[
-                    BindGroupEntry {
-                        binding: 0,
-                        resource: BindingResource::TextureView(&image.texture_view),
-                    },
-                    BindGroupEntry {
-                        binding: 1,
-                        resource: BindingResource::Sampler(&image.sampler),
-                    },
-                ],
-            );
-            gpu.texture_bind_groups
-                .insert(texture, (texture_id, bind_group));
+            // An Image asset replacement can coexist with its previous render asset for a frame.
+            // Keep the complete replacement scene pending until the matching GPU texture is ready.
+            pending.0.push(scene);
+            continue;
         }
-    }
+        if scene
+            .batches
+            .iter()
+            .any(|batch| gpu_images.get(batch.texture).is_none())
+        {
+            pending.0.push(scene);
+            continue;
+        }
 
-    let load = if scene.clear {
-        LoadOp::Clear(scene.clear_color.to_linear().into())
-    } else {
-        LoadOp::Load
-    };
-    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-        label: Some("bevy_grid terminal batch"),
-    });
-    let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-        label: Some("bevy_grid terminal batch"),
-        color_attachments: &[Some(RenderPassColorAttachment {
-            view: &target.texture_view,
-            depth_slice: None,
-            resolve_target: None,
-            ops: Operations {
-                load,
-                store: StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-    });
-    if let Some(vertex_buffer) = &gpu.vertex_buffer {
-        pass.set_vertex_buffer(0, *vertex_buffer.slice(..));
-        pass.set_pipeline(gpu.pipeline.as_ref().expect("pipeline was initialized"));
-        for batch in &scene.batches {
-            pass.set_bind_group(
+        gpu.ensure_pipeline(&device);
+        if !scene.instances.is_empty() {
+            let bytes = instance_bytes(&scene.instances);
+            let required = bytes.len() as u64;
+            if required > gpu.vertex_capacity {
+                gpu.vertex_capacity = required.next_power_of_two();
+                gpu.vertex_buffer = Some(device.create_buffer(&BufferDescriptor {
+                    label: Some("bevy_terminal terminal instances"),
+                    size: gpu.vertex_capacity,
+                    usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            }
+            queue.write_buffer(
+                gpu.vertex_buffer
+                    .as_ref()
+                    .expect("non-empty instances allocate a vertex buffer"),
                 0,
-                gpu.texture_bind_groups
-                    .get(&batch.texture)
-                    .map(|(_, bind_group)| bind_group)
-                    .expect("atlas bind group was prepared"),
-                &[],
+                &bytes,
             );
-            pass.draw(0..6, batch.start..batch.start + batch.count);
         }
+
+        for batch in &scene.batches {
+            let texture = batch.texture;
+            let image = gpu_images
+                .get(texture)
+                .expect("glyph readiness was checked before bind-group creation");
+            let texture_id = image.texture.id();
+            if gpu
+                .texture_bind_groups
+                .get(&texture)
+                .is_none_or(|(cached_id, _)| *cached_id != texture_id)
+            {
+                let bind_group = device.create_bind_group(
+                    "bevy_terminal glyph atlas",
+                    gpu.texture_layout
+                        .as_ref()
+                        .expect("pipeline initialization creates texture layout"),
+                    &[
+                        BindGroupEntry {
+                            binding: 0,
+                            resource: BindingResource::TextureView(&image.texture_view),
+                        },
+                        BindGroupEntry {
+                            binding: 1,
+                            resource: BindingResource::Sampler(&image.sampler),
+                        },
+                    ],
+                );
+                gpu.texture_bind_groups
+                    .insert(texture, (texture_id, bind_group));
+            }
+        }
+
+        let load = if scene.clear {
+            LoadOp::Clear(scene.clear_color.to_linear().into())
+        } else {
+            LoadOp::Load
+        };
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("bevy_terminal terminal batch"),
+        });
+        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("bevy_terminal terminal batch"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: &target.texture_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
+                    load,
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        if let Some(vertex_buffer) = &gpu.vertex_buffer {
+            pass.set_vertex_buffer(0, *vertex_buffer.slice(..));
+            pass.set_pipeline(gpu.pipeline.as_ref().expect("pipeline was initialized"));
+            for batch in &scene.batches {
+                pass.set_bind_group(
+                    0,
+                    gpu.texture_bind_groups
+                        .get(&batch.texture)
+                        .map(|(_, bind_group)| bind_group)
+                        .expect("atlas bind group was prepared"),
+                    &[],
+                );
+                pass.draw(0..6, batch.start..batch.start + batch.count);
+            }
+        }
+        drop(pass);
+        queue.submit([encoder.finish()]);
     }
-    drop(pass);
-    queue.submit([encoder.finish()]);
 }
 
 const BATCH_SHADER: &str = r#"
@@ -1653,6 +1816,7 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::GridSize;
 
     fn quad(value: f32) -> QuadInstance {
         QuadInstance {
@@ -1660,6 +1824,53 @@ mod tests {
             uv: Vec4::ZERO,
             color: Vec4::ONE,
         }
+    }
+
+    #[test]
+    fn multiple_plugin_instances_own_distinct_surfaces_outputs_and_presenters() {
+        let first_surface = TerminalSurface::new(12, 4);
+        let second_surface = TerminalSurface::new(7, 9);
+        let mut app = App::new();
+        app.init_resource::<Assets<Image>>().add_plugins((
+            BevyTerminalPlugin::new(first_surface.clone()),
+            BevyTerminalPlugin::new(second_surface.clone()).headless(),
+        ));
+
+        let mut terminals = app
+            .world_mut()
+            .query::<(Entity, &TerminalBatch, &TerminalBatchOutput)>();
+        let mut instances = terminals
+            .iter(app.world())
+            .map(|(entity, terminal, output)| {
+                (
+                    entity,
+                    terminal.surface().snapshot().size(),
+                    output.image.id(),
+                    output.size,
+                    terminal.presentation(),
+                )
+            })
+            .collect::<Vec<_>>();
+        instances.sort_by_key(|(_, size, _, _, _)| size.width);
+
+        assert_eq!(instances.len(), 2);
+        assert_eq!(instances[0].1, GridSize::new(7, 9));
+        assert_eq!(instances[0].3, UVec2::new(77, 180));
+        assert_eq!(instances[0].4, TerminalBatchPresentation::Headless);
+        assert_eq!(instances[1].1, GridSize::new(12, 4));
+        assert_eq!(instances[1].3, UVec2::new(132, 80));
+        assert_eq!(instances[1].4, TerminalBatchPresentation::Ui);
+        assert_ne!(instances[0].2, instances[1].2);
+
+        let roots = app
+            .world_mut()
+            .query::<&TerminalBatchRoot>()
+            .iter(app.world())
+            .map(|root| root.terminal)
+            .collect::<Vec<_>>();
+        assert_eq!(roots, vec![instances[1].0]);
+        assert_eq!(first_surface.snapshot().size().width, 12);
+        assert_eq!(second_surface.snapshot().size().width, 7);
     }
 
     #[test]
@@ -1758,6 +1969,55 @@ mod tests {
     }
 
     #[test]
+    fn fallback_glyph_bitmaps_are_clipped_to_their_terminal_cells() {
+        let clipped = clip_glyph_to_cell(
+            PixelGeometry {
+                x: -2.0,
+                y: 3.0,
+                width: 16.0,
+                height: 20.0,
+            },
+            Vec4::new(0.1, 0.2, 0.9, 0.8),
+            PixelGeometry {
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            },
+        )
+        .expect("the glyph overlaps the cell");
+
+        assert_eq!(
+            clipped.0,
+            PixelGeometry {
+                x: 0.0,
+                y: 3.0,
+                width: 10.0,
+                height: 7.0,
+            }
+        );
+        assert!(clipped.1.abs_diff_eq(Vec4::new(0.2, 0.2, 0.7, 0.41), 1e-6));
+        assert!(
+            clip_glyph_to_cell(
+                PixelGeometry {
+                    x: 20.0,
+                    y: 20.0,
+                    width: 5.0,
+                    height: 5.0,
+                },
+                Vec4::ONE,
+                PixelGeometry {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 10.0,
+                    height: 10.0,
+                },
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn glyph_batches_preserve_paint_order_and_coalesce_adjacent_atlases() {
         let mut images = Assets::<Image>::default();
         let atlas_a = images.add(Image::default()).id();
@@ -1819,8 +2079,8 @@ mod tests {
 
     #[test]
     fn hidden_blocks_fall_back_to_background_rendering() {
-        let mut cell = ratatui::buffer::Cell::new("█");
-        cell.modifier.insert(ratatui::style::Modifier::HIDDEN);
+        let mut cell = crate::TerminalCell::new("█");
+        cell.style.flags.insert(crate::StyleFlags::HIDDEN);
         let style = ResolvedStyle::new(&cell, &super::super::TerminalTheme::default());
         assert_eq!(
             procedural_cell_code("█", &style, BlinkPhases::default(), 1.0),

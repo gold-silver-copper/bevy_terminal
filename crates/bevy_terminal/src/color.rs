@@ -1,12 +1,12 @@
+use crate::scene::TerminalColor;
 use bevy::prelude::Color as BevyColor;
-use ratatui::style::Color as RatatuiColor;
 
 /// Default colors and the 16-color ANSI palette used by the renderer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerminalTheme {
-    /// Foreground used for [`RatatuiColor::Reset`].
+    /// Foreground used for [`TerminalColor::Default`].
     pub foreground: BevyColor,
-    /// Background used for [`RatatuiColor::Reset`].
+    /// Background used for [`TerminalColor::Default`].
     pub background: BevyColor,
     /// Cursor overlay color.
     pub cursor: BevyColor,
@@ -43,35 +43,25 @@ impl Default for TerminalTheme {
 }
 
 impl TerminalTheme {
-    pub(crate) fn foreground(&self, color: RatatuiColor) -> BevyColor {
+    /// Resolves a foreground color; [`TerminalColor::Default`] is the theme foreground.
+    #[must_use]
+    pub fn foreground(&self, color: TerminalColor) -> BevyColor {
         self.resolve(color, self.foreground)
     }
 
-    pub(crate) fn background(&self, color: RatatuiColor) -> BevyColor {
+    /// Resolves a background color; [`TerminalColor::Default`] is the theme background.
+    #[must_use]
+    pub fn background(&self, color: TerminalColor) -> BevyColor {
         self.resolve(color, self.background)
     }
 
-    pub(crate) fn resolve(&self, color: RatatuiColor, reset: BevyColor) -> BevyColor {
+    /// Resolves `color`, using `default` for [`TerminalColor::Default`].
+    #[must_use]
+    pub fn resolve(&self, color: TerminalColor, default: BevyColor) -> BevyColor {
         match color {
-            RatatuiColor::Reset => reset,
-            RatatuiColor::Black => self.ansi[0],
-            RatatuiColor::Red => self.ansi[1],
-            RatatuiColor::Green => self.ansi[2],
-            RatatuiColor::Yellow => self.ansi[3],
-            RatatuiColor::Blue => self.ansi[4],
-            RatatuiColor::Magenta => self.ansi[5],
-            RatatuiColor::Cyan => self.ansi[6],
-            RatatuiColor::Gray => self.ansi[7],
-            RatatuiColor::DarkGray => self.ansi[8],
-            RatatuiColor::LightRed => self.ansi[9],
-            RatatuiColor::LightGreen => self.ansi[10],
-            RatatuiColor::LightYellow => self.ansi[11],
-            RatatuiColor::LightBlue => self.ansi[12],
-            RatatuiColor::LightMagenta => self.ansi[13],
-            RatatuiColor::LightCyan => self.ansi[14],
-            RatatuiColor::White => self.ansi[15],
-            RatatuiColor::Rgb(red, green, blue) => BevyColor::srgb_u8(red, green, blue),
-            RatatuiColor::Indexed(index) => self.indexed(index),
+            TerminalColor::Default => default,
+            TerminalColor::Rgb(red, green, blue) => BevyColor::srgb_u8(red, green, blue),
+            TerminalColor::Indexed(index) => self.indexed(index),
         }
     }
 
@@ -129,31 +119,31 @@ mod tests {
     fn indexed_colors_cover_palette_cube_and_grayscale() {
         let theme = TerminalTheme::default();
         assert_eq!(
-            theme.resolve(RatatuiColor::Indexed(1), BevyColor::NONE),
+            theme.resolve(TerminalColor::Indexed(1), BevyColor::NONE),
             theme.ansi[1]
         );
         assert_eq!(
-            rgb(theme.resolve(RatatuiColor::Indexed(16), BevyColor::NONE)),
+            rgb(theme.resolve(TerminalColor::Indexed(16), BevyColor::NONE)),
             (0, 0, 0)
         );
         assert_eq!(
-            rgb(theme.resolve(RatatuiColor::Indexed(196), BevyColor::NONE)),
+            rgb(theme.resolve(TerminalColor::Indexed(196), BevyColor::NONE)),
             (255, 0, 0)
         );
         assert_eq!(
-            rgb(theme.resolve(RatatuiColor::Indexed(232), BevyColor::NONE)),
+            rgb(theme.resolve(TerminalColor::Indexed(232), BevyColor::NONE)),
             (8, 8, 8)
         );
         assert_eq!(
-            rgb(theme.resolve(RatatuiColor::Indexed(255), BevyColor::NONE)),
+            rgb(theme.resolve(TerminalColor::Indexed(255), BevyColor::NONE)),
             (238, 238, 238)
         );
     }
 
     #[test]
-    fn reset_uses_the_contextual_default() {
+    fn default_uses_the_contextual_color() {
         let theme = TerminalTheme::default();
-        assert_eq!(theme.foreground(RatatuiColor::Reset), theme.foreground);
-        assert_eq!(theme.background(RatatuiColor::Reset), theme.background);
+        assert_eq!(theme.foreground(TerminalColor::Default), theme.foreground);
+        assert_eq!(theme.background(TerminalColor::Default), theme.background);
     }
 }

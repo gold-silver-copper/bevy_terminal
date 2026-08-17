@@ -6,16 +6,17 @@ directory at upstream commit
 
 - 32 application examples under `examples/apps/`.
 - 11 binaries under `examples/concepts/state/src/bin/`.
-- 43 deterministic Bevy-rendered scenes in total.
+- 43 Bevy-rendered scenes in one interactive gallery.
 
-The ports preserve each example's primary widgets, layout, colors, and visual
-purpose. Crossterm/Termion/Termwiz setup and event loops are replaced by the
-`BevyBackend`. Inputs that would make screenshots nondeterministic or require
-dependencies beyond Bevy and Ratatui are replaced by fixed fixtures:
+The ports preserve each example's primary widgets, layout, colors, controls,
+and visual purpose. Crossterm/Termion/Termwiz setup and event loops are replaced
+by Bevy keyboard and mouse systems feeding the `RatatuiBackend`. Data sources that
+would require dependencies beyond Bevy and Ratatui use local fixtures:
 
 - GitHub and weather responses are local sample data.
 - Random charts, temperatures, people, and market data are fixed.
-- Time, animation, selection, mouse, and form state are frozen.
+- Animation, selection, scrolling, mouse drawing, forms, and Unicode text input
+  are interactive in the gallery.
 - Panic-hook, tracing-subscriber, and inline-terminal behavior is represented
   by the UI state it produces.
 - OSC-8 hyperlinks retain their underlined visual affordance; Bevy UI does not
@@ -31,7 +32,10 @@ for every entry.
 # list every slug
 cargo run --example ratatui_examples -- --list
 
-# open one scene in a Bevy window
+# open the gallery at its first example
+cargo run --example ratatui_examples
+
+# optionally choose the gallery's starting example
 cargo run --example ratatui_examples -- volatility-surface
 
 # export several stable frames of every scene
@@ -40,7 +44,66 @@ cargo run --example ratatui_examples_export
 
 Exported PNGs are written to `target/ratatui-examples/<slug>/`. The exporter
 uses the Git development dependency `bevy_image_export`; it is not a normal
-library dependency.
+library dependency. It creates a fresh canonical state for every capture, so
+exports stay deterministic even though the gallery is interactive.
+
+Both the gallery and exporter embed the complete static JetBrains Mono 2.304
+family. Regular, bold, italic, and bold-italic Ratatui text is bound directly to
+the corresponding face, so rendering does not depend on fonts installed on the
+host or accidentally select an emoji presentation for supported symbols.
+
+## Gallery controls
+
+Global controls are deliberately assigned to function/page keys so they do not
+steal the arrows, Vim keys, text, or punctuation used by an example:
+
+| Key | Action |
+|---|---|
+| `PageDown` or `F6` | Next example, wrapping at the end |
+| `PageUp` or `Shift+F6` | Previous example, wrapping at the beginning |
+| `F1` | Contextual help for the current example |
+| `F2` | Reset only the current example |
+| `F10` | Exit the gallery |
+
+The window title always shows the current slug and catalog position. State is
+preserved when switching away from an example. Press `F2` when a clean state is
+preferred.
+
+The interactive gallery window is resizable. Its Ratatui backend keeps crisp
+10×18 cells and changes its column/row count to fill the available window area;
+the current example redraws into the new grid. The headless exporter remains
+fixed at 100×62 so visual-regression output stays deterministic.
+
+The contextual `F1` panel is the authoritative control reference. Interactive
+ports use these upstream-equivalent controls:
+
+| Example | Controls |
+|---|---|
+| `async-github` | `j/k` or `Up/Down` scroll pull requests |
+| `calendar-explorer` | arrows or `h/j/k/l` move by day/week; `n/p` or `Tab/Shift+Tab` move by month; `s` changes style |
+| `canvas` | arrows or `h/j/k/l` move; `Enter` changes marker; drag draws/moves |
+| `constraint-explorer` | arrows select/edit; `1`–`6` change type; `a/x` add/delete; `+/-` spacing |
+| `constraints` | arrows or `h/j/k/l` select the constraint tab/item; `Home/End` jump |
+| `custom-widget` | `Left/Right` or `h/l` select; `Space`, `Enter`, or left click toggles |
+| `demo` | `h/l` changes tabs; `j/k` changes selection; `t` toggles the chart |
+| `demo2` | `h/l` or `Tab` changes tabs; `j/k` controls the active tab; `d/Delete` starts destroy mode |
+| `flex` | arrows or `h/j/k/l` select mode/row; `+/-` spacing; `Home/End` jump |
+| `gauge` | `Space/Enter` restarts the animation |
+| `input-form` | `Tab/Shift+Tab` changes fields; typing/Backspace edits; arrows change age; `Enter` submits; `Esc` cancels |
+| `mouse-drawing` | left-drag draws; `Space` changes color; `c` clears |
+| `panic` | `p/e/h` safely render the panic/error/disabled-hook states without crashing Bevy |
+| `popup` | `p` toggles the popup |
+| `scrollbar` | arrows or `h/j/k/l` scroll; mouse wheel scrolls vertically |
+| `table` | `j/k` changes row; `h/l` changes column; `Shift+Left/Right` changes highlight color |
+| `todo-list` | `j/k`, `Home/End` select; `h` clears; `l/Right/Enter` toggles completion |
+| `user-input` | normal mode: `e` edits and `q` quits; editing: Unicode text, arrows, Backspace/Delete, `Enter`, `Esc` |
+| `volatility-surface` | arrows or `h/j/k/l` rotate; `z/x` zoom; `p` palette; `Space` pause; `Ctrl+R` reset |
+
+Time-driven examples animate automatically. The 11 state-pattern examples
+increment their counters on gallery ticks, mirroring the upstream examples'
+render-mutation loops. Examples without mutable upstream behavior remain visual
+demos; `q` and the gallery-wide `F10` close the window. This replaces the
+terminal examples' various single-key exit loops without stealing navigation.
 
 ## Application inventory
 

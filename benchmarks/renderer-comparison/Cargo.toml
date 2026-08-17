@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "sdk",
     "adapters/empty-bevy",
-    "adapters/bevy-grid",
+    "adapters/bevy-terminal-ratatui",
     "adapters/soft-ratatui",
     "adapters/egui-ratatui",
     "adapters/parley-ratatui",

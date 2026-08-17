@@ -6,12 +6,15 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, Paragraph},
 };
 
-use super::support::{ACCENT, centered, example_area, help};
+use super::{
+    ExampleState,
+    support::{ACCENT, centered, example_area, help},
+};
 
 macro_rules! state_example {
     ($function:ident, $title:literal, $pattern:literal, $count:literal) => {
-        pub fn $function(frame: &mut Frame<'_>) {
-            render_pattern(frame, $title, $pattern, $count, None);
+        pub fn $function(frame: &mut Frame<'_>, state: &ExampleState) {
+            render_pattern(frame, $title, $pattern, state.value as u16, None);
         }
     };
 }
@@ -71,23 +74,23 @@ state_example!(
     12
 );
 
-pub fn nested_mutable_widget(frame: &mut Frame<'_>) {
+pub fn nested_mutable_widget(frame: &mut Frame<'_>, state: &ExampleState) {
     render_pattern(
         frame,
         "state/nested-mutable-widget",
         "The parent Widget delegates to child widgets implemented for mutable references.",
-        7,
-        Some(12),
+        state.value as u16,
+        Some(state.secondary as u16),
     );
 }
 
-pub fn nested_stateful_widget(frame: &mut Frame<'_>) {
+pub fn nested_stateful_widget(frame: &mut Frame<'_>, state: &ExampleState) {
     render_pattern(
         frame,
         "state/nested-stateful-widget",
         "The parent StatefulWidget composes independently owned child states.",
-        10,
-        Some(4),
+        state.value as u16,
+        Some(state.secondary as u16),
     );
 }
 

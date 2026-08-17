@@ -3,17 +3,35 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols::Marker,
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{
         Axis, BarChart, Block, BorderType, Borders, Cell, Chart, Dataset, Gauge, GraphType, List,
-        ListItem, Paragraph, Row, Sparkline, Table, Tabs, Wrap,
+        ListItem, ListState, Paragraph, Row, Sparkline, Table, TableState, Tabs, Wrap,
         canvas::{Canvas, Circle, Line as CanvasLine, Points},
     },
 };
 
-use super::super::support::{ACCENT, GREEN, ORANGE, PURPLE, centered, example_area, help, section};
+use super::super::{
+    ExampleState,
+    support::{ACCENT, GREEN, ORANGE, PURPLE, centered, example_area, help, section},
+};
 
-pub fn advanced_widget_impl(frame: &mut Frame<'_>) {
+const MONTH_NAMES: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+pub fn advanced_widget_impl(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "advanced-widget-impl");
     let [heading, body, footer] = Layout::vertical([
         Constraint::Length(5),
@@ -42,8 +60,11 @@ pub fn advanced_widget_impl(frame: &mut Frame<'_>) {
                     .fg(Color::LightGreen)
                     .bg(Color::Rgb(25, 35, 45)),
             )
-            .percent(72)
-            .label("7.2 / 10.0 seconds"),
+            .percent(((state.tick + 72) % 101) as u16)
+            .label(format!(
+                "{:.1} / 10.0 seconds",
+                ((state.tick + 72) % 101) as f64 / 10.0
+            )),
         timer,
     );
     let boxed_block = section("Box<dyn WidgetRef>");
@@ -76,7 +97,7 @@ pub fn advanced_widget_impl(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn async_github(frame: &mut Frame<'_>) {
+pub fn async_github(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "async-github");
     let [status, table_area, footer] = Layout::vertical([
         Constraint::Length(3),
@@ -134,7 +155,8 @@ pub fn async_github(frame: &mut Frame<'_>) {
             Cell::from(state).style(Style::new().fg(color)),
         ])
     });
-    frame.render_widget(
+    let mut table_state = TableState::default().with_selected(state.selected.unwrap_or(0));
+    frame.render_stateful_widget(
         Table::new(
             rows,
             [
@@ -150,8 +172,11 @@ pub fn async_github(frame: &mut Frame<'_>) {
                 .bottom_margin(1),
         )
         .block(section("Deterministic API fixture"))
-        .column_spacing(2),
+        .column_spacing(2)
+        .row_highlight_style(Style::new().bg(Color::Rgb(45, 55, 80)))
+        .highlight_symbol("▶ "),
         table_area,
+        &mut table_state,
     );
     help(
         frame,
@@ -160,7 +185,7 @@ pub fn async_github(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn calendar_explorer(frame: &mut Frame<'_>) {
+pub fn calendar_explorer(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "calendar-explorer");
     let [header, calendars, legend] = Layout::vertical([
         Constraint::Length(4),
@@ -168,14 +193,29 @@ pub fn calendar_explorer(frame: &mut Frame<'_>) {
         Constraint::Length(3),
     ])
     .areas(area);
+    let month_lengths = [31_i32, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut day_of_year = state.value.rem_euclid(365);
+    let mut selected_month = 0_usize;
+    while day_of_year >= month_lengths[selected_month] {
+        day_of_year -= month_lengths[selected_month];
+        selected_month += 1;
+    }
+    let selected_day = usize::try_from(day_of_year + 1).unwrap_or(1);
+    let selection_color = [ACCENT, Color::LightGreen, Color::LightMagenta][state.palette % 3];
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
                 "2026",
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  ←  August 16  →  "),
-            Span::styled("selected", Style::new().fg(Color::Black).bg(ACCENT)),
+            Span::raw(format!(
+                "  ←  {} {selected_day}  →  ",
+                MONTH_NAMES[selected_month]
+            )),
+            Span::styled(
+                "selected",
+                Style::new().fg(Color::Black).bg(selection_color),
+            ),
         ]))
         .alignment(Alignment::Center),
         header,
@@ -203,12 +243,17 @@ pub fn calendar_explorer(frame: &mut Frame<'_>) {
         ("November 2026", 0, 30, None),
         ("December 2026", 2, 31, None),
     ];
-    for (area, (title, offset, days, selected)) in month_areas.into_iter().zip(months) {
-        render_month(frame, area, title, offset, days, selected);
+    for (index, (area, (title, offset, days, _))) in month_areas.into_iter().zip(months).enumerate()
+    {
+        let selected = (index == selected_month).then_some(selected_day);
+        render_month(frame, area, title, offset, days, selected, selection_color);
     }
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" 16 ", Style::new().fg(Color::Black).bg(ACCENT)),
+            Span::styled(
+                format!(" {selected_day:>2} "),
+                Style::new().fg(Color::Black).bg(selection_color),
+            ),
             Span::raw(" today/selection    "),
             Span::styled(" 23 ", Style::new().fg(Color::Black).bg(Color::LightYellow)),
             Span::raw(" event    ←/→ change day"),
@@ -225,6 +270,7 @@ fn render_month(
     weekday_offset: usize,
     days: usize,
     selected: Option<usize>,
+    selection_color: Color,
 ) {
     let mut lines = vec![Line::styled(
         " Su Mo Tu We Th Fr Sa",
@@ -239,7 +285,7 @@ fn render_month(
             let style = if day == selected {
                 Style::new()
                     .fg(Color::Black)
-                    .bg(ACCENT)
+                    .bg(selection_color)
                     .add_modifier(Modifier::BOLD)
             } else if day == Some(23) {
                 Style::new().fg(Color::Black).bg(Color::LightYellow)
@@ -258,20 +304,30 @@ fn render_month(
     );
 }
 
-pub fn canvas(frame: &mut Frame<'_>) {
+pub fn canvas(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "canvas");
     let [canvas_area, footer] =
         Layout::vertical([Constraint::Min(12), Constraint::Length(2)]).areas(area);
     let orbit: Vec<(f64, f64)> = (0..72)
         .map(|step| {
             let angle = f64::from(step) * std::f64::consts::TAU / 72.0;
-            (angle.cos() * 48.0, angle.sin() * 18.0)
+            (
+                angle.cos() * 48.0 + f64::from(state.offset_x),
+                angle.sin() * 18.0 - f64::from(state.offset_y),
+            )
         })
         .collect();
     frame.render_widget(
         Canvas::default()
             .block(section("Canvas primitives · Braille marker"))
-            .marker(Marker::Braille)
+            .marker(
+                [
+                    Marker::Braille,
+                    Marker::Dot,
+                    Marker::Block,
+                    Marker::HalfBlock,
+                ][state.marker % 4],
+            )
             .x_bounds([-100.0, 100.0])
             .y_bounds([-45.0, 45.0])
             .paint(|ctx| {
@@ -280,19 +336,23 @@ pub fn canvas(frame: &mut Frame<'_>) {
                     color: Color::LightCyan,
                 });
                 ctx.draw(&Circle {
-                    x: 0.0,
-                    y: 0.0,
+                    x: f64::from(state.offset_x),
+                    y: -f64::from(state.offset_y),
                     radius: 13.0,
                     color: Color::Yellow,
                 });
                 ctx.draw(&CanvasLine {
-                    x1: -90.0,
-                    y1: -32.0,
-                    x2: 88.0,
-                    y2: 30.0,
+                    x1: -90.0 + f64::from(state.offset_x),
+                    y1: -32.0 - f64::from(state.offset_y),
+                    x2: 88.0 + f64::from(state.offset_x),
+                    y2: 30.0 - f64::from(state.offset_y),
                     color: Color::LightGreen,
                 });
-                ctx.print(-12.0, 1.0, Line::styled("Ratatui", Style::new().fg(PURPLE)));
+                ctx.print(
+                    -12.0 + f64::from(state.offset_x),
+                    1.0 - f64::from(state.offset_y),
+                    Line::styled("Ratatui", Style::new().fg(PURPLE)),
+                );
             }),
         canvas_area,
     );
@@ -303,7 +363,7 @@ pub fn canvas(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn chart(frame: &mut Frame<'_>) {
+pub fn chart(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "chart");
     let quadrants = Layout::default()
         .direction(Direction::Vertical)
@@ -316,7 +376,7 @@ pub fn chart(frame: &mut Frame<'_>) {
     let wave: Vec<(f64, f64)> = (0..80)
         .map(|x| {
             let x = f64::from(x) / 8.0;
-            (x, x.sin() * 3.0)
+            (x, (x + state.tick as f64 * 0.08).sin() * 3.0)
         })
         .collect();
     render_chart_widget(
@@ -414,7 +474,7 @@ fn render_bar_chart(frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
-pub fn color_explorer(frame: &mut Frame<'_>) {
+pub fn color_explorer(frame: &mut Frame<'_>, _state: &ExampleState) {
     let area = example_area(frame, "color-explorer");
     let [named, indexed, grayscale] = Layout::vertical([
         Constraint::Length(11),
@@ -495,7 +555,7 @@ pub fn color_explorer(frame: &mut Frame<'_>) {
     }
 }
 
-pub fn colors_rgb(frame: &mut Frame<'_>) {
+pub fn colors_rgb(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "colors-rgb");
     let [header, gradient, swatches, footer] = Layout::vertical([
         Constraint::Length(4),
@@ -512,8 +572,10 @@ pub fn colors_rgb(frame: &mut Frame<'_>) {
     );
     for y in 0..gradient.height {
         for x in 0..gradient.width {
-            let red = (u32::from(x) * 255 / u32::from(gradient.width.max(1))) as u8;
-            let green = (u32::from(y) * 255 / u32::from(gradient.height.max(1))) as u8;
+            let phase = (state.tick % 256) as u32;
+            let red = ((u32::from(x) * 255 / u32::from(gradient.width.max(1)) + phase) % 256) as u8;
+            let green =
+                ((u32::from(y) * 255 / u32::from(gradient.height.max(1)) + phase / 2) % 256) as u8;
             let blue = 255_u8.saturating_sub(((u16::from(red) + u16::from(green)) / 2) as u8);
             frame.render_widget(
                 Block::new().style(Style::new().bg(Color::Rgb(red, green, blue))),
@@ -546,65 +608,152 @@ pub fn colors_rgb(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn constraint_explorer(frame: &mut Frame<'_>) {
+pub fn constraint_explorer(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "constraint-explorer");
     let [controls, demos] =
         Layout::horizontal([Constraint::Length(28), Constraint::Min(50)]).areas(area);
+    let selected = state.selected.unwrap_or(0);
+    let kind_names = ["Min", "Max", "Length", "Percentage", "Ratio", "Fill"];
+    let mut control_lines = vec![
+        Line::styled(
+            "User constraints",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+    ];
+    for (index, (value, kind)) in state
+        .constraint_values
+        .iter()
+        .zip(&state.constraint_kinds)
+        .enumerate()
+    {
+        let prefix = if index == selected { "▶" } else { " " };
+        control_lines.push(Line::styled(
+            format!("{prefix} {}({value})", kind_names[*kind % kind_names.len()]),
+            if index == selected {
+                Style::new().fg(Color::Black).bg(ACCENT)
+            } else {
+                Style::default()
+            },
+        ));
+    }
+    control_lines.extend([
+        Line::raw(""),
+        Line::styled(
+            format!("Spacing: {}", state.spacing),
+            Style::new().fg(ACCENT),
+        ),
+        Line::raw("←/→ select  ↑/↓ edit"),
+        Line::raw("1–6 type  a/x add/delete"),
+        Line::raw("+/- spacing"),
+    ]);
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(
-                "User constraints",
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            ),
-            Line::raw(""),
-            Line::raw("1  Length(12)"),
-            Line::raw("2  Percentage(25)"),
-            Line::raw("3  Min(8)"),
-            Line::raw("4  Fill(1)"),
-            Line::raw(""),
-            Line::styled("Selected flex", Style::new().fg(ACCENT)),
-            Line::raw("SpaceBetween"),
-            Line::raw(""),
-            Line::raw("↑/↓ choose constraint"),
-            Line::raw("←/→ resize"),
-            Line::raw("f cycle flex mode"),
-        ])
-        .block(section("Controls")),
+        Paragraph::new(control_lines).block(section("Controls")),
         controls,
     );
+    let constraints = state
+        .constraint_values
+        .iter()
+        .zip(&state.constraint_kinds)
+        .map(|(&value, &kind)| constraint_from(kind, value))
+        .collect::<Vec<_>>();
     let rows = Layout::vertical([Constraint::Length(8); 5]).split(demos);
-    render_constraint_row(frame, rows[0], "Start", Flex::Start);
-    render_constraint_row(frame, rows[1], "Center", Flex::Center);
-    render_constraint_row(frame, rows[2], "End", Flex::End);
-    render_constraint_row(frame, rows[3], "SpaceBetween", Flex::SpaceBetween);
-    render_constraint_row(frame, rows[4], "SpaceAround", Flex::SpaceAround);
+    render_constraint_row(
+        frame,
+        rows[0],
+        "Start",
+        Flex::Start,
+        &constraints,
+        state.spacing,
+        selected,
+    );
+    render_constraint_row(
+        frame,
+        rows[1],
+        "Center",
+        Flex::Center,
+        &constraints,
+        state.spacing,
+        selected,
+    );
+    render_constraint_row(
+        frame,
+        rows[2],
+        "End",
+        Flex::End,
+        &constraints,
+        state.spacing,
+        selected,
+    );
+    render_constraint_row(
+        frame,
+        rows[3],
+        "SpaceBetween",
+        Flex::SpaceBetween,
+        &constraints,
+        state.spacing,
+        selected,
+    );
+    render_constraint_row(
+        frame,
+        rows[4],
+        "SpaceAround",
+        Flex::SpaceAround,
+        &constraints,
+        state.spacing,
+        selected,
+    );
 }
 
-fn render_constraint_row(frame: &mut Frame<'_>, area: Rect, label: &str, flex: Flex) {
+fn constraint_from(kind: usize, value: i32) -> Constraint {
+    let value = value.max(0) as u16;
+    match kind % 6 {
+        0 => Constraint::Min(value),
+        1 => Constraint::Max(value),
+        2 => Constraint::Length(value),
+        3 => Constraint::Percentage(value.min(100)),
+        4 => Constraint::Ratio(u32::from(value.max(1)), 100),
+        _ => Constraint::Fill(value.max(1)),
+    }
+}
+
+fn render_constraint_row(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    flex: Flex,
+    constraints: &[Constraint],
+    spacing: u16,
+    selected: usize,
+) {
     let block = section(label);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let parts = Layout::horizontal([
-        Constraint::Length(12),
-        Constraint::Percentage(25),
-        Constraint::Min(8),
-        Constraint::Fill(1),
-    ])
-    .flex(flex)
-    .spacing(1)
-    .split(inner);
+    let parts = Layout::horizontal(constraints.iter().copied())
+        .flex(flex)
+        .spacing(spacing)
+        .split(inner);
     let colors = [Color::Red, Color::Yellow, Color::Green, Color::Blue];
     for (index, part) in parts.iter().enumerate() {
         frame.render_widget(
             Paragraph::new(format!("C{}", index + 1))
                 .alignment(Alignment::Center)
-                .style(Style::new().fg(Color::Black).bg(colors[index])),
+                .style(
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(colors[index % colors.len()])
+                        .add_modifier(if index == selected {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
             *part,
         );
     }
 }
 
-pub fn constraints(frame: &mut Frame<'_>) {
+pub fn constraints(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "constraints");
     let [tabs, body, footer] = Layout::vertical([
         Constraint::Length(3),
@@ -614,7 +763,7 @@ pub fn constraints(frame: &mut Frame<'_>) {
     .areas(area);
     frame.render_widget(
         Tabs::new(["Length", "Percentage", "Ratio", "Fill", "Min", "Max"])
-            .select(0)
+            .select(state.tab)
             .highlight_style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
             .divider("│")
             .block(Block::new().borders(Borders::BOTTOM)),
@@ -667,17 +816,31 @@ pub fn constraints(frame: &mut Frame<'_>) {
             ],
         ),
     ];
-    for (row, (label, constraints)) in rows.iter().zip(examples) {
+    for (row_index, (row, (label, constraints))) in rows.iter().zip(examples).enumerate() {
         let [name, demo] =
             Layout::horizontal([Constraint::Length(14), Constraint::Min(10)]).areas(*row);
-        frame.render_widget(Paragraph::new(label).alignment(Alignment::Right), name);
+        let label_style = if row_index == state.tab {
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(label)
+                .alignment(Alignment::Right)
+                .style(label_style),
+            name,
+        );
         let parts = Layout::horizontal(constraints).spacing(1).split(demo);
         for (index, part) in parts.iter().enumerate() {
             let color = [Color::Red, Color::Green, Color::Blue][index];
             frame.render_widget(
-                Paragraph::new(format!("{index}"))
-                    .alignment(Alignment::Center)
-                    .style(Style::new().fg(Color::Black).bg(color)),
+                Paragraph::new(if state.selected == Some(index) {
+                    format!("▶{index}")
+                } else {
+                    format!(" {index}")
+                })
+                .alignment(Alignment::Center)
+                .style(Style::new().fg(Color::Black).bg(color)),
                 *part,
             );
         }
@@ -689,7 +852,7 @@ pub fn constraints(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn custom_widget(frame: &mut Frame<'_>) {
+pub fn custom_widget(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "custom-widget");
     let card = centered(area, 76, 20);
     let [title, buttons, description] = Layout::vertical([
@@ -707,27 +870,27 @@ pub fn custom_widget(frame: &mut Frame<'_>) {
     let button_areas = Layout::horizontal([Constraint::Ratio(1, 3); 3])
         .spacing(3)
         .split(buttons);
-    let states = [
-        (
-            "Normal",
-            Style::new().fg(Color::White).bg(Color::DarkGray),
-            BorderType::Plain,
-        ),
-        (
-            "Selected",
-            Style::new().fg(Color::Black).bg(Color::Yellow),
-            BorderType::Double,
-        ),
-        (
-            "Pressed",
+    let labels = ["Red", "Green", "Blue"];
+    for (index, (area, label)) in button_areas.iter().zip(labels).enumerate() {
+        let is_selected = state.selected == Some(index);
+        let is_active = is_selected && state.toggled;
+        let style = if is_active {
             Style::new()
                 .fg(Color::White)
                 .bg(Color::Blue)
-                .add_modifier(Modifier::BOLD),
-            BorderType::Thick,
-        ),
-    ];
-    for (area, (label, style, border_type)) in button_areas.iter().zip(states) {
+                .add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::new().fg(Color::Black).bg(Color::Yellow)
+        } else {
+            Style::new().fg(Color::White).bg(Color::DarkGray)
+        };
+        let border_type = if is_active {
+            BorderType::Thick
+        } else if is_selected {
+            BorderType::Double
+        } else {
+            BorderType::Plain
+        };
         frame.render_widget(
             Paragraph::new(label)
                 .alignment(Alignment::Center)
@@ -738,7 +901,7 @@ pub fn custom_widget(frame: &mut Frame<'_>) {
     }
     frame.render_widget(
         Paragraph::new(
-            "The three interaction states are placed side-by-side for visual regression testing.",
+            "Use the keyboard or click a button. The selected button can be toggled active.",
         )
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true }),
@@ -746,7 +909,7 @@ pub fn custom_widget(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn demo(frame: &mut Frame<'_>) {
+pub fn demo(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "demo");
     let [tabs, main, footer] = Layout::vertical([
         Constraint::Length(3),
@@ -756,7 +919,7 @@ pub fn demo(frame: &mut Frame<'_>) {
     .areas(area);
     frame.render_widget(
         Tabs::new(["Graphs", "Lists & Tables", "Text"])
-            .select(0)
+            .select(state.tab)
             .highlight_style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
             .block(Block::new().borders(Borders::BOTTOM)),
         tabs,
@@ -772,7 +935,7 @@ pub fn demo(frame: &mut Frame<'_>) {
     frame.render_widget(
         Gauge::default()
             .block(section("Gauge 1"))
-            .percent(66)
+            .percent(((state.tick + 66) % 101) as u16)
             .gauge_style(
                 Style::new()
                     .fg(Color::LightMagenta)
@@ -783,7 +946,7 @@ pub fn demo(frame: &mut Frame<'_>) {
     frame.render_widget(
         Gauge::default()
             .block(section("Gauge 2"))
-            .ratio(0.42)
+            .ratio(((state.tick + 42) % 101) as f64 / 100.0)
             .gauge_style(
                 Style::new()
                     .fg(Color::LightGreen)
@@ -806,17 +969,26 @@ pub fn demo(frame: &mut Frame<'_>) {
     let sine: Vec<(f64, f64)> = (0..80)
         .map(|x| {
             let x = f64::from(x) / 8.0;
-            (x, x.sin() * 5.0)
+            (x, (x + state.tick as f64 * 0.08).sin() * 5.0)
         })
         .collect();
-    render_chart_widget(
-        frame,
-        right_rows[0],
-        "Chart",
-        &sine,
-        Marker::Braille,
-        GraphType::Line,
-    );
+    if state.toggled {
+        frame.render_widget(
+            Paragraph::new("Chart hidden — press t to restore")
+                .alignment(Alignment::Center)
+                .block(section("Chart")),
+            right_rows[0],
+        );
+    } else {
+        render_chart_widget(
+            frame,
+            right_rows[0],
+            "Chart",
+            &sine,
+            Marker::Braille,
+            GraphType::Line,
+        );
+    }
     let items = [
         "Event: connected",
         "Event: loaded widgets",
@@ -824,105 +996,19 @@ pub fn demo(frame: &mut Frame<'_>) {
         "Event: awaiting input",
     ]
     .map(ListItem::new);
-    frame.render_widget(
+    let mut list_state = ListState::default().with_selected(state.selected);
+    frame.render_stateful_widget(
         List::new(items)
             .block(section("Events"))
-            .highlight_style(Style::new().bg(Color::Blue)),
+            .highlight_style(Style::new().bg(Color::Blue))
+            .highlight_symbol("▶ "),
         right_rows[1],
+        &mut list_state,
     );
-    help(
-        frame,
-        footer,
-        "Classic Ratatui demo · frozen on the graphs tab",
-    );
+    help(frame, footer, "h/l tabs  •  j/k select  •  t toggle chart");
 }
 
-pub fn demo2(frame: &mut Frame<'_>) {
-    let area = example_area(frame, "demo2");
-    let [title, nav, content, footer] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Length(3),
-        Constraint::Min(30),
-        Constraint::Length(2),
-    ])
-    .areas(area);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "RATATUI",
-                Style::new()
-                    .fg(Color::Black)
-                    .bg(Color::LightYellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  Cook up terminal user interfaces in Rust"),
-        ]))
-        .alignment(Alignment::Center),
-        title,
-    );
-    frame.render_widget(
-        Tabs::new(["About", "Recipe", "Email", "Traceroute", "Weather"])
-            .select(2)
-            .highlight_style(
-                Style::new()
-                    .fg(Color::LightCyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .divider(" • "),
-        nav,
-    );
-    let [inbox, message] =
-        Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).areas(content);
-    let rows = [
-        ("●", "Ratatui Newsletter", "Welcome to 0.30"),
-        (" ", "GitHub", "Review requested"),
-        ("●", "crates.io", "New version published"),
-        (" ", "Bevy", "UI renderer notes"),
-        (" ", "Rust Weekly", "Issue #610"),
-    ]
-    .map(|(unread, sender, subject)| Row::new([unread, sender, subject]));
-    frame.render_widget(
-        Table::new(
-            rows,
-            [
-                Constraint::Length(2),
-                Constraint::Length(18),
-                Constraint::Min(12),
-            ],
-        )
-        .header(Row::new(["", "From", "Subject"]).style(Style::new().fg(Color::Yellow)))
-        .row_highlight_style(Style::new().bg(Color::Rgb(45, 55, 80)))
-        .block(section("Inbox")),
-        inbox,
-    );
-    let email = Text::from(vec![
-        Line::styled(
-            "Welcome to Ratatui 0.30",
-            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Line::raw(""),
-        Line::raw("Hi terminal chef,"),
-        Line::raw(""),
-        Line::raw("This release separates core, widgets, and backend crates while keeping"),
-        Line::raw("the familiar rendering model. This deterministic Bevy port exercises"),
-        Line::raw("the same layout, table, text, and styling paths."),
-        Line::raw(""),
-        Line::styled("Happy cooking!", Style::new().fg(Color::LightGreen)),
-    ]);
-    frame.render_widget(
-        Paragraph::new(email)
-            .block(section("Message"))
-            .wrap(Wrap { trim: false }),
-        message,
-    );
-    help(
-        frame,
-        footer,
-        "q quit  •  h/l tabs  •  j/k select  •  x destroy the world",
-    );
-}
-
-pub fn flex(frame: &mut Frame<'_>) {
+pub fn flex(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "flex");
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(3),
@@ -940,7 +1026,7 @@ pub fn flex(frame: &mut Frame<'_>) {
             "SpaceAround",
             "SpaceEvenly",
         ])
-        .select(4)
+        .select(state.tab)
         .highlight_style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         header,
     );
@@ -954,8 +1040,15 @@ pub fn flex(frame: &mut Frame<'_>) {
         ("SpaceAround", Flex::SpaceAround),
         ("SpaceEvenly", Flex::SpaceEvenly),
     ];
-    for (area, (label, mode)) in rows.iter().zip(modes) {
-        render_flex_row(frame, *area, label, mode);
+    for (index, (area, (label, mode))) in rows.iter().zip(modes).enumerate() {
+        render_flex_row(
+            frame,
+            *area,
+            label,
+            mode,
+            state.spacing,
+            state.selected == Some(index),
+        );
     }
     help(
         frame,
@@ -964,13 +1057,33 @@ pub fn flex(frame: &mut Frame<'_>) {
     );
 }
 
-fn render_flex_row(frame: &mut Frame<'_>, area: Rect, label: &str, flex: Flex) {
+fn render_flex_row(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    flex: Flex,
+    spacing: u16,
+    selected: bool,
+) {
     let [name, demo] =
         Layout::horizontal([Constraint::Length(16), Constraint::Min(20)]).areas(area);
-    frame.render_widget(Paragraph::new(label).alignment(Alignment::Right), name);
+    frame.render_widget(
+        Paragraph::new(if selected {
+            format!("▶ {label}")
+        } else {
+            label.to_owned()
+        })
+        .alignment(Alignment::Right)
+        .style(if selected {
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        }),
+        name,
+    );
     let parts = Layout::horizontal([Constraint::Length(10); 3])
         .flex(flex)
-        .spacing(1)
+        .spacing(spacing)
         .split(demo);
     for (index, part) in parts.iter().enumerate() {
         frame.render_widget(
@@ -986,7 +1099,7 @@ fn render_flex_row(frame: &mut Frame<'_>, area: Rect, label: &str, flex: Flex) {
     }
 }
 
-pub fn gauge(frame: &mut Frame<'_>) {
+pub fn gauge(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "gauge");
     let card = centered(area, 80, 34);
     let rows = Layout::vertical([
@@ -997,17 +1110,18 @@ pub fn gauge(frame: &mut Frame<'_>) {
         Constraint::Min(2),
     ])
     .split(card);
+    let progress = (state.tick % 101) as u16;
     frame.render_widget(
         Gauge::default()
             .block(section("Default gauge"))
-            .percent(25)
-            .label("25%"),
+            .percent(progress)
+            .label(format!("{progress}%")),
         rows[0],
     );
     frame.render_widget(
         Gauge::default()
             .block(section("Unicode gauge"))
-            .percent(52)
+            .percent((progress + 27) % 101)
             .use_unicode(true)
             .gauge_style(Style::new().fg(GREEN).bg(Color::Rgb(25, 38, 35))),
         rows[1],
@@ -1015,28 +1129,28 @@ pub fn gauge(frame: &mut Frame<'_>) {
     frame.render_widget(
         Gauge::default()
             .block(section("Styled gauge"))
-            .ratio(0.78)
+            .ratio(f64::from((progress + 53) % 101) / 100.0)
             .gauge_style(
                 Style::new()
                     .fg(PURPLE)
                     .bg(Color::Rgb(42, 28, 52))
                     .add_modifier(Modifier::ITALIC),
             )
-            .label("throughput 78%"),
+            .label(format!("throughput {}%", (progress + 53) % 101)),
         rows[2],
     );
     frame.render_widget(
         ratatui::widgets::LineGauge::default()
             .block(section("Line gauge"))
-            .ratio(0.64)
+            .ratio(f64::from((progress + 39) % 101) / 100.0)
             .filled_style(Style::new().fg(ORANGE).add_modifier(Modifier::BOLD))
             .unfilled_style(Style::new().fg(Color::DarkGray)),
         rows[3],
     );
-    help(frame, rows[4], "Animation frozen for deterministic export");
+    help(frame, rows[4], "Space/Enter restarts the animation");
 }
 
-pub fn hello_world(frame: &mut Frame<'_>) {
+pub fn hello_world(frame: &mut Frame<'_>, _state: &ExampleState) {
     let area = example_area(frame, "hello-world");
     let card = centered(area, 54, 9);
     frame.render_widget(
@@ -1058,7 +1172,7 @@ pub fn hello_world(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn hyperlink(frame: &mut Frame<'_>) {
+pub fn hyperlink(frame: &mut Frame<'_>, _state: &ExampleState) {
     let area = example_area(frame, "hyperlink");
     let card = centered(area, 72, 13);
     frame.render_widget(

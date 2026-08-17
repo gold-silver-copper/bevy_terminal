@@ -3,7 +3,7 @@
 mod common;
 
 use bevy::{prelude::*, window::WindowResolution};
-use bevy_grid::{BevyGridPlugin, TerminalRenderConfig};
+use bevy_terminal_ratatui::{BevyTerminalPlugin, TerminalRenderConfig};
 
 fn main() {
     let surface = common::demo_surface();
@@ -14,19 +14,18 @@ fn main() {
         ..default()
     };
 
-    App::new()
-        .add_plugins((
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "bevy_grid Ratatui backend".into(),
-                    resolution: WindowResolution::new(832, 480),
-                    resizable: false,
-                    ..default()
-                }),
-                ..default()
-            }),
-            BevyGridPlugin::new(surface).with_config(config),
-        ))
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "bevy_terminal_ratatui backend".into(),
+            resolution: WindowResolution::new(832, 480),
+            resizable: false,
+            ..default()
+        }),
+        ..default()
+    }));
+    let fonts = common::fonts::load(&mut app);
+    app.add_plugins(BevyTerminalPlugin::new(surface).with_config(fonts.configure(config)))
         .add_systems(Startup, |mut commands: Commands| {
             commands.spawn(Camera2d);
         })

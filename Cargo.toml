@@ -1,20 +1,25 @@
+[workspace]
+members = [".", "crates/bevy_terminal"]
+resolver = "3"
+
 [package]
-name = "bevy_grid"
+name = "bevy_terminal_ratatui"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
-description = "A Ratatui backend rendered with Bevy UI and Bevy text"
+description = "A Ratatui backend for the bevy_terminal Bevy terminal renderer"
 license = "MIT"
-documentation = "https://docs.rs/bevy_grid"
+documentation = "https://docs.rs/bevy_terminal_ratatui"
 keywords = ["bevy", "ratatui", "terminal", "tui"]
 categories = ["game-development", "gui", "rendering"]
-exclude = ["benchmarks/renderer-comparison/**"]
+exclude = ["benchmarks/renderer-comparison/**", "crates/**", "*_PROMPT.md"]
 
 [dependencies]
-bevy = { version = "0.19.1", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
+bevy_terminal = { version = "0.1.0", path = "crates/bevy_terminal" }
 ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets", "scrolling-regions", "std", "underline-color"] }
 
 [dev-dependencies]
+bevy = { version = "0.19.1", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
 bevy_image_export = { git = "https://github.com/paulkre/bevy_image_export", tag = "v0.17.0" }
 
 [lints.rust]

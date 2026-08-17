@@ -3,25 +3,21 @@ use bevy::{
     prelude::*,
     text::{FontSource, FontStyle, FontWeight, LineHeight},
 };
-use ratatui::{
-    buffer::{Cell, CellDiffOption, CellWidth},
-    style::Modifier,
-};
 
 use crate::{
     TerminalSnapshot, TerminalSurface,
     color::{TerminalTheme, dim},
+    scene::{StyleFlags, TerminalCell},
 };
 
 mod batch;
 
-pub use batch::BevyGridBatchPlugin as BevyGridPlugin;
 pub use batch::{
-    BevyGridBatchPlugin, TerminalBatchOutput, TerminalBatchPresentation, TerminalBatchRoot,
-    TerminalBatchStats,
+    BevyTerminalPlugin, TerminalBatch, TerminalBatchOutput, TerminalBatchPresentation,
+    TerminalBatchRoot, TerminalBatchStats,
 };
 
-/// Visual shape used for Ratatui's cursor.
+/// Visual shape used for the terminal cursor.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CursorStyle {
     /// A translucent rectangle covering the entire cell.
@@ -66,8 +62,21 @@ pub struct TerminalRenderConfig {
     pub font_size: f32,
     /// Physical raster scale used by the compact batch renderer.
     pub render_scale: TerminalRenderScale,
-    /// Bevy font source. The generic monospace family enables system fallback.
+    /// Bevy font source used for regular text. The generic monospace family enables system
+    /// fallback.
     pub font: FontSource,
+    /// Optional font source used for bold text.
+    ///
+    /// When absent, `font` is used with a bold weight request.
+    pub bold_font: Option<FontSource>,
+    /// Optional font source used for italic text.
+    ///
+    /// When absent, `font` is used with an italic style request.
+    pub italic_font: Option<FontSource>,
+    /// Optional font source used for text that is both bold and italic.
+    ///
+    /// When absent, the bold or italic override is reused before falling back to `font`.
+    pub bold_italic_font: Option<FontSource>,
     /// Position of the terminal's top-left corner in logical pixels.
     pub origin: Vec2,
     /// Terminal color theme.
@@ -89,6 +98,9 @@ impl Default for TerminalRenderConfig {
             font_size: 18.0,
             render_scale: TerminalRenderScale::Automatic,
             font: FontSource::Monospace,
+            bold_font: None,
+            italic_font: None,
+            bold_italic_font: None,
             origin: Vec2::ZERO,
             theme: TerminalTheme::default(),
             cursor_style: CursorStyle::Block,
@@ -106,7 +118,7 @@ pub struct TerminalRoot;
 /// Public system set for ordering application systems around terminal syncing.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, SystemSet)]
 pub enum TerminalSystems {
-    /// Copies the latest Ratatui surface state into the active renderer representation.
+    /// Copies the latest surface state into the active renderer representation.
     Sync,
     /// Applies cursor and text blink phases.
     Blink,
@@ -141,12 +153,12 @@ pub struct TerminalRenderStats {
 ///
 /// The application must also install Bevy's UI, text, time, and camera plugins
 /// (normally through `DefaultPlugins`) and spawn a suitable camera.
-pub struct RetainedBevyGridPlugin {
+pub struct RetainedBevyTerminalPlugin {
     surface: TerminalSurface,
     config: TerminalRenderConfig,
 }
 
-impl RetainedBevyGridPlugin {
+impl RetainedBevyTerminalPlugin {
     /// Creates a renderer using [`TerminalRenderConfig::default`].
     #[must_use]
     pub fn new(surface: TerminalSurface) -> Self {
@@ -164,7 +176,7 @@ impl RetainedBevyGridPlugin {
     }
 }
 
-impl Plugin for RetainedBevyGridPlugin {
+impl Plugin for RetainedBevyTerminalPlugin {
     fn build(&self, app: &mut App) {
         self.surface
             .set_cell_size(self.config.cell_size.x, self.config.cell_size.y);
@@ -318,7 +330,7 @@ fn sync_terminal(
 
     if rebuild {
         let snapshot = surface.snapshot();
-        stats.snapshot_cells = u32::try_from(snapshot.buffer().content.len()).unwrap_or(u32::MAX);
+        stats.snapshot_cells = u32::try_from(snapshot.cells().len()).unwrap_or(u32::MAX);
         rendered.clear(&mut commands);
         spawn_structure(&mut commands, &snapshot, &config, &mut rendered);
         stats.changed_rows = u32::from(snapshot.size().height);
@@ -436,7 +448,7 @@ fn rebuild_row(
     rendered: &mut RenderedEntities,
 ) {
     let row_index = usize::from(row);
-    let cells = row_cells(snapshot, row);
+    let cells = snapshot.row(row);
     let mut text = Vec::new();
     let mut solids = Vec::new();
     for run in background_runs(cells, &config.theme) {
@@ -644,8 +656,20 @@ fn update_text_primitive(
 }
 
 fn text_font(config: &TerminalRenderConfig, style: &ResolvedStyle) -> TextFont {
+    let font = match (style.bold, style.italic) {
+        (true, true) => config
+            .bold_italic_font
+            .as_ref()
+            .or(config.bold_font.as_ref())
+            .or(config.italic_font.as_ref()),
+        (true, false) => config.bold_font.as_ref(),
+        (false, true) => config.italic_font.as_ref(),
+        (false, false) => None,
+    }
+    .unwrap_or(&config.font)
+    .clone();
     TextFont {
-        font: config.font.clone(),
+        font,
         font_size: config.font_size.into(),
         weight: if style.bold {
             FontWeight::BOLD
@@ -668,7 +692,9 @@ fn text_node(config: &TerminalRenderConfig, value: &TextPrimitive) -> Node {
         top: px(f32::from(value.row) * config.cell_size.y),
         width: px(f32::from(value.width) * config.cell_size.x),
         height: px(config.cell_size.y),
-        overflow: Overflow::visible(),
+        // Terminal glyphs may have font bearings wider/taller than their cell allocation.
+        // Clip fallback and emoji faces so they cannot paint over neighboring cells.
+        overflow: Overflow::clip(),
         ..default()
     }
 }
@@ -1148,10 +1174,18 @@ fn push_decoration(
     });
 }
 
-fn row_cells(snapshot: &TerminalSnapshot, row: u16) -> &[Cell] {
-    let width = usize::from(snapshot.size().width);
-    let start = usize::from(row) * width;
-    &snapshot.buffer().content[start..start + width]
+/// Returns the number of columns rendered for the cell at `column`.
+///
+/// A wide anchor claims its declared span, clipped to the row and to the run of
+/// explicit continuation cells that actually follow it, so a wide glyph can
+/// never paint over a neighbor that has since been overwritten.
+fn cell_span(cells: &[TerminalCell], column: usize) -> usize {
+    let declared = usize::from(cells[column].columns()).min(cells.len() - column);
+    let mut span = 1;
+    while span < declared && cells[column + span].is_continuation() {
+        span += 1;
+    }
+    span
 }
 
 fn update_cursor(
@@ -1288,18 +1322,18 @@ struct ResolvedStyle {
 }
 
 impl ResolvedStyle {
-    fn new(cell: &Cell, theme: &TerminalTheme) -> Self {
-        let mut foreground = theme.foreground(cell.fg);
-        let mut background = theme.background(cell.bg);
-        if cell.modifier.contains(Modifier::REVERSED) {
+    fn new(cell: &TerminalCell, theme: &TerminalTheme) -> Self {
+        let mut foreground = theme.foreground(cell.style.foreground);
+        let mut background = theme.background(cell.style.background);
+        if cell.style.has(StyleFlags::REVERSED) {
             std::mem::swap(&mut foreground, &mut background);
         }
-        let mut underline = theme.resolve(cell.underline_color, foreground);
-        if cell.modifier.contains(Modifier::DIM) {
+        let mut underline = theme.resolve(cell.style.underline, foreground);
+        if cell.style.has(StyleFlags::DIM) {
             foreground = dim(foreground, background);
             underline = dim(underline, background);
         }
-        if cell.modifier.contains(Modifier::HIDDEN) {
+        if cell.style.has(StyleFlags::HIDDEN) {
             foreground = background;
             underline = background;
         }
@@ -1307,13 +1341,13 @@ impl ResolvedStyle {
             foreground,
             background,
             underline,
-            bold: cell.modifier.contains(Modifier::BOLD),
-            italic: cell.modifier.contains(Modifier::ITALIC),
-            underlined: cell.modifier.contains(Modifier::UNDERLINED),
-            crossed_out: cell.modifier.contains(Modifier::CROSSED_OUT),
-            slow_blink: cell.modifier.contains(Modifier::SLOW_BLINK),
-            rapid_blink: cell.modifier.contains(Modifier::RAPID_BLINK),
-            hidden: cell.modifier.contains(Modifier::HIDDEN),
+            bold: cell.style.has(StyleFlags::BOLD),
+            italic: cell.style.has(StyleFlags::ITALIC),
+            underlined: cell.style.has(StyleFlags::UNDERLINED),
+            crossed_out: cell.style.has(StyleFlags::CROSSED_OUT),
+            slow_blink: cell.style.has(StyleFlags::SLOW_BLINK),
+            rapid_blink: cell.style.has(StyleFlags::RAPID_BLINK),
+            hidden: cell.style.has(StyleFlags::HIDDEN),
         }
     }
 
@@ -1336,18 +1370,18 @@ struct TextRun {
     style: ResolvedStyle,
 }
 
-fn text_runs(cells: &[Cell], theme: &TerminalTheme) -> Vec<TextRun> {
+fn text_runs(cells: &[TerminalCell], theme: &TerminalTheme) -> Vec<TextRun> {
     let mut runs = Vec::new();
     let mut column = 0_usize;
     while column < cells.len() {
         let cell = &cells[column];
-        if cell.diff_option == CellDiffOption::Skip {
+        if cell.is_continuation() {
             column += 1;
             continue;
         }
 
         let style = ResolvedStyle::new(cell, theme);
-        let width = usize::from(cell.cell_width().max(1)).min(cells.len() - column);
+        let width = cell_span(cells, column);
         let start = column;
         let mut text = cell.symbol().to_owned();
         column += width;
@@ -1357,8 +1391,8 @@ fn text_runs(cells: &[Cell], theme: &TerminalTheme) -> Vec<TextRun> {
         if width == 1 && !uses_exact_geometry(cell.symbol()) {
             while column < cells.len() {
                 let next = &cells[column];
-                if next.diff_option == CellDiffOption::Skip
-                    || next.cell_width() != 1
+                if next.is_continuation()
+                    || next.columns() != 1
                     || uses_exact_geometry(next.symbol())
                     || ResolvedStyle::new(next, theme) != style
                 {
@@ -1392,7 +1426,7 @@ struct BackgroundRun {
     color: Color,
 }
 
-fn background_runs(cells: &[Cell], theme: &TerminalTheme) -> Vec<BackgroundRun> {
+fn background_runs(cells: &[TerminalCell], theme: &TerminalTheme) -> Vec<BackgroundRun> {
     let mut runs = Vec::new();
     let mut start = 0;
     while start < cells.len() {
@@ -1414,19 +1448,19 @@ fn background_runs(cells: &[Cell], theme: &TerminalTheme) -> Vec<BackgroundRun> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::{Color as RatatuiColor, Style};
+    use crate::scene::{TerminalColor, TerminalStyle};
 
     #[test]
     fn text_runs_batch_unit_cells_but_anchor_wide_graphemes() {
         let theme = TerminalTheme::default();
-        let mut cells = vec![
-            Cell::new("A"),
-            Cell::new("B"),
-            Cell::new("界"),
-            Cell::EMPTY,
-            Cell::new("C"),
+        let wide = TerminalCell::wide("界", 2);
+        let cells = vec![
+            TerminalCell::new("A"),
+            TerminalCell::new("B"),
+            wide.clone(),
+            TerminalCell::continuation_of(&wide),
+            TerminalCell::new("C"),
         ];
-        cells[3].set_diff_option(CellDiffOption::Skip);
         let runs = text_runs(&cells, &theme);
 
         assert_eq!(runs.len(), 3);
@@ -1447,7 +1481,7 @@ mod tests {
     #[test]
     fn combining_grapheme_remains_one_cell_string() {
         let theme = TerminalTheme::default();
-        let cells = [Cell::new("e\u{301}"), Cell::new("!")];
+        let cells = [TerminalCell::new("e\u{301}"), TerminalCell::new("!")];
         let runs = text_runs(&cells, &theme);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].text, "e\u{301}!");
@@ -1457,18 +1491,17 @@ mod tests {
     #[test]
     fn styles_resolve_reverse_hidden_dim_and_decorations() {
         let theme = TerminalTheme::default();
-        let mut cell = Cell::new("X");
-        cell.set_style(
-            Style::new()
-                .fg(RatatuiColor::Red)
-                .bg(RatatuiColor::Blue)
-                .add_modifier(
-                    Modifier::REVERSED
-                        | Modifier::DIM
-                        | Modifier::UNDERLINED
-                        | Modifier::CROSSED_OUT
-                        | Modifier::BOLD
-                        | Modifier::ITALIC,
+        let mut cell = TerminalCell::new("X").with_style(
+            TerminalStyle::new()
+                .fg(TerminalColor::RED)
+                .bg(TerminalColor::BLUE)
+                .with(
+                    StyleFlags::REVERSED
+                        | StyleFlags::DIM
+                        | StyleFlags::UNDERLINED
+                        | StyleFlags::CROSSED_OUT
+                        | StyleFlags::BOLD
+                        | StyleFlags::ITALIC,
                 ),
         );
         let style = ResolvedStyle::new(&cell, &theme);
@@ -1476,17 +1509,16 @@ mod tests {
         assert_ne!(style.foreground, theme.ansi[4]);
         assert!(style.bold && style.italic && style.underlined && style.crossed_out);
 
-        cell.modifier.insert(Modifier::HIDDEN);
+        cell.style.flags.insert(StyleFlags::HIDDEN);
         let hidden = ResolvedStyle::new(&cell, &theme);
         assert_eq!(hidden.foreground, hidden.background);
         assert!(hidden.hidden);
 
-        let mut reversed = Cell::new("X");
-        reversed.set_style(
-            Style::new()
-                .fg(RatatuiColor::Red)
-                .bg(RatatuiColor::Blue)
-                .add_modifier(Modifier::REVERSED | Modifier::UNDERLINED),
+        let reversed = TerminalCell::new("X").with_style(
+            TerminalStyle::new()
+                .fg(TerminalColor::RED)
+                .bg(TerminalColor::BLUE)
+                .with(StyleFlags::REVERSED | StyleFlags::UNDERLINED),
         );
         let reversed = ResolvedStyle::new(&reversed, &theme);
         assert_eq!(reversed.foreground, theme.ansi[4]);
@@ -1494,11 +1526,47 @@ mod tests {
     }
 
     #[test]
+    fn combined_bold_italic_style_selects_the_matching_bevy_font_face() {
+        let theme = TerminalTheme::default();
+        let cell = TerminalCell::new("X")
+            .with_style(TerminalStyle::new().with(StyleFlags::BOLD | StyleFlags::ITALIC));
+        let style = ResolvedStyle::new(&cell, &theme);
+        let font = text_font(&TerminalRenderConfig::default(), &style);
+
+        assert_eq!(font.weight, FontWeight::BOLD);
+        assert_eq!(font.style, FontStyle::Italic);
+    }
+
+    #[test]
+    fn explicit_font_face_overrides_are_selected_by_style_flags() {
+        let config = TerminalRenderConfig {
+            font: FontSource::from("regular"),
+            bold_font: Some(FontSource::from("bold")),
+            italic_font: Some(FontSource::from("italic")),
+            bold_italic_font: Some(FontSource::from("bold italic")),
+            ..default()
+        };
+        let theme = TerminalTheme::default();
+        let selected = |flags| {
+            let cell = TerminalCell::new("X").with_style(TerminalStyle::new().with(flags));
+            text_font(&config, &ResolvedStyle::new(&cell, &theme)).font
+        };
+
+        assert_eq!(selected(StyleFlags::NONE), FontSource::from("regular"));
+        assert_eq!(selected(StyleFlags::BOLD), FontSource::from("bold"));
+        assert_eq!(selected(StyleFlags::ITALIC), FontSource::from("italic"));
+        assert_eq!(
+            selected(StyleFlags::BOLD | StyleFlags::ITALIC),
+            FontSource::from("bold italic")
+        );
+    }
+
+    #[test]
     fn background_runs_cover_every_cell_exactly() {
         let theme = TerminalTheme::default();
-        let mut cells = vec![Cell::EMPTY; 4];
-        cells[1].set_bg(RatatuiColor::Red);
-        cells[2].set_bg(RatatuiColor::Red);
+        let mut cells = vec![TerminalCell::EMPTY; 4];
+        cells[1].style.background = TerminalColor::RED;
+        cells[2].style.background = TerminalColor::RED;
         let runs = background_runs(&cells, &theme);
         assert_eq!(runs.iter().map(|run| run.width).sum::<u16>(), 4);
         assert_eq!(runs[1].start, 1);
@@ -1510,10 +1578,10 @@ mod tests {
     fn solid_and_fractional_blocks_are_kept_as_exact_cell_runs() {
         let theme = TerminalTheme::default();
         let cells = [
-            Cell::new("█"),
-            Cell::new("█"),
-            Cell::new("▀"),
-            Cell::new("A"),
+            TerminalCell::new("█"),
+            TerminalCell::new("█"),
+            TerminalCell::new("▀"),
+            TerminalCell::new("A"),
         ];
         let runs = text_runs(&cells, &theme);
         assert_eq!(runs.len(), 4);
@@ -1526,7 +1594,11 @@ mod tests {
     #[test]
     fn common_box_drawing_glyphs_use_connected_geometry() {
         let theme = TerminalTheme::default();
-        let cells = [Cell::new("┌"), Cell::new("─"), Cell::new("┐")];
+        let cells = [
+            TerminalCell::new("┌"),
+            TerminalCell::new("─"),
+            TerminalCell::new("┐"),
+        ];
         let runs = text_runs(&cells, &theme);
         assert_eq!(runs.len(), 3);
         assert!(runs.iter().all(|run| line_glyph(&run.text).is_some()));
@@ -1552,7 +1624,11 @@ mod tests {
     #[test]
     fn quadrant_blocks_are_isolated_and_cover_the_expected_quadrants() {
         let theme = TerminalTheme::default();
-        let cells = [Cell::new("▛"), Cell::new("▚"), Cell::new("A")];
+        let cells = [
+            TerminalCell::new("▛"),
+            TerminalCell::new("▚"),
+            TerminalCell::new("A"),
+        ];
         let runs = text_runs(&cells, &theme);
         assert_eq!(runs.len(), 3);
         assert_eq!(
@@ -1564,50 +1640,49 @@ mod tests {
 
     #[test]
     fn sync_reuses_primitive_entities_and_skips_unchanged_frames() {
-        use ratatui::backend::Backend as _;
+        let surface = TerminalSurface::new(3, 1);
+        let initial = [
+            TerminalCell::new("A"),
+            TerminalCell::new("B"),
+            TerminalCell::new("C"),
+        ];
+        surface.begin_update().set_cells(
+            initial
+                .iter()
+                .enumerate()
+                .map(|(column, cell)| (column as u16, 0, cell)),
+        );
 
-        let mut backend = crate::BevyBackend::new(3, 1);
-        let initial = [Cell::new("A"), Cell::new("B"), Cell::new("C")];
-        backend
-            .draw(
-                initial
-                    .iter()
-                    .enumerate()
-                    .map(|(column, cell)| (column as u16, 0, cell)),
-            )
-            .unwrap();
-
-        let surface = backend.surface();
         let mut app = App::new();
-        app.add_plugins(RetainedBevyGridPlugin::new(surface));
+        app.add_plugins(RetainedBevyTerminalPlugin::new(surface.clone()));
         app.update();
         let initial_stats = *app.world().resource::<TerminalRenderStats>();
         assert_eq!(initial_stats.changed_rows, 1);
         assert_eq!(initial_stats.active_text_primitives, 1);
         assert_eq!(initial_stats.active_solid_primitives, 0);
 
-        let mut styled = Cell::new("B");
-        styled.set_fg(RatatuiColor::Red);
-        backend.draw([(1, 0, &styled)].into_iter()).unwrap();
+        let mut styled = TerminalCell::new("B");
+        styled.style.foreground = TerminalColor::RED;
+        surface.begin_update().set_cell(1, 0, &styled);
         app.update();
         let style_stats = *app.world().resource::<TerminalRenderStats>();
         assert_eq!(style_stats.changed_rows, 1);
         assert_eq!(style_stats.active_text_primitives, 3);
         assert_eq!(style_stats.spawned_primitives, 2);
 
-        styled.set_symbol("Y");
-        backend.draw([(1, 0, &styled)].into_iter()).unwrap();
+        styled.symbol = "Y".into();
+        surface.begin_update().set_cell(1, 0, &styled);
         app.update();
         let glyph_stats = *app.world().resource::<TerminalRenderStats>();
         assert_eq!(glyph_stats.active_text_primitives, 3);
         assert_eq!(glyph_stats.spawned_primitives, 0);
         assert_eq!(glyph_stats.pooled_primitives, style_stats.pooled_primitives);
 
-        let revision = backend.surface().revision();
-        backend.draw([(1, 0, &styled)].into_iter()).unwrap();
+        let revision = surface.revision();
+        surface.begin_update().set_cell(1, 0, &styled);
         app.update();
         let unchanged_stats = *app.world().resource::<TerminalRenderStats>();
-        assert_eq!(backend.surface().revision(), revision);
+        assert_eq!(surface.revision(), revision);
         assert_eq!(unchanged_stats.changed_rows, 0);
         assert_eq!(unchanged_stats.snapshot_cells, 0);
         assert_eq!(
@@ -1615,9 +1690,9 @@ mod tests {
             glyph_stats.unchanged_frames + 1
         );
 
-        let mut block = Cell::new("█");
-        block.set_fg(RatatuiColor::Green);
-        backend.draw([(1, 0, &block)].into_iter()).unwrap();
+        let mut block = TerminalCell::new("█");
+        block.style.foreground = TerminalColor::GREEN;
+        surface.begin_update().set_cell(1, 0, &block);
         app.update();
         let block_stats = *app.world().resource::<TerminalRenderStats>();
         assert_eq!(block_stats.active_text_primitives, 2);
@@ -1626,20 +1701,19 @@ mod tests {
 
     #[test]
     fn inactive_blinking_pool_entries_cannot_become_visible() {
-        use ratatui::backend::Backend as _;
-
-        let mut backend = crate::BevyBackend::new(2, 1);
-        let plain = Cell::new("A");
-        let mut blinking = Cell::new("B");
+        let surface = TerminalSurface::new(2, 1);
+        let plain = TerminalCell::new("A");
+        let mut blinking = TerminalCell::new("B");
         blinking
-            .modifier
-            .insert(Modifier::SLOW_BLINK | Modifier::UNDERLINED);
-        backend
-            .draw([(0, 0, &plain), (1, 0, &blinking)].into_iter())
-            .unwrap();
+            .style
+            .flags
+            .insert(StyleFlags::SLOW_BLINK | StyleFlags::UNDERLINED);
+        surface
+            .begin_update()
+            .set_cells([(0, 0, &plain), (1, 0, &blinking)]);
 
         let mut app = App::new();
-        app.add_plugins(RetainedBevyGridPlugin::new(backend.surface()));
+        app.add_plugins(RetainedBevyTerminalPlugin::new(surface.clone()));
         app.update();
         let (text_entity, solid_entity) = {
             let rendered = app.world().resource::<RenderedEntities>();
@@ -1649,8 +1723,8 @@ mod tests {
             )
         };
 
-        let plain_b = Cell::new("B");
-        backend.draw([(1, 0, &plain_b)].into_iter()).unwrap();
+        let plain_b = TerminalCell::new("B");
+        surface.begin_update().set_cell(1, 0, &plain_b);
         app.update();
         assert_eq!(
             app.world().get::<Visibility>(text_entity),
@@ -1667,7 +1741,7 @@ mod tests {
                 .contains::<TerminalBlinkVisibility>()
         );
 
-        backend.draw([(1, 0, &blinking)].into_iter()).unwrap();
+        surface.begin_update().set_cell(1, 0, &blinking);
         app.update();
         assert!(app.world().entity(text_entity).contains::<TerminalBlink>());
         assert!(
@@ -1679,12 +1753,10 @@ mod tests {
 
     #[test]
     fn moving_cursor_across_surface_bounds_updates_visibility() {
-        use ratatui::backend::Backend as _;
-
-        let mut backend = crate::BevyBackend::new(1, 1);
-        backend.show_cursor().unwrap();
+        let surface = TerminalSurface::new(1, 1);
+        surface.begin_update().set_cursor_visible(true);
         let mut app = App::new();
-        app.add_plugins(RetainedBevyGridPlugin::new(backend.surface()));
+        app.add_plugins(RetainedBevyTerminalPlugin::new(surface.clone()));
         app.update();
 
         let cursor = app
@@ -1697,14 +1769,14 @@ mod tests {
             Some(&Visibility::Visible)
         );
 
-        backend.set_cursor_position((1, 0)).unwrap();
+        surface.begin_update().set_cursor_position(1, 0);
         app.update();
         assert_eq!(
             app.world().get::<Visibility>(cursor),
             Some(&Visibility::Hidden)
         );
 
-        backend.set_cursor_position((0, 0)).unwrap();
+        surface.begin_update().set_cursor_position(0, 0);
         app.update();
         assert_eq!(
             app.world().get::<Visibility>(cursor),

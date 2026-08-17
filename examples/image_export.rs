@@ -13,11 +13,11 @@ use bevy::{
     },
     window::WindowResolution,
 };
-use bevy_grid::{
-    BevyBackend, BevyGridBatchPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalSurface,
+use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
+use bevy_terminal_ratatui::{
+    BevyTerminalPlugin, RatatuiBackend, TerminalBatch, TerminalRenderConfig, TerminalRenderScale,
     TerminalSystems,
 };
-use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 
 const WIDTH: u32 = 832;
 const HEIGHT: u32 = 480;
@@ -36,29 +36,32 @@ fn main() {
     let export_plugin = ImageExportPlugin::default();
     let export_threads = export_plugin.threads.clone();
 
-    App::new()
-        .add_plugins((
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        resolution: WindowResolution::new(WIDTH, HEIGHT)
-                            .with_scale_factor_override(1.0),
-                        visible: false,
-                        ..default()
-                    }),
-                    ..default()
-                })
-                .set(RenderPlugin {
-                    synchronous_pipeline_compilation: true,
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    resolution: WindowResolution::new(WIDTH, HEIGHT)
+                        .with_scale_factor_override(1.0),
+                    visible: false,
                     ..default()
                 }),
-            export_plugin,
-            BevyGridBatchPlugin::new(surface).with_config(config),
-        ))
-        .add_systems(Startup, setup_export)
-        .add_systems(Update, resize_for_qa.before(TerminalSystems::Sync))
-        .add_systems(Update, stop_after_export)
-        .run();
+                ..default()
+            })
+            .set(RenderPlugin {
+                synchronous_pipeline_compilation: true,
+                ..default()
+            }),
+    );
+    let fonts = common::fonts::load(&mut app);
+    app.add_plugins((
+        export_plugin,
+        BevyTerminalPlugin::new(surface).with_config(fonts.configure(config)),
+    ))
+    .add_systems(Startup, setup_export)
+    .add_systems(Update, resize_for_qa.before(TerminalSystems::Sync))
+    .add_systems(Update, stop_after_export)
+    .run();
 
     export_threads.finish();
 }
@@ -75,7 +78,7 @@ fn setup_export(
     };
     let mut image = Image {
         texture_descriptor: TextureDescriptor {
-            label: Some("bevy_grid render QA"),
+            label: Some("bevy_terminal_ratatui render QA"),
             size,
             dimension: TextureDimension::D2,
             format: TextureFormat::Rgba8UnormSrgb,
@@ -109,10 +112,13 @@ fn setup_export(
     ));
 }
 
-fn resize_for_qa(surface: Res<TerminalSurface>, mut frame: Local<u32>) {
+fn resize_for_qa(terminals: Query<&TerminalBatch>, mut frame: Local<u32>) {
     *frame += 1;
     if *frame == 8 {
-        BevyBackend::from_surface(surface.as_ref().clone()).resize(60, 18);
+        let terminal = terminals
+            .single()
+            .expect("the example creates exactly one terminal");
+        RatatuiBackend::from_surface(terminal.surface().clone()).resize(60, 18);
     }
 }
 

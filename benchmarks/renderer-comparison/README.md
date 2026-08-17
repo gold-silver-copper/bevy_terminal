@@ -10,7 +10,7 @@ The enabled adapters are:
 
 | Adapter | Measured path |
 |---|---|
-| `bevy_grid` | Ratatui diff → compact Bevy text-atlas batch → renderer-owned texture |
+| `bevy_terminal_ratatui` | Ratatui diff → `bevy_terminal` neutral surface → compact Bevy terminal renderer → renderer-owned texture |
 | `soft_ratatui` | Ratatui diff → CPU raster → RGBA conversion → Bevy image upload/render |
 | `egui_ratatui` | soft raster → egui texture/tessellation → Bevy image upload/render |
 | `parley_ratatui` | Ratatui buffer → Parley/Vello → texture on Bevy's WGPU device |
@@ -30,7 +30,7 @@ From this directory:
 ```text
 ./run.sh --profile quick
 ./run.sh --profile standard --repeat 3
-./run.sh --adapters bevy_grid,parley_ratatui --sizes 80x24,120x40
+./run.sh --adapters bevy_terminal_ratatui,parley_ratatui --sizes 80x24,120x40
 ./run.sh --profile quick --font-size 16 # explicit native-metric experiment
 ./run.sh --list
 ```
@@ -50,7 +50,7 @@ controller writes a timestamped directory beneath `results/` containing:
 - `aggregate.csv`: nearest-rank percentiles recomputed from every raw frame
   across repetitions;
 - `summary.md`: per-process and aggregate human-readable tables;
-- `parity.md`: aggregate `bevy_grid`/`bevy_tui_texture` ratios and gate status;
+- `parity.md`: aggregate `bevy_terminal_ratatui`/`bevy_tui_texture` ratios and gate status;
 - `captures/`: one PNG captured after timed frames for every successful case;
 - `run.json`: source fingerprint, Git state, controller, platform, adapter
   status, and failures.
@@ -103,10 +103,10 @@ The controller supplies every adapter with identical:
 - per-frame WGPU completion policy.
 
 The default comparison uses 10×20 physical cells for every backend. The
-registry selects 18 px for `bevy_grid`, `soft_ratatui`, `egui_ratatui`, and
+registry selects 18 px for `bevy_terminal_ratatui`, `soft_ratatui`, `egui_ratatui`, and
 `parley_ratatui`, and 20 px for `bevy_tui_texture`. The soft renderers pad their
 native 10×18 Courier New metrics to 10×20 before allocating their pixmaps;
-Parley applies metric offsets; `bevy_grid` uses the requested cell directly;
+Parley applies metric offsets; `bevy_terminal_ratatui` uses the requested cell directly;
 and `bevy_tui_texture` natively produces 10×20 at its calibrated size. The
 controller rejects a default run whose actual output does not equal the
 requested pixel dimensions, and every raw/CSV/Markdown result records the
@@ -164,7 +164,7 @@ binary.
 
 ## Compatibility patches
 
-The root `bevy_grid` crate enables Ratatui 0.30.2's `scrolling-regions` feature.
+The root `bevy_terminal_ratatui` crate enables Ratatui 0.30.2's `scrolling-regions` feature.
 The current releases of `soft_ratatui`, `egui_ratatui`, `parley_ratatui`, and
 `bevy_tui_texture` do not implement the two backend methods exposed by that
 feature. The benchmark workspace enables the same feature consistently, and

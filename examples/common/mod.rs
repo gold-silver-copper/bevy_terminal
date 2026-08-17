@@ -1,4 +1,4 @@
-use bevy_grid::{BevyBackend, TerminalSurface};
+use bevy_terminal_ratatui::{RatatuiBackend, TerminalSurface};
 use ratatui::{
     Terminal,
     layout::{Constraint, Layout},
@@ -7,11 +7,13 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, Paragraph, Wrap},
 };
 
+pub mod fonts;
+
 pub const COLUMNS: u16 = 72;
 pub const ROWS: u16 = 22;
 
 pub fn demo_surface() -> TerminalSurface {
-    let backend = BevyBackend::new(COLUMNS, ROWS);
+    let backend = RatatuiBackend::new(COLUMNS, ROWS);
     let surface = backend.surface();
     let mut terminal = Terminal::new(backend).expect("the in-memory backend is infallible");
     terminal
@@ -26,7 +28,7 @@ pub fn demo_surface() -> TerminalSurface {
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(
-                        " bevy_grid ",
+                        " bevy_terminal_ratatui ",
                         Style::new()
                             .fg(Color::Black)
                             .bg(Color::LightCyan)

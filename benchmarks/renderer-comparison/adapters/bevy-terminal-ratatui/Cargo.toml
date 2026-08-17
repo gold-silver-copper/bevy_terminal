@@ -1,5 +1,5 @@
 [package]
-name = "bench-bevy-grid"
+name = "bench-bevy-terminal-ratatui"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 bevy.workspace = true
-bevy_grid = { path = "../../../.." }
+bevy_terminal_ratatui = { path = "../../../.." }
 ratatui.workspace = true
 renderer-bench-sdk.workspace = true
 

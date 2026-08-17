@@ -1,13 +1,13 @@
 schema_version = 1
 
 [[adapter]]
-id = "bevy_grid"
-name = "bevy_grid"
+id = "bevy_terminal_ratatui"
+name = "bevy_terminal_ratatui"
 status = "enabled"
-package = "bench-bevy-grid"
-binary = "bench-bevy-grid"
+package = "bench-bevy-terminal-ratatui"
+binary = "bench-bevy-terminal-ratatui"
 source = "../../"
-render_path = "Compact Bevy text-atlas quad batch into a renderer-owned texture"
+render_path = "Ratatui diff -> bevy_terminal neutral surface -> compact Bevy terminal renderer -> renderer-owned texture"
 matched_font_size = 18
 
 [[adapter]]

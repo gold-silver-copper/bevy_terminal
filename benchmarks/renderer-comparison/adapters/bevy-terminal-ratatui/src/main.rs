@@ -1,6 +1,6 @@
 use bevy::{app::SubApps, prelude::*, text::FontSource};
-use bevy_grid::{
-    BevyBackend, BevyGridBatchPlugin, TerminalBatchStats, TerminalRenderConfig, TerminalSurface,
+use bevy_terminal_ratatui::{
+    BevyTerminalPlugin, RatatuiBackend, TerminalBatchStats, TerminalRenderConfig, TerminalSurface,
 };
 use ratatui::Terminal;
 use renderer_bench_sdk::{
@@ -8,17 +8,17 @@ use renderer_bench_sdk::{
     linear_rgba8_to_srgb, measure, read_bevy_image_rgba, render_workload, run,
 };
 
-struct BevyGridAdapter {
-    terminal: Terminal<BevyBackend>,
+struct BevyTerminalRatatuiAdapter {
+    terminal: Terminal<RatatuiBackend>,
     surface: TerminalSurface,
     last_stats: TerminalBatchStats,
     max_extracted_bytes: u64,
     max_shape_misses: u32,
 }
 
-impl RendererAdapter for BevyGridAdapter {
+impl RendererAdapter for BevyTerminalRatatuiAdapter {
     fn new(config: &BenchConfig) -> BenchResult<Self> {
-        let backend = BevyBackend::new(config.cols, config.rows);
+        let backend = RatatuiBackend::new(config.cols, config.rows);
         let surface = backend.surface();
         Ok(Self {
             terminal: Terminal::new(backend)?,
@@ -36,7 +36,7 @@ impl RendererAdapter for BevyGridAdapter {
             .resource_mut::<Assets<Font>>()
             .add(Font::from_bytes(bytes));
         app.add_plugins(
-            BevyGridBatchPlugin::new(self.surface.clone())
+            BevyTerminalPlugin::new(self.surface.clone())
                 .with_config(TerminalRenderConfig {
                     cell_size: Vec2::new(config.cell_width, config.cell_height),
                     font_size: config.font_size as f32,
@@ -61,7 +61,10 @@ impl RendererAdapter for BevyGridAdapter {
         config: &BenchConfig,
         frame_index: u64,
     ) -> BenchResult<AdapterFrame> {
-        self.last_stats = *world.resource::<TerminalBatchStats>();
+        self.last_stats = *world
+            .iter_entities()
+            .find_map(|entity| entity.get::<TerminalBatchStats>())
+            .expect("the adapter creates exactly one terminal renderer");
         self.max_extracted_bytes = self
             .max_extracted_bytes
             .max(self.last_stats.extracted_bytes);
@@ -86,7 +89,9 @@ impl RendererAdapter for BevyGridAdapter {
         let image = sub_apps
             .main
             .world()
-            .resource::<bevy_grid::TerminalBatchOutput>()
+            .iter_entities()
+            .find_map(|entity| entity.get::<bevy_terminal_ratatui::TerminalBatchOutput>())
+            .expect("the adapter creates exactly one terminal output")
             .image
             .clone();
         let mut rgba = read_bevy_image_rgba(sub_apps, image)?;
@@ -98,12 +103,12 @@ impl RendererAdapter for BevyGridAdapter {
 
     fn metadata(&self) -> AdapterMetadata {
         AdapterMetadata {
-            id: "bevy_grid".to_owned(),
-            name: "bevy_grid".to_owned(),
+            id: "bevy_terminal_ratatui".to_owned(),
+            name: "bevy_terminal_ratatui".to_owned(),
             renderer_version: env!("CARGO_PKG_VERSION").to_owned(),
             bevy_version: "0.19.1".to_owned(),
             ratatui_version: "0.30.2".to_owned(),
-            render_path: "Ratatui diff -> compact Bevy text-atlas quad batch -> renderer-owned texture"
+            render_path: "Ratatui diff -> bevy_terminal neutral surface -> compact Bevy terminal renderer -> renderer-owned texture"
                 .to_owned(),
             notes: vec![
                 "The terminal texture is rendered directly in Bevy RenderApp; no benchmark camera is spawned"
@@ -136,5 +141,5 @@ impl RendererAdapter for BevyGridAdapter {
 }
 
 fn main() -> BenchResult<()> {
-    run::<BevyGridAdapter>()
+    run::<BevyTerminalRatatuiAdapter>()
 }

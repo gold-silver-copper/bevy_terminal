@@ -2,6 +2,8 @@
 
 #[path = "ratatui_examples/mod.rs"]
 mod catalog;
+#[path = "common/fonts.rs"]
+mod fonts;
 
 use bevy::{
     camera::RenderTarget,
@@ -14,11 +16,10 @@ use bevy::{
     },
     window::WindowResolution,
 };
-use bevy_grid::{
-    BevyGridBatchPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalSurface,
-    TerminalSystems,
-};
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
+use bevy_terminal_ratatui::{
+    BevyTerminalPlugin, TerminalBatch, TerminalRenderConfig, TerminalRenderScale, TerminalSystems,
+};
 
 const CELL_WIDTH: f32 = 10.0;
 const CELL_HEIGHT: f32 = 18.0;
@@ -53,32 +54,35 @@ fn main() {
     let export_plugin = ImageExportPlugin::default();
     let export_threads = export_plugin.threads.clone();
 
-    App::new()
-        .insert_resource(CaptureSequence {
-            example_index: 0,
-            frames_on_example: 0,
-        })
-        .add_plugins((
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        resolution: WindowResolution::new(image_width(), image_height())
-                            .with_scale_factor_override(1.0),
-                        visible: false,
-                        ..default()
-                    }),
-                    ..default()
-                })
-                .set(RenderPlugin {
-                    synchronous_pipeline_compilation: true,
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    resolution: WindowResolution::new(image_width(), image_height())
+                        .with_scale_factor_override(1.0),
+                    visible: false,
                     ..default()
                 }),
-            export_plugin,
-            BevyGridBatchPlugin::new(surface).with_config(config),
-        ))
-        .add_systems(Startup, setup_export)
-        .add_systems(Update, advance_capture.before(TerminalSystems::Sync))
-        .run();
+                ..default()
+            })
+            .set(RenderPlugin {
+                synchronous_pipeline_compilation: true,
+                ..default()
+            }),
+    );
+    let fonts = fonts::load(&mut app);
+    app.insert_resource(CaptureSequence {
+        example_index: 0,
+        frames_on_example: 0,
+    })
+    .add_plugins((
+        export_plugin,
+        BevyTerminalPlugin::new(surface).with_config(fonts.configure(config)),
+    ))
+    .add_systems(Startup, setup_export)
+    .add_systems(Update, advance_capture.before(TerminalSystems::Sync))
+    .run();
 
     export_threads.finish();
 }
@@ -142,7 +146,7 @@ fn setup_export(
 }
 
 fn advance_capture(
-    surface: Res<TerminalSurface>,
+    terminals: Query<&TerminalBatch>,
     mut sequence: ResMut<CaptureSequence>,
     mut settings: Query<&mut ImageExportSettings>,
     mut exit: MessageWriter<AppExit>,
@@ -159,7 +163,10 @@ fn advance_capture(
         return;
     };
 
-    catalog::redraw_surface(surface.as_ref(), spec);
+    let terminal = terminals
+        .single()
+        .expect("the exporter creates exactly one terminal");
+    catalog::redraw_surface(terminal.surface(), spec);
     for mut settings in &mut settings {
         settings.output_dir = output_dir(spec.slug);
     }

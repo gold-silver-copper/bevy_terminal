@@ -1,31 +1,40 @@
-# `bevy_grid`
+# `bevy_terminal_ratatui`
 
-`bevy_grid` is a Ratatui backend that renders a terminal texture with Bevy's own
-text shaping, font fallback, glyph atlases, render device, and render world. Its
-normal dependency list is only `bevy` and `ratatui`; there is no software
-framebuffer, Egui bridge, or external font/rendering engine in the runtime path.
+`bevy_terminal_ratatui` is a Ratatui backend that renders a terminal texture
+with Bevy's own text shaping, font fallback, glyph atlases, render device, and
+render world. It is a thin adapter over [`bevy_terminal`](crates/bevy_terminal),
+which owns the renderer-neutral scene model, the retained surface and the
+compact Bevy renderer:
 
-The backend retains a Ratatui `Buffer` behind a small thread-safe surface handle.
-One Bevy system copies only dirty cells, anchors each cell string to its exact
-terminal column, and builds a compact quad scene. A dedicated Bevy render-world
-pass draws that scene into a renderer-owned `Image`. The default UI presentation
-is one `ImageNode`, while `BevyGridBatchPlugin::headless` exposes the same texture
-without a camera or UI node.
+```text
+bevy_terminal ──> bevy
+bevy_terminal_ratatui ──> bevy_terminal
+                         └> ratatui
+```
 
-Glyphs are shaped and rasterized through Bevy's public text pipeline, then cached
-in one renderer-owned atlas so dense frames normally need one ordered draw.
-Combining marks remain in Ratatui's original cell string and are
-shaped together. Common box-drawing sets and full, fractional, or quadrant block
-elements are emitted as exact pixel geometry, avoiding hairline seams from font
-bearings. `RetainedBevyGridPlugin` keeps the original Bevy-UI-per-primitive path
-available as a reference implementation.
+The normal dependency list of the two crates together is only `bevy` and
+`ratatui`; there is no software framebuffer, Egui bridge, or external
+font/rendering engine in the runtime path.
+
+`RatatuiBackend` implements `ratatui::backend::Backend`. Each `draw` acquires
+the surface once, translates only the cells Ratatui submitted into neutral
+`TerminalCell`s (named colors become ANSI indices, `Indexed`/`Rgb` are kept,
+`Reset` becomes the contextual default; every modifier and the underline color
+are preserved), synthesizes the wide-glyph continuation cells that Ratatui
+omits from its diff, and publishes at most one new surface revision. The
+`bevy_terminal` renderer then copies only dirty cells, anchors each cell string
+to its exact column, builds a compact quad scene and draws it into a
+renderer-owned `Image`. The default UI presentation is one `ImageNode`, while
+`BevyTerminalPlugin::headless` exposes the same texture without a camera or UI
+node. All renderer types are re-exported here, so a Ratatui application only
+installs this crate.
 
 ```no_run
 use bevy::prelude::*;
-use bevy_grid::prelude::*;
+use bevy_terminal_ratatui::prelude::*;
 use ratatui::{Terminal, widgets::{Block, Borders, Paragraph}};
 
-let backend = BevyBackend::new(60, 20);
+let backend = RatatuiBackend::new(60, 20);
 let surface = backend.surface();
 let mut terminal = Terminal::new(backend)?;
 
@@ -38,13 +47,54 @@ terminal.draw(|frame| {
 })?;
 
 App::new()
-    .add_plugins((DefaultPlugins, BevyGridPlugin::new(surface)))
+    .add_plugins((DefaultPlugins, BevyTerminalPlugin::new(surface)))
     .add_systems(Startup, |mut commands: Commands| {
         commands.spawn(Camera2d);
     })
     .run();
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+Applications that do not use Ratatui can write the same surface directly; see
+the [`bevy_terminal` README](crates/bevy_terminal/README.md) for the scene API,
+texture-only use, multiple surfaces and font-face configuration.
+
+## Multiple independent terminals
+
+Each `BevyTerminalPlugin` registration creates its own terminal entity, renderer-owned
+texture, configuration, statistics, and optional UI image node. Plugin instances
+share the render pipeline and reusable GPU storage, but updates and resizes remain
+independent:
+
+```no_run
+# use bevy::prelude::*;
+# use bevy_terminal_ratatui::prelude::*;
+let left = RatatuiBackend::new(42, 16).surface();
+let right = RatatuiBackend::new(34, 12).surface();
+
+App::new().add_plugins((
+    DefaultPlugins,
+    BevyTerminalPlugin::new(left).with_config(TerminalRenderConfig {
+        origin: Vec2::new(24.0, 56.0),
+        ..default()
+    }),
+    BevyTerminalPlugin::new(right).with_config(TerminalRenderConfig {
+        origin: Vec2::new(496.0, 56.0),
+        ..default()
+    }),
+));
+```
+
+`TerminalBatch`, `TerminalBatchOutput`, and `TerminalBatchStats` are components
+on the same entity. Query them together to identify a texture or change one
+terminal's configuration. A terminal's output handle changes independently if
+its grid dimensions or raster scale change. `TerminalBatchRoot::terminal` links
+an optional UI presentation node back to that entity. Use
+`TerminalBatch::renders_surface` to match a query result to a surface handle
+retained by your application.
+
+Run `cargo run --example multiple_terminals` for a complete scene where both
+terminals update independently and one resizes while the other remains unchanged.
 
 ## Cell geometry and Unicode
 
@@ -74,7 +124,7 @@ custom camera or output target has a known scale; that target should present the
 texture at the same scale. `TerminalBatchOutput` reports `size` in physical
 pixels, `logical_size` in Bevy UI pixels, and the active `raster_scale`.
 
-Wide Ratatui cells are anchored to two columns regardless of the fallback
+Wide Ratatui cells are anchored to their declared columns regardless of the fallback
 glyph's natural advance. This prevents column drift, but a poorly matched font
 can still make the glyph look too narrow or too wide inside those two columns.
 Mixed-weight and dashed box-drawing characters, shaded blocks, and braille
@@ -89,6 +139,10 @@ All Ratatui colors are supported, including the ANSI 256-color cube and true
 color. Bold, dim, italic, underline, reverse, hidden, crossed-out, slow-blink,
 and rapid-blink modifiers are mapped to Bevy text behavior. Bold and italic
 depend on the selected font family exposing suitable faces or variable axes.
+For deterministic static-face selection, set `bold_font`, `italic_font`, and
+`bold_italic_font` alongside the regular `font` source. Every executable example
+does this with the vendored JetBrains Mono 2.304 family; all 16 static weights
+and styles live under `assets/fonts/jetbrains-mono` with their OFL license.
 
 ## Resizing
 
@@ -107,6 +161,7 @@ The `image_export` example uses the Git development dependency
 ```text
 cargo run --example image_export
 cargo run --example high_dpi_export
+cargo run --example multiple_terminals_export
 ```
 
 Early frames contain the complete 72×22 scene. Later frames shrink the backend
@@ -117,12 +172,17 @@ texture pixels after a resize.
 `target/render-qa-2x/`, exercising native 2× font rasterization without a
 camera resampling stage.
 
-The normal dependency list is deliberately limited to `bevy` and `ratatui`.
+`multiple_terminals_export` writes a before/after sequence under
+`target/multiple-terminals-qa/`; the second texture grows from 320×180 to
+360×216 while the first stays at 370×216.
+
+The normal dependency list is deliberately limited to `bevy_terminal` and
+`ratatui`; `bevy_terminal` itself depends only on `bevy`.
 
 ## Renderer performance comparison
 
 `benchmarks/renderer-comparison` is a separate workspace containing a
-windowless, synchronized Bevy harness for comparing `bevy_grid`,
+windowless, synchronized Bevy harness for comparing `bevy_terminal_ratatui`,
 `soft_ratatui`, `egui_ratatui`, `parley_ratatui`, and `bevy_tui_texture` with
 identical Ratatui workloads. It reports raw JSON samples plus CSV/Markdown
 summaries and keeps all third-party renderer dependencies outside this library's
@@ -131,15 +191,23 @@ runtime manifest. See
 
 ## Ratatui upstream example ports
 
-The project also contains deterministic Bevy ports of all 43 runnable targets
-from Ratatui 0.30.2: 32 application examples and 11 state-pattern binaries.
-Run one port by slug or export the complete visual suite:
+The project also contains an interactive Bevy gallery of all 43 runnable
+targets from Ratatui 0.30.2: 32 application examples and 11 state-pattern
+binaries. Run the gallery, optionally choose its starting slug, or export the
+complete deterministic visual suite:
 
 ```text
 cargo run --example ratatui_examples -- --list
+cargo run --example ratatui_examples
 cargo run --example ratatui_examples -- chart
 cargo run --example ratatui_examples_export
 ```
+
+Use `PageUp`/`PageDown` to switch examples, `F1` for the current example's
+controls, `F2` to reset it, and `F10` to exit. Bevy keyboard/mouse input drives
+each port's selection, scrolling, forms, text editing, drawing, and animation.
+The gallery window is resizable and adjusts the Ratatui buffer grid while
+keeping fixed, crisp cell dimensions; deterministic exports remain 100×62.
 
 The exporter writes stable frames beneath `target/ratatui-examples/<slug>/`.
 Network responses, randomness, clocks, tracing subscribers, panic hooks, and
@@ -149,9 +217,8 @@ complete inventory, and adaptation policy.
 
 ## Current scope
 
-One `BevyGridPlugin` terminal surface is supported per Bevy `App`. The backend
-models the visible grid only: rows scrolled past the top are discarded rather
-than retained as host-side scrollback.
+Both crates enable `unsafe_code = "forbid"`. The backend models each terminal's visible grid only: rows scrolled past the top
+are discarded rather than retained as host-side scrollback.
 
 ## License
 

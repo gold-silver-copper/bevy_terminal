@@ -3,10 +3,10 @@
 mod common;
 
 use bevy::{prelude::*, render::RenderPlugin, window::WindowResolution};
-use bevy_grid::{
-    BevyGridBatchPlugin, TerminalBatchOutput, TerminalRenderConfig, TerminalRenderScale,
-};
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
+use bevy_terminal_ratatui::{
+    BevyTerminalPlugin, TerminalBatchOutput, TerminalRenderConfig, TerminalRenderScale,
+};
 
 const EXPORT_FRAMES: u32 = 6;
 
@@ -21,38 +21,44 @@ fn main() {
     let export_plugin = ImageExportPlugin::default();
     let export_threads = export_plugin.threads.clone();
 
-    App::new()
-        .add_plugins((
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        resolution: WindowResolution::new(1, 1).with_scale_factor_override(1.0),
-                        visible: false,
-                        ..default()
-                    }),
-                    ..default()
-                })
-                .set(RenderPlugin {
-                    synchronous_pipeline_compilation: true,
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    resolution: WindowResolution::new(1, 1).with_scale_factor_override(1.0),
+                    visible: false,
                     ..default()
                 }),
-            export_plugin,
-            BevyGridBatchPlugin::new(common::demo_surface())
-                .with_config(config)
-                .headless(),
-        ))
-        .add_systems(Startup, setup_export)
-        .add_systems(Update, stop_after_export)
-        .run();
+                ..default()
+            })
+            .set(RenderPlugin {
+                synchronous_pipeline_compilation: true,
+                ..default()
+            }),
+    );
+    let fonts = common::fonts::load(&mut app);
+    app.add_plugins((
+        export_plugin,
+        BevyTerminalPlugin::new(common::demo_surface())
+            .with_config(fonts.configure(config))
+            .headless(),
+    ))
+    .add_systems(Startup, setup_export)
+    .add_systems(Update, stop_after_export)
+    .run();
 
     export_threads.finish();
 }
 
 fn setup_export(
     mut commands: Commands,
-    output: Res<TerminalBatchOutput>,
+    outputs: Query<&TerminalBatchOutput>,
     mut export_sources: ResMut<Assets<ImageExportSource>>,
 ) {
+    let output = outputs
+        .single()
+        .expect("the example creates exactly one terminal output");
     commands.spawn((
         ImageExport(export_sources.add(output.image.clone())),
         ImageExportSettings {

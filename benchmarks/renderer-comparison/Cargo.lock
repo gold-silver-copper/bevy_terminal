@@ -370,11 +370,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "bench-bevy-grid"
+name = "bench-bevy-terminal-ratatui"
 version = "0.1.0"
 dependencies = [
  "bevy",
- "bevy_grid",
+ "bevy_terminal_ratatui",
  "ratatui",
  "renderer-bench-sdk",
 ]
@@ -922,14 +922,6 @@ dependencies = [
  "bevy_utils",
  "bytemuck",
  "tracing",
-]
-
-[[package]]
-name = "bevy_grid"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "ratatui",
 ]
 
 [[package]]
@@ -1578,6 +1570,21 @@ dependencies = [
  "futures-lite",
  "heapless",
  "web-task",
+]
+
+[[package]]
+name = "bevy_terminal"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+]
+
+[[package]]
+name = "bevy_terminal_ratatui"
+version = "0.1.0"
+dependencies = [
+ "bevy_terminal",
+ "ratatui",
 ]
 
 [[package]]

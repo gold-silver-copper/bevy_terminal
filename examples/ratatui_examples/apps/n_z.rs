@@ -1,20 +1,24 @@
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Flex, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Flex, Layout, Margin, Position, Rect},
     style::{Color, Modifier, Style},
-    symbols::Marker,
+    symbols::{self, Marker},
     text::{Line, Span},
     widgets::{
         BarChart, Block, BorderType, Borders, Clear, Gauge, HighlightSpacing, List, ListItem,
         ListState, Paragraph, RatatuiLogo, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
         Table, TableState, Wrap,
-        canvas::{Canvas, Line as CanvasLine, Points},
+        canvas::{Canvas, Line as CanvasLine},
     },
 };
 
-use super::super::support::{ACCENT, GREEN, ORANGE, PURPLE, centered, example_area, help, section};
+use super::super::{
+    ExampleState,
+    interaction::{InputMode, PanicState, mouse_color},
+    support::{ACCENT, GREEN, ORANGE, PURPLE, centered, example_area, help, section},
+};
 
-pub fn inline(frame: &mut Frame<'_>) {
+pub fn inline(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "inline");
     let [history, downloads, footer] = Layout::vertical([
         Constraint::Length(10),
@@ -43,6 +47,11 @@ pub fn inline(frame: &mut Frame<'_>) {
         ("unicode-data", 37, ORANGE),
     ];
     for (area, (name, progress, color)) in rows.iter().zip(items) {
+        let progress = if progress == 100 {
+            100
+        } else {
+            (((progress as u64) + state.tick) % 101) as u16
+        };
         frame.render_widget(
             Gauge::default()
                 .block(
@@ -63,7 +72,7 @@ pub fn inline(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn input_form(frame: &mut Frame<'_>) {
+pub fn input_form(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "input-form");
     let card = centered(area, 72, 32);
     let [heading, name, age, email, validation, submit, footer] = Layout::vertical([
@@ -82,25 +91,56 @@ pub fn input_form(frame: &mut Frame<'_>) {
             .style(Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
         heading,
     );
-    render_field(frame, name, "Name", "Ferris Crab", false);
-    render_field(frame, age, "Age", "29", false);
-    render_field(frame, email, "Email", "ferris@example", true);
+    let email_invalid = !state.fields[2].contains('@') || !state.fields[2].contains('.');
+    render_field(
+        frame,
+        name,
+        "Name",
+        &state.fields[0],
+        false,
+        state.focus == 0,
+    );
+    render_field(frame, age, "Age", &state.fields[1], false, state.focus == 1);
+    render_field(
+        frame,
+        email,
+        "Email",
+        &state.fields[2],
+        email_invalid,
+        state.focus == 2,
+    );
     frame.render_widget(
-        Paragraph::new("▲ Email must contain a complete domain")
-            .style(Style::new().fg(Color::LightRed)),
+        Paragraph::new(if state.notice.is_empty() {
+            if email_invalid {
+                "▲ Email must contain @ and a complete domain"
+            } else {
+                "✓ Form values are valid"
+            }
+        } else {
+            &state.notice
+        })
+        .style(Style::new().fg(if email_invalid {
+            Color::LightRed
+        } else {
+            Color::LightGreen
+        })),
         validation,
     );
     let button = centered(submit, 24, 3);
     frame.render_widget(
-        Paragraph::new("Submit")
-            .alignment(Alignment::Center)
-            .style(
-                Style::new()
-                    .fg(Color::Black)
-                    .bg(Color::LightCyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .block(Block::new().borders(Borders::ALL)),
+        Paragraph::new(if state.submitted {
+            "Submitted ✓"
+        } else {
+            "Submit"
+        })
+        .alignment(Alignment::Center)
+        .style(
+            Style::new()
+                .fg(Color::Black)
+                .bg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(Block::new().borders(Borders::ALL)),
         button,
     );
     help(
@@ -110,9 +150,18 @@ pub fn input_form(frame: &mut Frame<'_>) {
     );
 }
 
-fn render_field(frame: &mut Frame<'_>, area: Rect, label: &str, value: &str, invalid: bool) {
+fn render_field(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    value: &str,
+    invalid: bool,
+    focused: bool,
+) {
     let border = if invalid {
         Color::LightRed
+    } else if focused {
+        ACCENT
     } else {
         Color::DarkGray
     };
@@ -127,7 +176,7 @@ fn render_field(frame: &mut Frame<'_>, area: Rect, label: &str, value: &str, inv
     );
 }
 
-pub fn minimal(frame: &mut Frame<'_>) {
+pub fn minimal(frame: &mut Frame<'_>, _state: &ExampleState) {
     let area = example_area(frame, "minimal");
     frame.render_widget(
         Paragraph::new("Hello, Ratatui!")
@@ -137,14 +186,36 @@ pub fn minimal(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn modifiers(frame: &mut Frame<'_>) {
+pub fn modifiers(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "modifiers");
-    let [title, table_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(50)]).areas(area);
+    let [title, face_variants, table_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Min(50),
+    ])
+    .areas(area);
     frame.render_widget(
-        Paragraph::new("Note: not all terminals support all modifiers")
-            .style(Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Paragraph::new(format!(
+            "Note: not all terminals support all modifiers · blink phase {}",
+            state.tick % 2
+        ))
+        .style(Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)),
         title,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("Regular  "),
+            Span::styled("Bold", Style::new().add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled("Italic", Style::new().add_modifier(Modifier::ITALIC)),
+            Span::raw("  "),
+            Span::styled(
+                "Bold Italic",
+                Style::new().add_modifier(Modifier::BOLD | Modifier::ITALIC),
+            ),
+        ]))
+        .block(section("Font face variants")),
+        face_variants,
     );
     let colors = [
         Color::Black,
@@ -193,48 +264,45 @@ pub fn modifiers(frame: &mut Frame<'_>) {
     }
 }
 
-pub fn mouse_drawing(frame: &mut Frame<'_>) {
+pub fn mouse_drawing(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "mouse-drawing");
-    let [canvas_area, footer] =
-        Layout::vertical([Constraint::Min(12), Constraint::Length(2)]).areas(area);
-    let path: Vec<(f64, f64)> = (0..180)
-        .map(|step| {
-            let angle = f64::from(step) / 14.0;
-            (
-                angle.cos() * (18.0 + f64::from(step) * 0.16),
-                angle.sin() * (8.0 + f64::from(step) * 0.07),
-            )
-        })
-        .collect();
-    frame.render_widget(
-        Canvas::default()
-            .block(section("Mouse canvas · deterministic drag gesture"))
-            .marker(Marker::Braille)
-            .x_bounds([-55.0, 55.0])
-            .y_bounds([-24.0, 24.0])
-            .paint(|ctx| {
-                ctx.draw(&Points {
-                    coords: &path,
-                    color: Color::LightMagenta,
-                });
-                if let Some(&(x, y)) = path.last() {
-                    ctx.print(
-                        x - 5.0,
-                        y + 2.0,
-                        Line::styled("cursor", Style::new().fg(Color::Yellow)),
-                    );
-                }
-            }),
-        canvas_area,
+    for &(column, row, color) in &state.mouse_points {
+        let position = Position::new(column, row);
+        if area.contains(position) {
+            frame.render_widget(
+                Paragraph::new(symbols::block::FULL).style(Style::new().fg(mouse_color(color))),
+                Rect::new(column, row, 1, 1),
+            );
+        }
+    }
+    if let Some((column, row)) = state.mouse_position {
+        let position = Position::new(column, row);
+        if area.contains(position) {
+            frame.render_widget(
+                Paragraph::new("╳").style(
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(mouse_color(state.mouse_color))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Rect::new(column, row, 1, 1),
+            );
+        }
+    }
+    let footer = Rect::new(
+        area.x,
+        area.bottom().saturating_sub(1),
+        area.width,
+        1.min(area.height),
     );
     help(
         frame,
         footer,
-        "Upstream mouse events are replayed as a fixed spiral path",
+        "Click / drag to draw  •  move to position ╳  •  Space changes color  •  c clears",
     );
 }
 
-pub fn panic(frame: &mut Frame<'_>) {
+pub fn panic(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "panic");
     let card = centered(area, 78, 24);
     let [banner, report, footer] = Layout::vertical([
@@ -243,13 +311,52 @@ pub fn panic(frame: &mut Frame<'_>) {
         Constraint::Length(3),
     ])
     .areas(card);
+    let (banner_text, banner_color, status_lines) = match state.panic_state {
+        PanicState::Ready => (
+            "PANIC HOOK READY",
+            Color::Blue,
+            vec![
+                Line::raw("Press p to run and capture the demonstration panic."),
+                Line::raw("Press e to capture the demonstration error."),
+                Line::raw("Press h to disable the local demonstration hook."),
+            ],
+        ),
+        PanicState::HookDisabled => (
+            "PANIC HOOK DISABLED",
+            Color::DarkGray,
+            vec![
+                Line::raw("The demonstration hook is disabled."),
+                Line::raw("Press F2 to reset this example safely."),
+            ],
+        ),
+        PanicState::PanicCaptured => (
+            "APPLICATION PANICKED (CAPTURED)",
+            Color::Red,
+            vec![
+                Line::styled(
+                    "message: intentional panic from the Ratatui example",
+                    Style::new().fg(Color::LightRed),
+                ),
+                Line::raw("location: examples/apps/panic/src/main.rs:42:9"),
+                Line::raw("The gallery captured the demo state instead of crashing Bevy."),
+            ],
+        ),
+        PanicState::ErrorCaptured => (
+            "APPLICATION ERROR (CAPTURED)",
+            Color::Rgb(180, 80, 20),
+            vec![
+                Line::styled("intentional demo error", Style::new().fg(Color::LightRed)),
+                Line::raw("The error path was rendered without terminating the gallery."),
+            ],
+        ),
+    };
     frame.render_widget(
-        Paragraph::new("APPLICATION PANICKED")
+        Paragraph::new(banner_text)
             .alignment(Alignment::Center)
             .style(
                 Style::new()
                     .fg(Color::White)
-                    .bg(Color::Red)
+                    .bg(banner_color)
                     .add_modifier(Modifier::BOLD),
             )
             .block(
@@ -260,24 +367,19 @@ pub fn panic(frame: &mut Frame<'_>) {
         banner,
     );
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(
-                "message: intentional panic from the Ratatui example",
-                Style::new().fg(Color::LightRed),
-            ),
-            Line::raw("location: examples/apps/panic/src/main.rs:42:9"),
-            Line::raw(""),
-            Line::raw("The panic hook restored the terminal before printing this report."),
-            Line::raw("In the Bevy port the report is captured as a deterministic UI state."),
-        ])
-        .block(section("Panic hook state"))
-        .wrap(Wrap { trim: false }),
+        Paragraph::new(status_lines)
+            .block(section("Panic hook state"))
+            .wrap(Wrap { trim: false }),
         report,
     );
-    help(frame, footer, "Press any key to exit");
+    help(
+        frame,
+        footer,
+        "p panic  •  e error  •  h disable hook  •  F2 reset",
+    );
 }
 
-pub fn popup(frame: &mut Frame<'_>) {
+pub fn popup(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "popup");
     let text = (1..=30)
         .map(|line| {
@@ -292,32 +394,34 @@ pub fn popup(frame: &mut Frame<'_>) {
             .wrap(Wrap { trim: false }),
         area,
     );
-    let popup = centered(area, 56, 15);
-    frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(
-                "Popup",
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    if state.toggled {
+        let popup = centered(area, 56, 15);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled(
+                    "Popup",
+                    Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+                Line::raw(""),
+                Line::raw("This area was cleared before rendering."),
+                Line::raw("No background text should show through."),
+                Line::raw(""),
+                Line::styled("Press p to close", Style::new().fg(Color::LightCyan)),
+            ])
+            .alignment(Alignment::Center)
+            .block(
+                Block::new()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Double)
+                    .border_style(Style::new().fg(PURPLE)),
             ),
-            Line::raw(""),
-            Line::raw("This area was cleared before rendering."),
-            Line::raw("No background text should show through."),
-            Line::raw(""),
-            Line::styled("Press p to close", Style::new().fg(Color::LightCyan)),
-        ])
-        .alignment(Alignment::Center)
-        .block(
-            Block::new()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Double)
-                .border_style(Style::new().fg(PURPLE)),
-        ),
-        popup,
-    );
+            popup,
+        );
+    }
 }
 
-pub fn release_header(frame: &mut Frame<'_>) {
+pub fn release_header(frame: &mut Frame<'_>, _state: &ExampleState) {
     let area = example_area(frame, "release-header");
     frame.buffer_mut().set_style(
         area,
@@ -393,7 +497,7 @@ pub fn release_header(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn scrollbar(frame: &mut Frame<'_>) {
+pub fn scrollbar(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "scrollbar");
     let [heading, left, right] = Layout::vertical([
         Constraint::Length(3),
@@ -413,11 +517,14 @@ pub fn scrollbar(frame: &mut Frame<'_>) {
             ))
         })
         .collect::<Vec<_>>();
-    let mut vertical_state = ScrollbarState::new(long_text.len()).position(7);
+    let vertical_position = state.offset_y.clamp(0, long_text.len() as i32 - 1) as usize;
+    let mirrored_position = state.secondary.min(long_text.len().saturating_sub(1));
+    let horizontal_position = state.offset_x.max(0) as usize;
+    let mut vertical_state = ScrollbarState::new(long_text.len()).position(vertical_position);
     frame.render_widget(
         Paragraph::new(long_text.clone())
             .block(section("Vertical with arrows"))
-            .scroll((7, 0)),
+            .scroll((vertical_position as u16, 0)),
         vertical_a,
     );
     frame.render_stateful_widget(
@@ -427,11 +534,11 @@ pub fn scrollbar(frame: &mut Frame<'_>) {
         vertical_a,
         &mut vertical_state,
     );
-    let mut left_state = ScrollbarState::new(long_text.len()).position(11);
+    let mut left_state = ScrollbarState::new(long_text.len()).position(mirrored_position);
     frame.render_widget(
         Paragraph::new(long_text.clone())
             .block(section("Mirrored no track"))
-            .scroll((11, 0)),
+            .scroll((mirrored_position as u16, 0)),
         vertical_b,
     );
     frame.render_stateful_widget(
@@ -442,8 +549,20 @@ pub fn scrollbar(frame: &mut Frame<'_>) {
         vertical_b.inner(Margin::new(0, 1)),
         &mut left_state,
     );
-    render_horizontal_scroll(frame, horizontal_a, "Custom thumb", 18, "▓");
-    render_horizontal_scroll(frame, horizontal_b, "Track and thumb", 33, "░");
+    render_horizontal_scroll(
+        frame,
+        horizontal_a,
+        "Custom thumb",
+        horizontal_position,
+        "▓",
+    );
+    render_horizontal_scroll(
+        frame,
+        horizontal_b,
+        "Track and thumb",
+        horizontal_position.saturating_add(15),
+        "░",
+    );
 }
 
 fn render_horizontal_scroll(
@@ -470,7 +589,7 @@ fn render_horizontal_scroll(
     );
 }
 
-pub fn table(frame: &mut Frame<'_>) {
+pub fn table(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "table");
     let [table_area, footer] =
         Layout::vertical([Constraint::Min(30), Constraint::Length(4)]).areas(area);
@@ -513,6 +632,13 @@ pub fn table(frame: &mut Frame<'_>) {
                 Color::Rgb(31, 40, 55)
             }))
     });
+    let highlight_colors = [
+        Color::LightYellow,
+        Color::LightCyan,
+        Color::LightMagenta,
+        Color::LightGreen,
+        Color::LightRed,
+    ];
     let table = Table::new(
         rows,
         [
@@ -531,7 +657,7 @@ pub fn table(frame: &mut Frame<'_>) {
     )
     .row_highlight_style(
         Style::new()
-            .fg(Color::LightYellow)
+            .fg(highlight_colors[state.palette % highlight_colors.len()])
             .add_modifier(Modifier::REVERSED),
     )
     .column_highlight_style(Style::new().fg(Color::LightCyan))
@@ -539,11 +665,11 @@ pub fn table(frame: &mut Frame<'_>) {
     .highlight_symbol(" █ ")
     .highlight_spacing(HighlightSpacing::Always)
     .block(section("People"));
-    let mut state = TableState::default()
-        .with_selected(2)
-        .with_selected_column(1);
-    frame.render_stateful_widget(table, table_area, &mut state);
-    let mut scroll = ScrollbarState::new(12).position(2);
+    let mut table_state = TableState::default()
+        .with_selected(state.selected.unwrap_or(0))
+        .with_selected_column(state.secondary);
+    frame.render_stateful_widget(table, table_area, &mut table_state);
+    let mut scroll = ScrollbarState::new(6).position(state.selected.unwrap_or(0));
     frame.render_stateful_widget(
         Scrollbar::default()
             .orientation(ScrollbarOrientation::VerticalRight)
@@ -564,7 +690,7 @@ pub fn table(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn todo_list(frame: &mut Frame<'_>) {
+pub fn todo_list(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "todo-list");
     let [header, content, footer] = Layout::vertical([
         Constraint::Length(5),
@@ -581,20 +707,26 @@ pub fn todo_list(frame: &mut Frame<'_>) {
     );
     let [list_area, details] =
         Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).areas(content);
-    let tasks = [
-        ("✓", "Create Bevy backend", Color::LightGreen),
-        ("✓", "Anchor wide graphemes", Color::LightGreen),
-        ("•", "Port Ratatui examples", Color::LightYellow),
-        (" ", "Publish crate documentation", Color::DarkGray),
-        (" ", "Celebrate with cheese", Color::DarkGray),
-    ]
-    .map(|(mark, text, color)| {
+    let task_names = [
+        "Create Bevy backend",
+        "Anchor wide graphemes",
+        "Port Ratatui examples",
+        "Publish crate documentation",
+        "Celebrate with cheese",
+    ];
+    let tasks = task_names.iter().enumerate().map(|(index, text)| {
+        let complete = state.todo_done[index];
+        let (mark, color) = if complete {
+            ("✓", Color::LightGreen)
+        } else {
+            ("•", Color::LightYellow)
+        };
         ListItem::new(Line::from(vec![
             Span::styled(format!(" {mark} "), Style::new().fg(color)),
-            Span::raw(text),
+            Span::raw(*text),
         ]))
     });
-    let mut list_state = ListState::default().with_selected(Some(2));
+    let mut list_state = ListState::default().with_selected(state.selected);
     frame.render_stateful_widget(
         List::new(tasks)
             .block(section("Tasks"))
@@ -603,23 +735,36 @@ pub fn todo_list(frame: &mut Frame<'_>) {
         list_area,
         &mut list_state,
     );
-    frame.render_widget(
-        Paragraph::new(vec![
+    let details_lines = if let Some(selected) = state.selected {
+        vec![
             Line::styled(
-                "Port Ratatui examples",
+                task_names[selected],
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
             Line::raw(""),
-            Line::raw("Status: in progress"),
+            Line::raw(if state.todo_done[selected] {
+                "Status: completed"
+            } else {
+                "Status: todo"
+            }),
             Line::raw("Priority: high"),
             Line::raw(""),
             Line::raw("Acceptance criteria:"),
-            Line::raw("• every upstream runnable target is represented"),
-            Line::raw("• fixtures are deterministic and offline"),
-            Line::raw("• all frames are exported and inspected"),
-        ])
-        .block(section("Selected task"))
-        .wrap(Wrap { trim: false }),
+            Line::raw("• selection is owned by ListState"),
+            Line::raw("• Enter/right toggles completion"),
+            Line::raw("• Home/End navigate to the bounds"),
+        ]
+    } else {
+        vec![
+            Line::styled("No task selected", Style::new().fg(Color::DarkGray)),
+            Line::raw(""),
+            Line::raw("Press j, k, or an arrow key to select a task."),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(details_lines)
+            .block(section("Selected task"))
+            .wrap(Wrap { trim: false }),
         details,
     );
     help(
@@ -629,7 +774,7 @@ pub fn todo_list(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn tracing(frame: &mut Frame<'_>) {
+pub fn tracing(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "tracing");
     let [stats, events, footer] = Layout::vertical([
         Constraint::Length(6),
@@ -639,9 +784,15 @@ pub fn tracing(frame: &mut Frame<'_>) {
     .areas(area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("events 128", Style::new().fg(ACCENT)),
+            Span::styled(
+                format!("events {}", 128 + state.tick),
+                Style::new().fg(ACCENT),
+            ),
             Span::raw("   "),
-            Span::styled("info 91", Style::new().fg(GREEN)),
+            Span::styled(
+                format!("info {}", 91 + state.tick / 2),
+                Style::new().fg(GREEN),
+            ),
             Span::raw("   "),
             Span::styled("warn 4", Style::new().fg(ORANGE)),
             Span::raw("   "),
@@ -651,7 +802,7 @@ pub fn tracing(frame: &mut Frame<'_>) {
         .block(section("Tracing subscriber")),
         stats,
     );
-    let logs = [
+    let mut logs = [
         (
             "07:20:14.102",
             "INFO ",
@@ -696,9 +847,22 @@ pub fn tracing(frame: &mut Frame<'_>) {
             Span::raw("  "),
             Span::raw(message),
         ])
-    });
+    })
+    .to_vec();
+    logs.push(Line::from(vec![
+        Span::styled(
+            format!("+{:08.3}", state.tick as f64 / 10.0),
+            Style::new().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            " INFO ",
+            Style::new().fg(GREEN).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("   input", Style::new().fg(PURPLE)),
+        Span::raw(format!("  gallery tick revision={}", state.tick)),
+    ]));
     frame.render_widget(
-        Paragraph::new(logs.to_vec()).block(section("Captured events")),
+        Paragraph::new(logs).block(section("Captured events")),
         events,
     );
     help(
@@ -708,7 +872,7 @@ pub fn tracing(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn user_input(frame: &mut Frame<'_>) {
+pub fn user_input(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "user-input");
     let card = centered(area, 80, 28);
     let [prompt, input, preview, footer] = Layout::vertical([
@@ -724,21 +888,35 @@ pub fn user_input(frame: &mut Frame<'_>) {
             .style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         prompt,
     );
+    let mut input_spans = vec![Span::raw("> ")];
+    let (before, cursor_character, after) = split_at_character(&state.input, state.cursor);
+    input_spans.push(Span::raw(before));
+    if state.input_mode == InputMode::Editing {
+        input_spans.push(Span::styled(
+            cursor_character.unwrap_or(' ').to_string(),
+            Style::new().fg(Color::Black).bg(Color::Gray),
+        ));
+    } else if let Some(character) = cursor_character {
+        input_spans.push(Span::raw(character.to_string()));
+    }
+    input_spans.push(Span::raw(after));
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw("> draw a "),
-            Span::styled("wide 界", Style::new().fg(ACCENT)),
-            Span::raw(" character and emoji 🚀"),
-            Span::styled("▌", Style::new().fg(Color::Black).bg(Color::Gray)),
-        ]))
-        .block(
+        Paragraph::new(Line::from(input_spans)).block(
             Block::new()
                 .borders(Borders::ALL)
                 .border_style(Style::new().fg(ACCENT))
-                .title(" Input "),
+                .title(if state.input_mode == InputMode::Editing {
+                    " Input · editing "
+                } else {
+                    " Input · normal "
+                }),
         ),
         input,
     );
+    let preview_text = state
+        .messages
+        .last()
+        .map_or(state.input.as_str(), String::as_str);
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(
@@ -746,7 +924,7 @@ pub fn user_input(frame: &mut Frame<'_>) {
                 Style::new().fg(GREEN).add_modifier(Modifier::UNDERLINED),
             ),
             Line::raw(""),
-            Line::raw("draw a wide 界 character and emoji 🚀"),
+            Line::raw(preview_text.to_owned()),
             Line::raw(""),
             Line::styled(
                 "Column anchors after wide glyphs remain stable.",
@@ -757,10 +935,18 @@ pub fn user_input(frame: &mut Frame<'_>) {
         .block(section("Output")),
         preview,
     );
-    help(frame, footer, "Enter submit  •  Ctrl+C quit");
+    help(
+        frame,
+        footer,
+        if state.input_mode == InputMode::Editing {
+            "Type text  •  ←/→ move cursor  •  Enter submit  •  Esc normal mode"
+        } else {
+            "e edit  •  q quit"
+        },
+    );
 }
 
-pub fn volatility_surface(frame: &mut Frame<'_>) {
+pub fn volatility_surface(frame: &mut Frame<'_>, state: &ExampleState) {
     let area = example_area(frame, "volatility-surface");
     let [header, surface, footer] = Layout::vertical([
         Constraint::Length(5),
@@ -789,14 +975,24 @@ pub fn volatility_surface(frame: &mut Frame<'_>) {
             .x_bounds([-75.0, 75.0])
             .y_bounds([-35.0, 35.0])
             .paint(|ctx| {
+                let zoom = 1.1_f64.powi(state.value);
+                let palette = [
+                    (70_u8, 210_u8, 150_u8),
+                    (80, 150, 235),
+                    (220, 120, 180),
+                    (235, 175, 80),
+                ][state.palette % 4];
                 for expiry in 0..13 {
                     let depth = f64::from(expiry);
                     let mut previous = None;
                     for strike in 0..31 {
                         let x = f64::from(strike) - 15.0;
-                        let smile = x.powi(2) * 0.045 + (depth * 0.45).sin() * 1.8;
-                        let screen_x = x * 3.4 + depth * 1.7 - 10.0;
-                        let screen_y = smile * 1.5 + depth * 1.25 - 20.0;
+                        let smile = x.powi(2) * 0.045
+                            + (depth * 0.45 + state.tick as f64 * 0.03).sin() * 1.8;
+                        let screen_x =
+                            (x * 3.4 + depth * 1.7 - 10.0) * zoom + f64::from(state.offset_x) * 2.0;
+                        let screen_y = (smile * 1.5 + depth * 1.25 - 20.0) * zoom
+                            + f64::from(state.offset_y) * 2.0;
                         if let Some((px, py)) = previous {
                             ctx.draw(&CanvasLine {
                                 x1: px,
@@ -804,9 +1000,9 @@ pub fn volatility_surface(frame: &mut Frame<'_>) {
                                 x2: screen_x,
                                 y2: screen_y,
                                 color: Color::Rgb(
-                                    (70 + expiry * 10) as u8,
-                                    (210 - expiry * 6) as u8,
-                                    (150 + expiry * 7) as u8,
+                                    palette.0.saturating_add((expiry * 7) as u8),
+                                    palette.1.saturating_sub((expiry * 5) as u8),
+                                    palette.2.saturating_add((expiry * 4) as u8),
                                 ),
                             });
                         }
@@ -830,11 +1026,23 @@ pub fn volatility_surface(frame: &mut Frame<'_>) {
     help(
         frame,
         footer,
-        "←/→ rotate  •  ↑/↓ tilt  •  r regenerate  •  deterministic market fixture",
+        if state.toggled {
+            "PAUSED  •  Space resume  •  hjkl rotate  •  z/x zoom  •  p palette"
+        } else {
+            "hjkl/arrows rotate  •  z/x zoom  •  p palette  •  Space pause"
+        },
     );
 }
 
-pub fn weather(frame: &mut Frame<'_>) {
+fn split_at_character(value: &str, cursor: usize) -> (String, Option<char>, String) {
+    let mut characters = value.chars();
+    let before = characters.by_ref().take(cursor).collect::<String>();
+    let at = characters.next();
+    let after = characters.collect::<String>();
+    (before, at, after)
+}
+
+pub fn weather(frame: &mut Frame<'_>, _state: &ExampleState) {
     let area = example_area(frame, "weather");
     let card = centered(area, 84, 34);
     let [heading, current, chart_area, footer] = Layout::vertical([
@@ -890,7 +1098,7 @@ pub fn weather(frame: &mut Frame<'_>) {
     );
 }
 
-pub fn widget_ref_container(frame: &mut Frame<'_>) {
+pub fn widget_ref_container(frame: &mut Frame<'_>, _state: &ExampleState) {
     let area = example_area(frame, "widget-ref-container");
     let card = centered(area, 70, 28);
     let [heading, greeting, farewell, footer] = Layout::vertical([

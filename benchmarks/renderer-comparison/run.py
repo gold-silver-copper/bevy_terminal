@@ -183,10 +183,11 @@ def reject_stale_binaries(adapters: list[dict[str, Any]], files: list[pathlib.Pa
                 or benchmark_relative.startswith(f"adapters/{adapter_dir}/")
                 or benchmark_relative.startswith(f"patches/{adapter['id']}/")
                 or (
-                    adapter["id"] == "bevy_grid"
+                    adapter["id"] == "bevy_terminal_ratatui"
                     and (
                         relative in {"Cargo.lock", "Cargo.toml", "README.md"}
                         or relative.startswith("src/")
+                        or relative.startswith("crates/bevy_terminal/")
                     )
                 )
             ):
@@ -569,22 +570,22 @@ def write_parity_markdown(path: pathlib.Path, rows: list[dict[str, Any]]) -> Non
     cases = sorted(
         (workload, cols, grid_rows)
         for adapter, workload, cols, grid_rows in indexed
-        if adapter == "bevy_grid"
+        if adapter == "bevy_terminal_ratatui"
         and ("bevy_tui_texture", workload, cols, grid_rows) in indexed
     )
     if not cases:
-        path.write_text("# bevy_grid parity\n\nComparison pair was not present.\n", encoding="utf-8")
+        path.write_text("# bevy_terminal_ratatui parity\n\nComparison pair was not present.\n", encoding="utf-8")
         return
     ratios: list[float] = []
     lines = [
-        "# bevy_grid parity with bevy_tui_texture",
+        "# bevy_terminal_ratatui parity with bevy_tui_texture",
         "",
-        "| workload | grid | bevy_grid p50/p95 ms | bevy_tui_texture p50/p95 ms | p50 ratio | p95 ratio | gate |",
+        "| workload | grid | bevy_terminal_ratatui p50/p95 ms | bevy_tui_texture p50/p95 ms | p50 ratio | p95 ratio | gate |",
         "|---|---:|---:|---:|---:|---:|---:|",
     ]
     all_cases_pass = True
     for workload, cols, grid_rows in cases:
-        grid = indexed[("bevy_grid", workload, cols, grid_rows)]
+        grid = indexed[("bevy_terminal_ratatui", workload, cols, grid_rows)]
         reference = indexed[("bevy_tui_texture", workload, cols, grid_rows)]
         p50_ratio = grid["p50_ms"] / reference["p50_ms"]
         p95_ratio = grid["p95_ms"] / reference["p95_ms"]
