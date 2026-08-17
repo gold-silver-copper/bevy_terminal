@@ -13,7 +13,13 @@ repository = "https://github.com/gold-silver-copper/bevy_terminal"
 documentation = "https://docs.rs/bevy_terminal_ratatui"
 keywords = ["bevy", "ratatui", "terminal", "tui"]
 categories = ["game-development", "gui", "rendering"]
-exclude = ["benchmarks/renderer-comparison/**", "crates/**", "*_PROMPT.md"]
+exclude = [
+    "benchmarks/renderer-comparison/**",
+    "crates/**",
+    "*_PROMPT.md",
+    "assets/fonts/*",
+    "!assets/fonts/jetbrains-mono",
+]
 
 [dependencies]
 bevy_terminal = { version = "0.1.1", path = "crates/bevy_terminal" }

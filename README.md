@@ -170,7 +170,10 @@ cargo run --example high_dpi_export
 cargo run --example multiple_terminals_export
 ```
 
-`render_test` is the single all-in-one check: all 512 modifier combinations,
+`render_test` is the single all-in-one check (press `Space`/`Tab` to cycle
+through the vendored font families under `assets/fonts/`, `Shift+Tab` for the
+previous one; `RENDER_TEST_FONT=<index|dir>` picks the initial family): all
+512 modifier combinations,
 the four font faces, ANSI 16 as foreground/background/reversed, the 256-color
 cube and grayscale ramp, RGB gradients, underline colors, every box-drawing
 weight and junction, block/quadrant/shade/braille elements, wide CJK/emoji

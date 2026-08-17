@@ -7,6 +7,11 @@
 //! shade/braille elements, wide CJK/emoji cells, combining marks, RTL/Indic
 //! text, and a blinking cursor. Set `RENDER_TEST_EXPORT=1` to write the
 //! renderer-owned texture to `target/render-test/` headlessly instead.
+//!
+//! Press `Space`/`Tab` (or `Shift+Tab` to go back) to cycle through the vendored
+//! font families under `assets/fonts/`, so glyph coverage and metrics can be
+//! compared per font; the current family is shown in the first line and the
+//! window title.
 
 #[allow(dead_code)]
 mod common;
@@ -14,8 +19,8 @@ mod common;
 use bevy::{prelude::*, render::RenderPlugin, window::WindowResolution};
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::{
-    BevyTerminalPlugin, RatatuiBackend, TerminalBatchOutput, TerminalRenderConfig,
-    TerminalRenderScale, TerminalSurface,
+    BevyTerminalPlugin, RatatuiBackend, TerminalBatch, TerminalBatchOutput, TerminalRenderConfig,
+    TerminalRenderScale,
 };
 use ratatui::{
     Terminal,
@@ -24,6 +29,60 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+
+/// Font families vendored under `assets/fonts/`, loaded from disk at runtime so
+/// the large optional families stay out of the published crate. Each entry is
+/// (display name, directory, regular, bold, italic, bold-italic).
+const FAMILIES: [(&str, &str, &str, &str, &str, &str); 6] = [
+    (
+        "JetBrains Mono 2.304",
+        "jetbrains-mono",
+        "JetBrainsMono-Regular.ttf",
+        "JetBrainsMono-Bold.ttf",
+        "JetBrainsMono-Italic.ttf",
+        "JetBrainsMono-BoldItalic.ttf",
+    ),
+    (
+        "Cascadia Mono 2407.24",
+        "cascadia-mono",
+        "CascadiaMono-Regular.ttf",
+        "CascadiaMono-Bold.ttf",
+        "CascadiaMono-Italic.ttf",
+        "CascadiaMono-BoldItalic.ttf",
+    ),
+    (
+        "Hack 3.003",
+        "hack",
+        "Hack-Regular.ttf",
+        "Hack-Bold.ttf",
+        "Hack-Italic.ttf",
+        "Hack-BoldItalic.ttf",
+    ),
+    (
+        "DejaVu Sans Mono 2.37",
+        "dejavu-sans-mono",
+        "DejaVuSansMono.ttf",
+        "DejaVuSansMono-Bold.ttf",
+        "DejaVuSansMono-Oblique.ttf",
+        "DejaVuSansMono-BoldOblique.ttf",
+    ),
+    (
+        "Iosevka Fixed 34.8.0",
+        "iosevka-fixed",
+        "IosevkaFixed-Regular.ttf",
+        "IosevkaFixed-Bold.ttf",
+        "IosevkaFixed-Italic.ttf",
+        "IosevkaFixed-BoldItalic.ttf",
+    ),
+    (
+        "Source Code Pro 2.042",
+        "source-code-pro",
+        "SourceCodePro-Regular.ttf",
+        "SourceCodePro-Bold.ttf",
+        "SourceCodePro-It.ttf",
+        "SourceCodePro-BoldIt.ttf",
+    ),
+];
 
 const COLUMNS: u16 = 132;
 const ROWS: u16 = 62;
@@ -61,9 +120,64 @@ const ANSI: [(Color, &str); 16] = [
     (Color::White, "Wht"),
 ];
 
+#[derive(Clone)]
+struct LoadedFamily {
+    name: &'static str,
+    regular: Handle<Font>,
+    bold: Handle<Font>,
+    italic: Handle<Font>,
+    bold_italic: Handle<Font>,
+}
+
+impl LoadedFamily {
+    fn apply(&self, config: &mut TerminalRenderConfig) {
+        config.font = self.regular.clone().into();
+        config.bold_font = Some(self.bold.clone().into());
+        config.italic_font = Some(self.italic.clone().into());
+        config.bold_italic_font = Some(self.bold_italic.clone().into());
+    }
+}
+
+#[derive(Resource)]
+struct FontCycle {
+    families: Vec<LoadedFamily>,
+    current: usize,
+    terminal: Terminal<RatatuiBackend>,
+}
+
+/// Loads every vendored family that is present on disk; missing files are skipped.
+fn load_families(app: &mut App) -> Vec<LoadedFamily> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+    let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
+    FAMILIES
+        .iter()
+        .filter_map(|(name, dir, regular, bold, italic, bold_italic)| {
+            let mut load = |file: &str| {
+                std::fs::read(root.join(dir).join(file))
+                    .ok()
+                    .map(|bytes| fonts.add(Font::from_bytes(bytes)))
+            };
+            let regular = load(regular)?;
+            let bold = load(bold)?;
+            let italic = load(italic)?;
+            let bold_italic = load(bold_italic)?;
+            Some(LoadedFamily {
+                name,
+                regular,
+                bold,
+                italic,
+                bold_italic,
+            })
+        })
+        .collect()
+}
+
 fn main() {
     let export = std::env::var_os("RENDER_TEST_EXPORT").is_some();
-    let surface = render_test_surface();
+    let backend = RatatuiBackend::new(COLUMNS, ROWS);
+    let surface = backend.surface();
+    let mut terminal = Terminal::new(backend).expect("the in-memory backend is infallible");
+    draw_render_test(&mut terminal, FAMILIES[0].0);
     let config = TerminalRenderConfig {
         cell_size: CELL,
         font_size: 18.0,
@@ -109,8 +223,28 @@ fn main() {
             ..default()
         }));
     }
-    let fonts = common::fonts::load(&mut app);
-    let plugin = BevyTerminalPlugin::new(surface).with_config(fonts.configure(config));
+    let families = load_families(&mut app);
+    // `RENDER_TEST_FONT` selects the initial family by index or directory name.
+    let initial = std::env::var("RENDER_TEST_FONT")
+        .ok()
+        .and_then(|value| {
+            value.parse::<usize>().ok().or_else(|| {
+                FAMILIES
+                    .iter()
+                    .position(|family| family.1 == value || family.0.starts_with(&value))
+            })
+        })
+        .unwrap_or(0)
+        .min(families.len().saturating_sub(1));
+    let mut config = config;
+    families[initial].apply(&mut config);
+    draw_render_test(&mut terminal, families[initial].name);
+    let plugin = BevyTerminalPlugin::new(surface).with_config(config);
+    app.insert_resource(FontCycle {
+        families,
+        current: initial,
+        terminal,
+    });
     if export {
         app.add_plugins((export_plugin, plugin.headless()))
             .add_systems(Startup, setup_export)
@@ -122,12 +256,45 @@ fn main() {
             .add_systems(Startup, |mut commands: Commands| {
                 commands.spawn(Camera2d);
             })
+            .add_systems(Update, cycle_fonts)
             .run();
     }
 }
 
+/// Space/Tab select the next family, Shift+Tab or Backspace the previous one.
+fn cycle_fonts(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut cycle: ResMut<FontCycle>,
+    mut terminals: Query<&mut TerminalBatch>,
+    mut windows: Query<&mut Window>,
+) {
+    let count = cycle.families.len();
+    if count == 0 {
+        return;
+    }
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let next = if keys.just_pressed(KeyCode::Space) || (keys.just_pressed(KeyCode::Tab) && !shift) {
+        (cycle.current + 1) % count
+    } else if keys.just_pressed(KeyCode::Backspace) || (keys.just_pressed(KeyCode::Tab) && shift) {
+        (cycle.current + count - 1) % count
+    } else {
+        return;
+    };
+    cycle.current = next;
+    let family = cycle.families[next].clone();
+    for mut terminal in &mut terminals {
+        family.apply(terminal.config_mut());
+    }
+    for mut window in &mut windows {
+        window.title = format!("bevy_terminal_ratatui · render test · {}", family.name);
+    }
+    let FontCycle { terminal, .. } = &mut *cycle;
+    draw_render_test(terminal, family.name);
+}
+
 fn setup_export(
     mut commands: Commands,
+    cycle: Res<FontCycle>,
     outputs: Query<&TerminalBatchOutput>,
     mut export_sources: ResMut<Assets<ImageExportSource>>,
 ) {
@@ -135,7 +302,7 @@ fn setup_export(
     commands.spawn((
         ImageExport(export_sources.add(output.image.clone())),
         ImageExportSettings {
-            output_dir: "target/render-test".into(),
+            output_dir: format!("target/render-test/{}", FAMILIES[cycle.current].1),
             extension: "png".into(),
         },
     ));
@@ -170,16 +337,15 @@ fn modifier_combination(bits: u16) -> Modifier {
         .fold(Modifier::empty(), |set, (_, (modifier, _))| set | *modifier)
 }
 
-fn render_test_surface() -> TerminalSurface {
-    let backend = RatatuiBackend::new(COLUMNS, ROWS);
-    let surface = backend.surface();
-    let mut terminal = Terminal::new(backend).expect("the in-memory backend is infallible");
+fn draw_render_test(terminal: &mut Terminal<RatatuiBackend>, font_name: &str) {
     terminal
         .draw(|frame| {
             let mut lines: Vec<Line> = Vec::new();
 
             // 1. Font faces and named modifiers.
-            lines.push(heading(" 1. Faces and modifiers  (regular / bold / italic / bold+italic must be four distinct faces) "));
+            lines.push(heading(&format!(
+                " 1. Faces and modifiers  (regular / bold / italic / bold+italic must be four distinct faces)   font: {font_name}   Space/Tab = next font, Shift+Tab = previous "
+            )));
             let mut faces = vec![label("faces:    ")];
             for (text, modifier) in [
                 ("Regular", Modifier::empty()),
@@ -424,7 +590,6 @@ fn render_test_surface() -> TerminalSurface {
             frame.set_cursor_position(Position::new(14, cursor_row_of_cursor_line()));
         })
         .expect("drawing into the in-memory backend is infallible");
-    surface
 }
 
 /// Row index of the "cursor here >" line, derived from the fixed layout above.
