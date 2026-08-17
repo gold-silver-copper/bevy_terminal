@@ -22,6 +22,9 @@ const FONT_FACES: [&[u8]; 16] = [
     include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-ExtraBoldItalic.ttf"),
 ];
 
+/// JetBrains Mono's horizontal advance as a fraction of the em size.
+pub const ADVANCE_EM: f32 = 0.6;
+
 const REGULAR: usize = 6;
 const ITALIC: usize = 7;
 const BOLD: usize = 12;
@@ -37,8 +40,11 @@ pub struct JetBrainsMonoFonts {
 }
 
 impl JetBrainsMonoFonts {
-    /// Applies deterministic regular, bold, italic, and bold-italic faces.
+    /// Applies deterministic regular, bold, italic, and bold-italic faces and sizes
+    /// the font so its 0.6 em advance fills the configured cell width exactly, which
+    /// keeps box-drawing and block glyphs seamless.
     pub fn configure(&self, mut config: TerminalRenderConfig) -> TerminalRenderConfig {
+        config.font_size = config.cell_size.x / ADVANCE_EM;
         config.font = self.regular.clone().into();
         config.bold_font = Some(self.bold.clone().into());
         config.italic_font = Some(self.italic.clone().into());

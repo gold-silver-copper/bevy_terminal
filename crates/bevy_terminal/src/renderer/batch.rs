@@ -32,9 +32,8 @@ use bevy::{
 };
 
 use super::{
-    PixelGeometry, ResolvedStyle, TerminalRenderConfig, TerminalRenderScale, TextRun,
-    block_geometry, cell_span, cursor_should_be_visible, line_glyph, push_block, push_line_glyph,
-    push_quadrants, quadrant_mask, text_font,
+    PixelGeometry, ResolvedStyle, TerminalRenderConfig, TerminalRenderScale, cell_span,
+    cursor_should_be_visible, text_font,
 };
 use crate::{TerminalSnapshot, TerminalSurface};
 
@@ -332,7 +331,7 @@ fn make_target_image(size: UVec2) -> Image {
     image.texture_descriptor.usage =
         TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC;
     // The terminal is rasterized at its final physical resolution. Filtering it again in the UI
-    // presentation stage softens glyph edges and can open seams between exact geometry cells.
+    // presentation stage softens glyph edges and can open seams between adjacent glyph cells.
     image.sampler = ImageSampler::nearest();
     image
 }
@@ -388,7 +387,9 @@ fn resolve_raster_scale(
 fn physical_config(config: &TerminalRenderConfig, raster_scale: f32) -> TerminalRenderConfig {
     let mut physical = config.clone();
     physical.cell_size = (config.cell_size * raster_scale).round().max(Vec2::ONE);
-    physical.font_size = (config.font_size * raster_scale).round().max(1.0);
+    // Cells snap to whole physical pixels, but the font size stays fractional so a
+    // font can be sized to make its advance fill the cell exactly.
+    physical.font_size = (config.font_size * raster_scale).max(1.0);
     physical.origin = Vec2::ZERO;
     physical
 }
@@ -943,31 +944,9 @@ fn build_scene(
         );
         let mut background_start = 0;
         while background_start < styles.len() {
-            if !cells[background_start].is_continuation()
-                && procedural_cell_code(
-                    cells[background_start].symbol(),
-                    &styles[background_start],
-                    blink,
-                    raster_scale,
-                )
-                .is_some()
-            {
-                background_start += 1;
-                continue;
-            }
             let color = styles[background_start].background;
             let mut background_end = background_start + 1;
-            while background_end < styles.len()
-                && styles[background_end].background == color
-                && (cells[background_end].is_continuation()
-                    || procedural_cell_code(
-                        cells[background_end].symbol(),
-                        &styles[background_end],
-                        blink,
-                        raster_scale,
-                    )
-                    .is_none())
-            {
+            while background_end < styles.len() && styles[background_end].background == color {
                 background_end += 1;
             }
             if full && color == config.theme.background {
@@ -1001,42 +980,7 @@ fn build_scene(
                 column += width;
                 continue;
             }
-            let mut exact = Vec::new();
-            let exact_run = || TextRun {
-                start: column as u16,
-                width: width as u16,
-                text: symbol.to_owned(),
-                style: style.clone(),
-            };
-            let procedural = procedural_cell_code(symbol, style, blink, raster_scale);
-            if let Some(code) = procedural {
-                foregrounds.push(procedural_cell_quad(
-                    PixelGeometry {
-                        x: column as f32 * config.cell_size.x,
-                        y: f32::from(row) * config.cell_size.y,
-                        width: config.cell_size.x,
-                        height: config.cell_size.y,
-                    },
-                    style.foreground,
-                    style.background,
-                    code,
-                    size,
-                ));
-            } else if let Some(geometry) = block_geometry(symbol) {
-                push_block(&mut exact, &exact_run(), row, config, geometry, 1);
-            } else if let Some(mask) = quadrant_mask(symbol) {
-                push_quadrants(&mut exact, &exact_run(), row, config, mask, 1);
-            } else if let Some(glyph) = line_glyph(symbol) {
-                push_line_glyph(
-                    &mut exact,
-                    &exact_run(),
-                    row,
-                    config,
-                    glyph,
-                    1,
-                    raster_scale.round().max(1.0),
-                );
-            } else if symbol != " " && !symbol.is_empty() {
+            if symbol != " " && !symbol.is_empty() {
                 let shaped = cached_shape(
                     symbol,
                     style,
@@ -1080,16 +1024,10 @@ fn build_scene(
                     }
                 }
             }
-            foregrounds.extend(
-                exact
-                    .into_iter()
-                    .map(|solid| solid_quad(solid.geometry, solid.color, size)),
-            );
-
             let decoration_x = column as f32 * config.cell_size.x;
             let decoration_width = width as f32 * config.cell_size.x;
             let decoration_thickness = raster_scale.round().max(1.0);
-            if procedural.is_none() && style.underlined {
+            if style.underlined {
                 decorations.push(solid_quad(
                     PixelGeometry {
                         x: decoration_x,
@@ -1102,7 +1040,7 @@ fn build_scene(
                     size,
                 ));
             }
-            if procedural.is_none() && style.crossed_out {
+            if style.crossed_out {
                 decorations.push(solid_quad(
                     PixelGeometry {
                         x: decoration_x,
@@ -1286,52 +1224,6 @@ fn solid_quad(geometry: PixelGeometry, color: Color, target: Vec2) -> QuadInstan
         // A negative final UV component lets the unified fragment shader skip the atlas sample.
         uv: Vec4::new(0.0, 0.0, 0.0, -1.0),
         color: color.to_linear().to_f32_array().into(),
-    }
-}
-
-fn procedural_cell_code(
-    symbol: &str,
-    style: &ResolvedStyle,
-    blink: BlinkPhases,
-    raster_scale: f32,
-) -> Option<u32> {
-    if style.hidden
-        || blink.hides(style)
-        || (style.underlined && style.underline != style.foreground)
-    {
-        return None;
-    }
-    let pattern = match symbol {
-        "█" => 0,
-        "▓" => 1,
-        "▒" => 2,
-        "░" => 3,
-        "▀" => 4,
-        "▄" => 5,
-        "▌" => 6,
-        "▐" => 7,
-        _ => return None,
-    };
-    let underline = u32::from(style.underlined) << 3;
-    let crossed = u32::from(style.crossed_out) << 4;
-    let pixel_scale = raster_scale.round().clamp(1.0, 15.0) as u32;
-    Some(pattern | underline | crossed | (pixel_scale << 5))
-}
-
-fn procedural_cell_quad(
-    geometry: PixelGeometry,
-    foreground: Color,
-    background: Color,
-    code: u32,
-    target: Vec2,
-) -> QuadInstance {
-    let foreground = foreground.to_linear().to_f32_array();
-    let mut background = background.to_linear().to_f32_array();
-    background[3] = -(10.0 + code as f32);
-    QuadInstance {
-        rect: clip_rect(snap_geometry(geometry), target),
-        uv: foreground.into(),
-        color: background.into(),
     }
 }
 
@@ -1746,9 +1638,7 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
-    @location(2) @interpolate(flat) mode: i32,
-    @location(3) local: vec2<f32>,
-    @location(4) data: vec4<f32>,
+    @location(2) @interpolate(flat) solid: u32,
 }
 
 @vertex
@@ -1762,48 +1652,14 @@ fn vertex(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutput
     output.position = vec4<f32>(mix(input.rect.xy, input.rect.zw, corner), 0.0, 1.0);
     output.uv = mix(input.uv.xy, input.uv.zw, corner);
     output.color = input.color;
-    output.mode = select(0i, -1i, input.uv.w < 0.0);
-    if input.color.a <= -10.0 {
-        output.mode = i32(round(-input.color.a - 10.0)) + 1i;
-    }
-    output.local = corner;
-    output.data = input.uv;
+    output.solid = select(0u, 1u, input.uv.w < 0.0);
     return output;
 }
 
 @fragment
 fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
-    if input.mode < 0i {
+    if input.solid != 0u {
         return input.color;
-    }
-    if input.mode > 0i {
-        let code = u32(input.mode - 1i);
-        let pattern = code & 7u;
-        let pixel_scale = max(code >> 5u, 1u);
-        let pixel = vec2<u32>(floor(input.position.xy)) / pixel_scale;
-        var foreground = false;
-        switch pattern {
-            case 0u: { foreground = true; }
-            case 1u: { foreground = !((pixel.x & 1u) == 0u && (pixel.y & 1u) == 0u); }
-            case 2u: { foreground = ((pixel.x + pixel.y) & 1u) == 0u; }
-            case 3u: { foreground = (pixel.x & 1u) == 0u && (pixel.y & 1u) == 0u; }
-            case 4u: { foreground = input.local.y < 0.5; }
-            case 5u: { foreground = input.local.y >= 0.5; }
-            case 6u: { foreground = input.local.x < 0.5; }
-            default: { foreground = input.local.x >= 0.5; }
-        }
-        let pixel_y = abs(dpdy(input.local.y)) * f32(pixel_scale);
-        if (code & 8u) != 0u
-            && input.local.y >= 1.0 - 2.0 * pixel_y
-            && input.local.y < 1.0 - pixel_y {
-            foreground = true;
-        }
-        if (code & 16u) != 0u
-            && input.local.y >= 0.55
-            && input.local.y < 0.55 + pixel_y {
-            foreground = true;
-        }
-        return select(vec4<f32>(input.color.rgb, 1.0), input.data, foreground);
     }
     let sample = textureSample(glyph_atlas, glyph_sampler, input.uv);
     if input.color.a >= 0.0 {
@@ -1950,7 +1806,7 @@ mod tests {
         };
         let physical = physical_config(&config, 2.0);
         assert_eq!(physical.cell_size, Vec2::new(22.0, 39.0));
-        assert_eq!(physical.font_size, 35.0);
+        assert!((physical.font_size - 35.2).abs() < 1e-4);
 
         assert_eq!(
             snap_geometry(PixelGeometry {
@@ -2075,17 +1931,6 @@ mod tests {
         assert!(instances.is_empty());
         assert!(batches.is_empty());
         assert!(instance_bytes(&instances).is_empty());
-    }
-
-    #[test]
-    fn hidden_blocks_fall_back_to_background_rendering() {
-        let mut cell = crate::TerminalCell::new("█");
-        cell.style.flags.insert(crate::StyleFlags::HIDDEN);
-        let style = ResolvedStyle::new(&cell, &super::super::TerminalTheme::default());
-        assert_eq!(
-            procedural_cell_code("█", &style, BlinkPhases::default(), 1.0),
-            None
-        );
     }
 
     #[test]

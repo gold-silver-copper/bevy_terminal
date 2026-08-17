@@ -95,9 +95,9 @@ Add the plugin several times for several terminals.
   resolves to 1.0 headless; `Fixed(scale)` rasterizes at a known scale).
 - The renderer reads the surface once per changed frame, copies only dirty
   cells into its retained snapshot, and rebuilds only changed rows.
-- Common box-drawing sets and full, fractional and quadrant blocks are emitted
-  as exact pixel geometry; other glyphs are shaped and rasterized by Bevy text,
-  cached in one renderer-owned atlas and clipped to their cells.
+- Every glyph, including box-drawing, block, shade and braille characters, is
+  shaped and rasterized from the configured font by Bevy text, cached in one
+  renderer-owned atlas and clipped to its cell; nothing is drawn procedurally.
 - `RetainedBevyTerminalPlugin` keeps the original one-Bevy-UI-entity-per-run
   path as a reference implementation.
 

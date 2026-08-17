@@ -115,7 +115,7 @@ scale factor. For example, an 18 logical-pixel font is rasterized at 36 physical
 pixels on a 2× display and the terminal image is presented at half its physical
 dimensions. A non-default Bevy `UiScale` is included in this calculation. The
 terminal image uses nearest sampling, so that final presentation does not blur
-glyph atlas texels or exact box/block geometry. Its UI origin is also snapped to
+glyph atlas texels. Its UI origin is also snapped to
 the physical pixel grid.
 
 Headless mode deliberately resolves `Automatic` to `1.0`, keeping benchmarks
@@ -127,13 +127,12 @@ pixels, `logical_size` in Bevy UI pixels, and the active `raster_scale`.
 Wide Ratatui cells are anchored to their declared columns regardless of the fallback
 glyph's natural advance. This prevents column drift, but a poorly matched font
 can still make the glyph look too narrow or too wide inside those two columns.
-Mixed-weight and dashed box-drawing characters, shaded blocks, and braille
-glyphs require a font designed to fill its advance and a line height matching
-`cell_size.y`; otherwise the font itself may introduce visible seams. The
-standard Ratatui single, heavy, and double border sets plus common full,
-fractional, and quadrant blocks are rendered as exact geometry and do not depend
-on glyph bearings. Rounded corners retain their font shape while adjoining
-geometry overlaps the cell boundary to prevent seams.
+Every glyph, including box-drawing, block, shade, quadrant and braille
+characters, is rendered from the configured font: nothing is drawn
+procedurally. Seamless borders and blocks therefore depend on a font designed to
+fill its advance and on `cell_size` matching that advance and line height (for
+JetBrains Mono at 18 px that is 10.8 × 20 logical pixels; the examples round to
+11 px cells and rely on the renderer's per-cell glyph anchoring).
 
 All Ratatui colors are supported, including the ANSI 256-color cube and true
 color. Bold, dim, italic, underline, reverse, hidden, crossed-out, slow-blink,

@@ -470,21 +470,6 @@ fn rebuild_row(
 
     for run in text_runs(cells, &config.theme) {
         let z_index = foreground_z_index(row, snapshot.size().width, run.start);
-        if let Some(geometry) = block_geometry(&run.text) {
-            push_block(&mut solids, &run, row, config, geometry, z_index);
-            push_run_decorations(&mut solids, &run, row, config, z_index);
-            continue;
-        }
-        if let Some(mask) = quadrant_mask(&run.text) {
-            push_quadrants(&mut solids, &run, row, config, mask, z_index);
-            push_run_decorations(&mut solids, &run, row, config, z_index);
-            continue;
-        }
-        if let Some(glyph) = line_glyph(&run.text) {
-            push_line_glyph(&mut solids, &run, row, config, glyph, z_index, 1.0);
-            push_run_decorations(&mut solids, &run, row, config, z_index);
-            continue;
-        }
         text.push(TextPrimitive {
             text: run.text.clone(),
             start: run.start,
@@ -787,368 +772,12 @@ fn solid_node(geometry: PixelGeometry) -> Node {
     }
 }
 
-#[derive(Clone, Copy)]
-struct BlockGeometry {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PixelGeometry {
     x: f32,
     y: f32,
     width: f32,
     height: f32,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum LineWeight {
-    Light,
-    Heavy,
-    Double,
-}
-
-#[derive(Clone, Copy)]
-struct LineGlyph {
-    weight: LineWeight,
-    directions: u8,
-}
-
-const LEFT: u8 = 1;
-const RIGHT: u8 = 2;
-const UP: u8 = 4;
-const DOWN: u8 = 8;
-const TOP_LEFT: u8 = 1;
-const TOP_RIGHT: u8 = 2;
-const BOTTOM_LEFT: u8 = 4;
-const BOTTOM_RIGHT: u8 = 8;
-
-fn line_glyph(symbol: &str) -> Option<LineGlyph> {
-    let (weight, directions) = match symbol {
-        "─" => (LineWeight::Light, LEFT | RIGHT),
-        "│" => (LineWeight::Light, UP | DOWN),
-        "┌" => (LineWeight::Light, RIGHT | DOWN),
-        "┐" => (LineWeight::Light, LEFT | DOWN),
-        "└" => (LineWeight::Light, RIGHT | UP),
-        "┘" => (LineWeight::Light, LEFT | UP),
-        "├" => (LineWeight::Light, RIGHT | UP | DOWN),
-        "┤" => (LineWeight::Light, LEFT | UP | DOWN),
-        "┬" => (LineWeight::Light, LEFT | RIGHT | DOWN),
-        "┴" => (LineWeight::Light, LEFT | RIGHT | UP),
-        "┼" => (LineWeight::Light, LEFT | RIGHT | UP | DOWN),
-        "━" => (LineWeight::Heavy, LEFT | RIGHT),
-        "┃" => (LineWeight::Heavy, UP | DOWN),
-        "┏" => (LineWeight::Heavy, RIGHT | DOWN),
-        "┓" => (LineWeight::Heavy, LEFT | DOWN),
-        "┗" => (LineWeight::Heavy, RIGHT | UP),
-        "┛" => (LineWeight::Heavy, LEFT | UP),
-        "┣" => (LineWeight::Heavy, RIGHT | UP | DOWN),
-        "┫" => (LineWeight::Heavy, LEFT | UP | DOWN),
-        "┳" => (LineWeight::Heavy, LEFT | RIGHT | DOWN),
-        "┻" => (LineWeight::Heavy, LEFT | RIGHT | UP),
-        "╋" => (LineWeight::Heavy, LEFT | RIGHT | UP | DOWN),
-        "═" => (LineWeight::Double, LEFT | RIGHT),
-        "║" => (LineWeight::Double, UP | DOWN),
-        "╔" => (LineWeight::Double, RIGHT | DOWN),
-        "╗" => (LineWeight::Double, LEFT | DOWN),
-        "╚" => (LineWeight::Double, RIGHT | UP),
-        "╝" => (LineWeight::Double, LEFT | UP),
-        "╠" => (LineWeight::Double, RIGHT | UP | DOWN),
-        "╣" => (LineWeight::Double, LEFT | UP | DOWN),
-        "╦" => (LineWeight::Double, LEFT | RIGHT | DOWN),
-        "╩" => (LineWeight::Double, LEFT | RIGHT | UP),
-        "╬" => (LineWeight::Double, LEFT | RIGHT | UP | DOWN),
-        _ => return None,
-    };
-    Some(LineGlyph { weight, directions })
-}
-
-fn block_geometry(symbol: &str) -> Option<BlockGeometry> {
-    let geometry = match symbol {
-        "█" => BlockGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: 1.0,
-            height: 1.0,
-        },
-        "▀" => BlockGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: 1.0,
-            height: 0.5,
-        },
-        "▄" => BlockGeometry {
-            x: 0.0,
-            y: 0.5,
-            width: 1.0,
-            height: 0.5,
-        },
-        "▁" => BlockGeometry {
-            x: 0.0,
-            y: 0.875,
-            width: 1.0,
-            height: 0.125,
-        },
-        "▂" => BlockGeometry {
-            x: 0.0,
-            y: 0.75,
-            width: 1.0,
-            height: 0.25,
-        },
-        "▃" => BlockGeometry {
-            x: 0.0,
-            y: 0.625,
-            width: 1.0,
-            height: 0.375,
-        },
-        "▅" => BlockGeometry {
-            x: 0.0,
-            y: 0.375,
-            width: 1.0,
-            height: 0.625,
-        },
-        "▆" => BlockGeometry {
-            x: 0.0,
-            y: 0.25,
-            width: 1.0,
-            height: 0.75,
-        },
-        "▇" => BlockGeometry {
-            x: 0.0,
-            y: 0.125,
-            width: 1.0,
-            height: 0.875,
-        },
-        "▌" => BlockGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: 0.5,
-            height: 1.0,
-        },
-        "▉" => BlockGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: 0.875,
-            height: 1.0,
-        },
-        "▊" => BlockGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: 0.75,
-            height: 1.0,
-        },
-        "▋" => BlockGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: 0.625,
-            height: 1.0,
-        },
-        "▍" => BlockGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: 0.375,
-            height: 1.0,
-        },
-        "▎" => BlockGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: 0.25,
-            height: 1.0,
-        },
-        "▏" => BlockGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: 0.125,
-            height: 1.0,
-        },
-        "▐" => BlockGeometry {
-            x: 0.5,
-            y: 0.0,
-            width: 0.5,
-            height: 1.0,
-        },
-        "▔" => BlockGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: 1.0,
-            height: 0.125,
-        },
-        "▕" => BlockGeometry {
-            x: 0.875,
-            y: 0.0,
-            width: 0.125,
-            height: 1.0,
-        },
-        _ => return None,
-    };
-    Some(geometry)
-}
-
-fn quadrant_mask(symbol: &str) -> Option<u8> {
-    let mask = match symbol {
-        "▘" => TOP_LEFT,
-        "▝" => TOP_RIGHT,
-        "▖" => BOTTOM_LEFT,
-        "▗" => BOTTOM_RIGHT,
-        "▙" => TOP_LEFT | BOTTOM_LEFT | BOTTOM_RIGHT,
-        "▛" => TOP_LEFT | TOP_RIGHT | BOTTOM_LEFT,
-        "▜" => TOP_LEFT | TOP_RIGHT | BOTTOM_RIGHT,
-        "▟" => TOP_RIGHT | BOTTOM_LEFT | BOTTOM_RIGHT,
-        "▚" => TOP_LEFT | BOTTOM_RIGHT,
-        "▞" => TOP_RIGHT | BOTTOM_LEFT,
-        _ => return None,
-    };
-    Some(mask)
-}
-
-fn push_block(
-    output: &mut Vec<SolidPrimitive>,
-    run: &TextRun,
-    row: u16,
-    config: &TerminalRenderConfig,
-    geometry: BlockGeometry,
-    z_index: i32,
-) {
-    push_solid(
-        output,
-        run,
-        row,
-        config,
-        PixelGeometry {
-            x: geometry.x * config.cell_size.x,
-            y: geometry.y * config.cell_size.y,
-            width: geometry.width * config.cell_size.x,
-            height: geometry.height * config.cell_size.y,
-        },
-        z_index,
-    );
-}
-
-fn push_line_glyph(
-    output: &mut Vec<SolidPrimitive>,
-    run: &TextRun,
-    row: u16,
-    config: &TerminalRenderConfig,
-    glyph: LineGlyph,
-    z_index: i32,
-    pixel_scale: f32,
-) {
-    for geometry in line_rectangles(glyph, config.cell_size, pixel_scale) {
-        push_solid(output, run, row, config, geometry, z_index);
-    }
-}
-
-fn push_quadrants(
-    output: &mut Vec<SolidPrimitive>,
-    run: &TextRun,
-    row: u16,
-    config: &TerminalRenderConfig,
-    mask: u8,
-    z_index: i32,
-) {
-    let half = config.cell_size * 0.5;
-    for (_, x, y) in [
-        (TOP_LEFT, 0.0, 0.0),
-        (TOP_RIGHT, half.x, 0.0),
-        (BOTTOM_LEFT, 0.0, half.y),
-        (BOTTOM_RIGHT, half.x, half.y),
-    ]
-    .into_iter()
-    .filter(|(bit, _, _)| mask & bit != 0)
-    {
-        push_solid(
-            output,
-            run,
-            row,
-            config,
-            PixelGeometry {
-                x,
-                y,
-                width: half.x,
-                height: half.y,
-            },
-            z_index,
-        );
-    }
-}
-
-fn push_solid(
-    output: &mut Vec<SolidPrimitive>,
-    run: &TextRun,
-    row: u16,
-    config: &TerminalRenderConfig,
-    geometry: PixelGeometry,
-    z_index: i32,
-) {
-    output.push(SolidPrimitive {
-        geometry: PixelGeometry {
-            x: f32::from(run.start) * config.cell_size.x + geometry.x,
-            y: f32::from(row) * config.cell_size.y + geometry.y,
-            width: geometry.width.max(0.0),
-            height: geometry.height.max(0.0),
-        },
-        color: run.style.foreground,
-        z_index,
-        blink_hz: run.style.blink_hz(config),
-    });
-}
-
-fn line_rectangles(glyph: LineGlyph, cell_size: Vec2, pixel_scale: f32) -> Vec<PixelGeometry> {
-    let pixel_scale = pixel_scale.max(1.0);
-    let thickness = match glyph.weight {
-        LineWeight::Light | LineWeight::Double => pixel_scale,
-        LineWeight::Heavy => 2.0 * pixel_scale,
-    };
-    let offsets = match glyph.weight {
-        LineWeight::Double => [-2.0 * pixel_scale, 2.0 * pixel_scale],
-        LineWeight::Light | LineWeight::Heavy => [0.0, 0.0],
-    };
-    let offsets = if glyph.weight == LineWeight::Double {
-        &offsets[..]
-    } else {
-        &offsets[..1]
-    };
-    let center = cell_size * 0.5;
-    let reach = offsets.last().copied().unwrap_or(0.0).abs() + thickness * 0.5;
-    let mut rectangles = Vec::with_capacity(offsets.len() * 4);
-
-    for offset in offsets {
-        if glyph.directions & LEFT != 0 {
-            rectangles.push(PixelGeometry {
-                x: -0.5 * pixel_scale,
-                y: center.y + offset - thickness * 0.5,
-                width: center.x + reach + 0.5 * pixel_scale,
-                height: thickness,
-            });
-        }
-        if glyph.directions & RIGHT != 0 {
-            rectangles.push(PixelGeometry {
-                x: center.x - reach,
-                y: center.y + offset - thickness * 0.5,
-                width: cell_size.x - center.x + reach + 0.5 * pixel_scale,
-                height: thickness,
-            });
-        }
-        if glyph.directions & UP != 0 {
-            rectangles.push(PixelGeometry {
-                x: center.x + offset - thickness * 0.5,
-                y: -0.5 * pixel_scale,
-                width: thickness,
-                height: center.y + reach + 0.5 * pixel_scale,
-            });
-        }
-        if glyph.directions & DOWN != 0 {
-            rectangles.push(PixelGeometry {
-                x: center.x + offset - thickness * 0.5,
-                y: center.y - reach,
-                width: thickness,
-                height: cell_size.y - center.y + reach + 0.5 * pixel_scale,
-            });
-        }
-    }
-    rectangles
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1388,12 +1017,11 @@ fn text_runs(cells: &[TerminalCell], theme: &TerminalTheme) -> Vec<TextRun> {
 
         // A wide/forced-width grapheme is kept in an independently anchored run.
         // Unit-width cells can be batched until style or cell-width semantics change.
-        if width == 1 && !uses_exact_geometry(cell.symbol()) {
+        if width == 1 {
             while column < cells.len() {
                 let next = &cells[column];
                 if next.is_continuation()
                     || next.columns() != 1
-                    || uses_exact_geometry(next.symbol())
                     || ResolvedStyle::new(next, theme) != style
                 {
                     break;
@@ -1411,12 +1039,6 @@ fn text_runs(cells: &[TerminalCell], theme: &TerminalTheme) -> Vec<TextRun> {
         });
     }
     runs
-}
-
-fn uses_exact_geometry(symbol: &str) -> bool {
-    block_geometry(symbol).is_some()
-        || quadrant_mask(symbol).is_some()
-        || line_glyph(symbol).is_some()
 }
 
 #[derive(Debug, PartialEq)]
@@ -1575,67 +1197,19 @@ mod tests {
     }
 
     #[test]
-    fn solid_and_fractional_blocks_are_kept_as_exact_cell_runs() {
-        let theme = TerminalTheme::default();
-        let cells = [
-            TerminalCell::new("█"),
-            TerminalCell::new("█"),
-            TerminalCell::new("▀"),
-            TerminalCell::new("A"),
-        ];
-        let runs = text_runs(&cells, &theme);
-        assert_eq!(runs.len(), 4);
-        assert_eq!(runs[0].text, "█");
-        assert_eq!(runs[1].start, 1);
-        assert_eq!(runs[2].text, "▀");
-        assert_eq!(runs[3].text, "A");
-    }
-
-    #[test]
-    fn common_box_drawing_glyphs_use_connected_geometry() {
+    fn box_drawing_and_block_glyphs_are_batched_like_ordinary_text() {
         let theme = TerminalTheme::default();
         let cells = [
             TerminalCell::new("┌"),
             TerminalCell::new("─"),
-            TerminalCell::new("┐"),
-        ];
-        let runs = text_runs(&cells, &theme);
-        assert_eq!(runs.len(), 3);
-        assert!(runs.iter().all(|run| line_glyph(&run.text).is_some()));
-
-        let horizontal = line_rectangles(
-            line_glyph("─").expect("known line glyph"),
-            Vec2::new(10.8, 20.0),
-            1.0,
-        );
-        assert_eq!(horizontal.len(), 2);
-        assert!(horizontal[0].x < 0.0);
-        assert!(horizontal[1].x + horizontal[1].width > 10.8);
-
-        let double_cross = line_rectangles(
-            line_glyph("╬").expect("known line glyph"),
-            Vec2::new(10.8, 20.0),
-            1.0,
-        );
-        assert_eq!(double_cross.len(), 8);
-        assert!(line_glyph("╭").is_none());
-    }
-
-    #[test]
-    fn quadrant_blocks_are_isolated_and_cover_the_expected_quadrants() {
-        let theme = TerminalTheme::default();
-        let cells = [
-            TerminalCell::new("▛"),
+            TerminalCell::new("█"),
             TerminalCell::new("▚"),
             TerminalCell::new("A"),
         ];
         let runs = text_runs(&cells, &theme);
-        assert_eq!(runs.len(), 3);
-        assert_eq!(
-            quadrant_mask(&runs[0].text),
-            Some(TOP_LEFT | TOP_RIGHT | BOTTOM_LEFT)
-        );
-        assert_eq!(quadrant_mask(&runs[1].text), Some(TOP_LEFT | BOTTOM_RIGHT));
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].text, "┌─█▚A");
+        assert_eq!(runs[0].width, 5);
     }
 
     #[test]
@@ -1690,13 +1264,15 @@ mod tests {
             glyph_stats.unchanged_frames + 1
         );
 
+        // Block elements are font glyphs like any other symbol: the row still
+        // renders as text primitives and gains no solid rectangles.
         let mut block = TerminalCell::new("█");
         block.style.foreground = TerminalColor::GREEN;
         surface.begin_update().set_cell(1, 0, &block);
         app.update();
         let block_stats = *app.world().resource::<TerminalRenderStats>();
-        assert_eq!(block_stats.active_text_primitives, 2);
-        assert_eq!(block_stats.active_solid_primitives, 1);
+        assert_eq!(block_stats.active_text_primitives, 3);
+        assert_eq!(block_stats.active_solid_primitives, 0);
     }
 
     #[test]
