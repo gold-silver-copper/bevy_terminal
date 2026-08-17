@@ -159,10 +159,18 @@ The `image_export` example uses the Git development dependency
 `bevy_image_export` to write frames under `target/render-qa/`:
 
 ```text
+cargo run --example render_test            # one window with every style/color/glyph check
+RENDER_TEST_EXPORT=1 cargo run --example render_test   # same scene to target/render-test/
 cargo run --example image_export
 cargo run --example high_dpi_export
 cargo run --example multiple_terminals_export
 ```
+
+`render_test` is the single all-in-one check: all 512 modifier combinations,
+the four font faces, ANSI 16 as foreground/background/reversed, the 256-color
+cube and grayscale ramp, RGB gradients, underline colors, every box-drawing
+weight and junction, block/quadrant/shade/braille elements, wide CJK/emoji
+cells with guard columns, combining marks, RTL/Indic text, and the cursor.
 
 Early frames contain the complete 72×22 scene. Later frames shrink the backend
 to 60×18 so the exported sequence also catches row-stride errors and stale
