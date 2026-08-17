@@ -4,18 +4,19 @@ resolver = "3"
 
 [package]
 name = "bevy_terminal_ratatui"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.95"
 description = "A Ratatui backend for the bevy_terminal Bevy terminal renderer"
 license = "MIT"
+repository = "https://github.com/gold-silver-copper/bevy_terminal"
 documentation = "https://docs.rs/bevy_terminal_ratatui"
 keywords = ["bevy", "ratatui", "terminal", "tui"]
 categories = ["game-development", "gui", "rendering"]
 exclude = ["benchmarks/renderer-comparison/**", "crates/**", "*_PROMPT.md"]
 
 [dependencies]
-bevy_terminal = { version = "0.1.0", path = "crates/bevy_terminal" }
+bevy_terminal = { version = "0.1.1", path = "crates/bevy_terminal" }
 ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets", "scrolling-regions", "std", "underline-color"] }
 
 [dev-dependencies]

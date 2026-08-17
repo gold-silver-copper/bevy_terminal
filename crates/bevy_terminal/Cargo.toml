@@ -1,10 +1,11 @@
 [package]
 name = "bevy_terminal"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.95"
 description = "A terminal scene model and renderer built on Bevy text, UI, and the render world"
 license = "MIT"
+repository = "https://github.com/gold-silver-copper/bevy_terminal"
 documentation = "https://docs.rs/bevy_terminal"
 keywords = ["bevy", "terminal", "tui", "rendering"]
 categories = ["game-development", "gui", "rendering"]
