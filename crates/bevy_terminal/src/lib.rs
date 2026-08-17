@@ -5,25 +5,26 @@ mod renderer;
 mod scene;
 mod surface;
 
+pub use bevy::text::{FontHinting, FontSource};
 pub use color::TerminalTheme;
 pub use renderer::{
-    BevyTerminalPlugin, CursorStyle, FontSizing, RetainedBevyTerminalPlugin, TerminalBatch,
-    TerminalBatchOutput, TerminalBatchPresentation, TerminalBatchRoot, TerminalBatchStats,
-    TerminalRenderConfig, TerminalRenderScale, TerminalRenderStats, TerminalRoot, TerminalSystems,
+    BlinkConfig, CursorConfig, CursorStyle, FontFaces, FontSizing, Presentation, Terminal,
+    TerminalNode, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalResized,
+    TerminalStats, TerminalSystems, TerminalTexture,
 };
 pub use scene::{
     CellOccupancy, CellPosition, CellSymbol, GridSize, StyleFlags, TerminalCell, TerminalColor,
     TerminalSnapshot, TerminalStyle,
 };
-pub use surface::{SnapshotDelta, SurfaceMetrics, SurfaceUpdate, TerminalSurface};
+pub use surface::{SurfaceMetrics, SurfaceUpdate, TerminalSurface};
 
 /// Convenient imports for applications using `bevy_terminal`.
 pub mod prelude {
     pub use crate::{
-        BevyTerminalPlugin, CellOccupancy, CellPosition, CursorStyle, FontSizing, GridSize,
-        StyleFlags, TerminalBatch, TerminalBatchOutput, TerminalBatchPresentation,
-        TerminalBatchRoot, TerminalBatchStats, TerminalCell, TerminalColor, TerminalRenderConfig,
-        TerminalRenderScale, TerminalRenderStats, TerminalRoot, TerminalSnapshot, TerminalStyle,
-        TerminalSurface, TerminalTheme,
+        BlinkConfig, CellOccupancy, CellPosition, CursorConfig, CursorStyle, FontFaces, FontSizing,
+        GridSize, Presentation, StyleFlags, Terminal, TerminalCell, TerminalColor, TerminalNode,
+        TerminalPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalResized,
+        TerminalSnapshot, TerminalStats, TerminalStyle, TerminalSurface, TerminalTexture,
+        TerminalTheme,
     };
 }

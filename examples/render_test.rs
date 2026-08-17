@@ -5,8 +5,10 @@
 //! foreground and background, the full 256-color cube and grayscale ramp, RGB
 //! gradients, underline colors, box drawing in every weight, block/quadrant/
 //! shade/braille elements, wide CJK/emoji cells, combining marks, RTL/Indic
-//! text, and a blinking cursor. Set `RENDER_TEST_EXPORT=1` to write the
-//! renderer-owned texture to `target/render-test/` headlessly instead.
+//! text, and a blinking cursor. Pass `--export` (or set `RENDER_TEST_EXPORT=1`)
+//! to write the renderer-owned texture to `target/render-test/<family>/`
+//! headlessly instead, and `--font <index|dir>` (or `RENDER_TEST_FONT`) to
+//! pick the initial font family.
 //!
 //! Press `Space`/`Tab` (or `Shift+Tab` to go back) to cycle through the vendored
 //! font families under `assets/fonts/`, so glyph coverage and metrics can be
@@ -19,8 +21,8 @@ mod common;
 use bevy::{prelude::*, render::RenderPlugin, window::WindowResolution};
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::{
-    BevyTerminalPlugin, RatatuiBackend, TerminalBatch, TerminalBatchOutput, TerminalRenderConfig,
-    TerminalRenderScale,
+    CursorConfig, FontFaces, Presentation, RatatuiBackend, Terminal as TerminalEntity,
+    TerminalPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalTexture,
 };
 use ratatui::{
     Terminal,
@@ -131,10 +133,12 @@ struct LoadedFamily {
 
 impl LoadedFamily {
     fn apply(&self, config: &mut TerminalRenderConfig) {
-        config.font = self.regular.clone().into();
-        config.bold_font = Some(self.bold.clone().into());
-        config.italic_font = Some(self.italic.clone().into());
-        config.bold_italic_font = Some(self.bold_italic.clone().into());
+        config.font = FontFaces {
+            regular: self.regular.clone().into(),
+            bold: Some(self.bold.clone().into()),
+            italic: Some(self.italic.clone().into()),
+            bold_italic: Some(self.bold_italic.clone().into()),
+        };
     }
 }
 
@@ -173,21 +177,29 @@ fn load_families(app: &mut App) -> Vec<LoadedFamily> {
 }
 
 fn main() {
-    let export = std::env::var_os("RENDER_TEST_EXPORT").is_some();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let export = std::env::var_os("RENDER_TEST_EXPORT").is_some()
+        || args.iter().any(|argument| argument == "--export");
+    let font_argument = args
+        .iter()
+        .position(|argument| argument == "--font")
+        .and_then(|index| args.get(index + 1).cloned())
+        .or_else(|| std::env::var("RENDER_TEST_FONT").ok());
     let backend = RatatuiBackend::new(COLUMNS, ROWS);
     let surface = backend.surface();
     let mut terminal = Terminal::new(backend).expect("the in-memory backend is infallible");
     draw_render_test(&mut terminal, FAMILIES[0].0);
     let config = TerminalRenderConfig {
         cell_size: CELL,
-        font_size: 18.0,
-        origin: Vec2::splat(MARGIN),
         render_scale: if export {
             TerminalRenderScale::Fixed(1.0)
         } else {
             TerminalRenderScale::Automatic
         },
-        cursor_blink_hz: if export { None } else { Some(1.0) },
+        cursor: CursorConfig {
+            blink_hz: if export { None } else { Some(1.0) },
+            ..default()
+        },
         ..default()
     };
     let width = (f32::from(COLUMNS) * CELL.x + 2.0 * MARGIN) as u32;
@@ -224,9 +236,8 @@ fn main() {
         }));
     }
     let families = load_families(&mut app);
-    // `RENDER_TEST_FONT` selects the initial family by index or directory name.
-    let initial = std::env::var("RENDER_TEST_FONT")
-        .ok()
+    // `--font` / `RENDER_TEST_FONT` selects the initial family by index or directory name.
+    let initial = font_argument
         .and_then(|value| {
             value.parse::<usize>().ok().or_else(|| {
                 FAMILIES
@@ -239,25 +250,37 @@ fn main() {
     let mut config = config;
     families[initial].apply(&mut config);
     draw_render_test(&mut terminal, families[initial].name);
-    let plugin = BevyTerminalPlugin::new(surface).with_config(config);
-    app.insert_resource(FontCycle {
-        families,
-        current: initial,
-        terminal,
-    });
+    let presentation = if export {
+        Presentation::Headless
+    } else {
+        Presentation::Ui {
+            origin: Vec2::splat(MARGIN),
+        }
+    };
+    app.add_plugins(TerminalPlugin)
+        .insert_resource(FontCycle {
+            families,
+            current: initial,
+            terminal,
+        })
+        .add_systems(Startup, move |mut commands: Commands| {
+            commands.spawn(
+                TerminalEntity::new(surface.clone())
+                    .with_config(config.clone())
+                    .with_presentation(presentation),
+            );
+        });
     if export {
-        app.add_plugins((export_plugin, plugin.headless()))
-            .add_systems(Startup, setup_export)
-            .add_systems(Update, stop_after_export)
+        app.add_plugins(export_plugin)
+            .add_systems(Update, (setup_export, stop_after_export).chain())
             .run();
         export_threads.finish();
     } else {
-        app.add_plugins(plugin)
-            .add_systems(Startup, |mut commands: Commands| {
-                commands.spawn(Camera2d);
-            })
-            .add_systems(Update, cycle_fonts)
-            .run();
+        app.add_systems(Startup, |mut commands: Commands| {
+            commands.spawn(Camera2d);
+        })
+        .add_systems(Update, cycle_fonts)
+        .run();
     }
 }
 
@@ -265,7 +288,7 @@ fn main() {
 fn cycle_fonts(
     keys: Res<ButtonInput<KeyCode>>,
     mut cycle: ResMut<FontCycle>,
-    mut terminals: Query<&mut TerminalBatch>,
+    mut terminals: Query<&mut TerminalEntity>,
     mut windows: Query<&mut Window>,
 ) {
     let count = cycle.families.len();
@@ -294,11 +317,18 @@ fn cycle_fonts(
 
 fn setup_export(
     mut commands: Commands,
+    mut done: Local<bool>,
     cycle: Res<FontCycle>,
-    outputs: Query<&TerminalBatchOutput>,
+    outputs: Query<&TerminalTexture>,
     mut export_sources: ResMut<Assets<ImageExportSource>>,
 ) {
-    let output = outputs.single().expect("one terminal output");
+    if *done {
+        return;
+    }
+    let Ok(output) = outputs.single() else {
+        return;
+    };
+    *done = true;
     commands.spawn((
         ImageExport(export_sources.add(output.image.clone())),
         ImageExportSettings {
@@ -310,7 +340,7 @@ fn setup_export(
 
 fn stop_after_export(mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
     *frame += 1;
-    if *frame >= 6 {
+    if *frame >= 10 {
         exit.write(AppExit::Success);
     }
 }

@@ -378,26 +378,25 @@ const ASCII_SYMBOLS: [&str; 128] = [
 ///
 /// Single ASCII characters are stored as one byte and read back through a
 /// static table, symbols up to 22 UTF-8 bytes long are stored inline, and
-/// longer clusters spill to the heap. Reading an ASCII or heap symbol costs
-/// nothing; an inline symbol is re-validated as UTF-8 on access.
+/// longer clusters spill to the heap. The representation is private; the type
+/// is 24 bytes and never allocates for ASCII, box drawing, CJK, combining
+/// sequences or most emoji.
 #[derive(Clone, Eq, Hash, PartialEq)]
-pub enum CellSymbol {
-    /// A single ASCII character.
+pub struct CellSymbol(SymbolRepr);
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+enum SymbolRepr {
     Ascii(u8),
-    /// A short symbol stored inline.
     Inline {
-        /// Number of valid bytes in `bytes`.
         len: u8,
-        /// UTF-8 bytes; only the first `len` are meaningful.
         bytes: [u8; INLINE_SYMBOL_BYTES],
     },
-    /// A long symbol stored on the heap.
     Heap(Box<str>),
 }
 
 impl CellSymbol {
     /// A single ASCII space.
-    pub const SPACE: Self = Self::Ascii(b' ');
+    pub const SPACE: Self = Self(SymbolRepr::Ascii(b' '));
 
     /// Creates a symbol from a string slice.
     #[must_use]
@@ -406,28 +405,28 @@ impl CellSymbol {
         if let [byte] = source
             && byte.is_ascii()
         {
-            Self::Ascii(*byte)
+            Self(SymbolRepr::Ascii(*byte))
         } else if source.len() <= INLINE_SYMBOL_BYTES {
             let mut bytes = [0; INLINE_SYMBOL_BYTES];
             bytes[..source.len()].copy_from_slice(source);
-            Self::Inline {
+            Self(SymbolRepr::Inline {
                 len: source.len() as u8,
                 bytes,
-            }
+            })
         } else {
-            Self::Heap(symbol.into())
+            Self(SymbolRepr::Heap(symbol.into()))
         }
     }
 
     /// Returns the symbol text.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        match self {
-            Self::Ascii(byte) => ASCII_SYMBOLS[usize::from(*byte & 0x7f)],
-            Self::Inline { len, bytes } => {
+        match &self.0 {
+            SymbolRepr::Ascii(byte) => ASCII_SYMBOLS[usize::from(*byte & 0x7f)],
+            SymbolRepr::Inline { len, bytes } => {
                 std::str::from_utf8(&bytes[..usize::from(*len)]).unwrap_or("")
             }
-            Self::Heap(text) => text,
+            SymbolRepr::Heap(text) => text,
         }
     }
 }
@@ -472,14 +471,18 @@ impl std::ops::Deref for CellSymbol {
 }
 
 /// One terminal cell: a symbol, its style and its column occupancy.
+///
+/// The occupancy is set by the constructors ([`TerminalCell::new`],
+/// [`TerminalCell::wide`], [`TerminalCell::continuation_of`]) and read through
+/// [`TerminalCell::occupancy`]; it cannot be edited in place, so a cell can
+/// never claim a span it was not created with.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct TerminalCell {
     /// The grapheme cluster shown in this cell.
     pub symbol: CellSymbol,
     /// Colors and attributes.
     pub style: TerminalStyle,
-    /// Column occupancy.
-    pub occupancy: CellOccupancy,
+    occupancy: CellOccupancy,
 }
 
 impl TerminalCell {
@@ -527,11 +530,10 @@ impl TerminalCell {
         self
     }
 
-    /// Replaces the occupancy.
+    /// Returns the column occupancy.
     #[must_use]
-    pub const fn with_occupancy(mut self, occupancy: CellOccupancy) -> Self {
-        self.occupancy = occupancy;
-        self
+    pub const fn occupancy(&self) -> CellOccupancy {
+        self.occupancy
     }
 
     /// Returns the symbol text.
@@ -628,6 +630,22 @@ impl TerminalSnapshot {
     }
 }
 
+impl From<&str> for TerminalCell {
+    fn from(symbol: &str) -> Self {
+        Self::new(symbol)
+    }
+}
+
+impl From<char> for TerminalCell {
+    fn from(symbol: char) -> Self {
+        Self {
+            symbol: symbol.into(),
+            style: TerminalStyle::DEFAULT,
+            occupancy: CellOccupancy::Single,
+        }
+    }
+}
+
 impl std::ops::Index<(u16, u16)> for TerminalSnapshot {
     type Output = TerminalCell;
 
@@ -643,14 +661,23 @@ mod tests {
 
     #[test]
     fn short_symbols_are_stored_inline_and_long_ones_on_the_heap() {
+        assert!(matches!(CellSymbol::new("A").0, SymbolRepr::Ascii(b'A')));
+        assert_eq!(CellSymbol::new("A").as_str(), "A");
+        assert_eq!(CellSymbol::new("\u{7f}").as_str(), "\u{7f}");
+        assert_eq!(CellSymbol::new("\"").as_str(), "\"");
+        assert_eq!(CellSymbol::new("\\").as_str(), "\\");
+        for byte in 0..128_u8 {
+            assert_eq!(ASCII_SYMBOLS[usize::from(byte)].as_bytes(), [byte]);
+        }
         assert!(matches!(
-            CellSymbol::new("e\u{301}"),
-            CellSymbol::Inline { .. }
+            CellSymbol::new("e\u{301}").0,
+            SymbolRepr::Inline { .. }
         ));
-        assert!(matches!(CellSymbol::new("👍🏽"), CellSymbol::Inline { .. }));
+        assert!(matches!(CellSymbol::new("👍🏽").0, SymbolRepr::Inline { .. }));
         let long = "👨\u{200d}👩\u{200d}👧\u{200d}👦";
         let symbol = CellSymbol::new(long);
-        assert!(matches!(symbol, CellSymbol::Heap(_)));
+        assert!(matches!(symbol.0, SymbolRepr::Heap(_)));
+        assert_eq!(&*symbol, long);
         assert_eq!(symbol.as_str(), long);
         assert_eq!(CellSymbol::from('界').as_str(), "界");
         assert_eq!(CellSymbol::default(), CellSymbol::SPACE);

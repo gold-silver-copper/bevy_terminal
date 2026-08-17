@@ -8,7 +8,7 @@
 //! embedded in the package are used instead.
 
 use bevy::prelude::*;
-use bevy_terminal_ratatui::TerminalRenderConfig;
+use bevy_terminal_ratatui::{FontFaces, TerminalRenderConfig};
 
 const IOSEVKA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/iosevka-fixed");
 const IOSEVKA_FACES: [&str; 4] = [
@@ -41,11 +41,18 @@ impl ExampleFonts {
     /// Applies deterministic regular, bold, italic, and bold-italic faces. The
     /// renderer measures the regular face and sizes it to the cell width itself.
     pub fn configure(&self, mut config: TerminalRenderConfig) -> TerminalRenderConfig {
-        config.font = self.regular.clone().into();
-        config.bold_font = Some(self.bold.clone().into());
-        config.italic_font = Some(self.italic.clone().into());
-        config.bold_italic_font = Some(self.bold_italic.clone().into());
+        config.font = self.faces();
         config
+    }
+
+    /// Returns the four faces as a [`FontFaces`] value.
+    pub fn faces(&self) -> FontFaces {
+        FontFaces {
+            regular: self.regular.clone().into(),
+            bold: Some(self.bold.clone().into()),
+            italic: Some(self.italic.clone().into()),
+            bold_italic: Some(self.bold_italic.clone().into()),
+        }
     }
 
     /// Creates ordinary Bevy UI text using the regular face.

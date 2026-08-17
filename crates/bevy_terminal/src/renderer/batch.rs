@@ -1,11 +1,11 @@
 //! Compact render-world terminal batch.
 
-use std::collections::HashMap;
 use std::time::Instant;
 
 use bevy::{
     asset::{AssetId, RenderAssetUsages},
     image::ImageSampler,
+    platform::collections::HashMap,
     prelude::*,
     render::{
         ExtractSchedule, MainWorld, Render, RenderApp, RenderStartup, RenderSystems,
@@ -35,75 +35,108 @@ use super::{
     PixelGeometry, ResolvedStyle, TerminalRenderConfig, TerminalRenderScale, cell_span,
     cursor_should_be_visible, text_font,
 };
-use crate::{TerminalSnapshot, TerminalSurface};
+use crate::{GridSize, TerminalSnapshot, TerminalSurface};
 
 const TARGET_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 const GLYPH_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
 const GLYPH_ATLAS_SIZE: u32 = 2048;
 
-/// Whether the compact terminal texture is also exposed through a Bevy UI image node.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum TerminalBatchPresentation {
-    /// Spawn one Bevy UI image node that presents the terminal texture.
-    #[default]
-    Ui,
-    /// Render only the terminal texture. Useful for headless rendering and custom composition.
+/// How a terminal texture is shown.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Presentation {
+    /// Spawn one Bevy UI image node ([`TerminalNode`]) that presents the
+    /// texture with its top-left corner at `origin` in logical pixels.
+    Ui {
+        /// Position of the terminal's top-left corner in logical pixels.
+        origin: Vec2,
+    },
+    /// Render only the texture. Useful for headless rendering and custom composition.
     Headless,
 }
 
-/// One independently rendered terminal instance.
-///
-/// Add multiple [`BevyTerminalPlugin`] values to create multiple instances. This component and
-/// its [`TerminalBatchOutput`] live on the same entity, allowing application systems to associate
-/// each renderer-owned texture with its terminal surface.
-#[derive(Clone, Component)]
-pub struct TerminalBatch {
-    surface: TerminalSurface,
-    config: TerminalRenderConfig,
-    presentation: TerminalBatchPresentation,
+impl Default for Presentation {
+    fn default() -> Self {
+        Self::Ui { origin: Vec2::ZERO }
+    }
 }
 
-impl TerminalBatch {
+/// One independently rendered terminal.
+///
+/// Spawn this component on an entity (after adding [`TerminalPlugin`] once);
+/// the plugin attaches [`TerminalTexture`], [`TerminalStats`] and, for
+/// [`Presentation::Ui`], a [`TerminalNode`] image node. Terminals may be
+/// spawned and despawned at any time; despawning removes the node and images.
+/// Editing the configuration through [`Terminal::config_mut`] rebuilds only
+/// this terminal.
+#[derive(Clone, Component)]
+pub struct Terminal {
+    surface: TerminalSurface,
+    config: TerminalRenderConfig,
+    presentation: Presentation,
+}
+
+impl Terminal {
+    /// Creates a terminal rendering `surface` with the default configuration
+    /// and UI presentation at the origin.
+    #[must_use]
+    pub fn new(surface: TerminalSurface) -> Self {
+        Self {
+            surface,
+            config: TerminalRenderConfig::default(),
+            presentation: Presentation::default(),
+        }
+    }
+
+    /// Replaces the render configuration.
+    #[must_use]
+    pub fn with_config(mut self, config: TerminalRenderConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Selects how the texture is presented.
+    #[must_use]
+    pub const fn with_presentation(mut self, presentation: Presentation) -> Self {
+        self.presentation = presentation;
+        self
+    }
+
     /// Returns the surface this terminal renders.
     #[must_use]
-    pub fn surface(&self) -> &TerminalSurface {
+    pub const fn surface(&self) -> &TerminalSurface {
         &self.surface
     }
 
-    /// Returns whether this renderer is attached to `surface`.
-    #[must_use]
-    pub fn renders_surface(&self, surface: &TerminalSurface) -> bool {
-        self.surface.shares_state_with(surface)
-    }
-
-    /// Returns the rendering configuration for this terminal.
+    /// Returns the rendering configuration.
     #[must_use]
     pub const fn config(&self) -> &TerminalRenderConfig {
         &self.config
     }
 
-    /// Returns mutable rendering configuration for this terminal.
-    ///
-    /// Changes are detected independently and rebuild only this terminal.
+    /// Returns mutable rendering configuration; changes are detected and rebuild
+    /// only this terminal.
     #[must_use]
     pub const fn config_mut(&mut self) -> &mut TerminalRenderConfig {
         &mut self.config
     }
 
-    /// Returns how this terminal texture is presented.
+    /// Returns how the texture is presented.
     #[must_use]
-    pub const fn presentation(&self) -> TerminalBatchPresentation {
+    pub const fn presentation(&self) -> Presentation {
         self.presentation
     }
 }
 
-/// The renderer-owned terminal texture and its current pixel dimensions.
+/// The renderer-owned terminal texture and its current dimensions.
+///
+/// Attached to every [`Terminal`] entity by [`TerminalPlugin`].
 #[derive(Clone, Debug, Component)]
-pub struct TerminalBatchOutput {
+pub struct TerminalTexture {
     /// Render-world image containing the completed terminal.
     ///
-    /// The handle changes when the grid dimensions or raster scale change, so
-    /// custom presentation code should observe this component for changes.
+    /// The handle changes when the grid dimensions or raster scale change; a
+    /// [`TerminalResized`] event is triggered on the terminal entity when that
+    /// happens, so custom presentation code can rebind the new handle.
     pub image: Handle<Image>,
     /// Physical pixel dimensions of `image`.
     pub size: UVec2,
@@ -111,18 +144,35 @@ pub struct TerminalBatchOutput {
     pub logical_size: Vec2,
     /// Physical pixels per logical pixel used to rasterize `image`.
     pub raster_scale: f32,
+    /// Physical pixel size of one cell.
+    pub cell_size: Vec2,
+    /// Effective logical font size (measured for [`super::FontSizing::FitCellWidth`]).
+    pub font_size: f32,
 }
 
-/// Marker on an optional UI image node used to present a compact terminal batch.
+/// Triggered on a [`Terminal`] entity whenever its [`TerminalTexture::image`]
+/// handle changes identity (grid resize or raster scale change).
+#[derive(Clone, Debug, EntityEvent)]
+pub struct TerminalResized {
+    /// The terminal entity whose texture was reallocated.
+    pub entity: Entity,
+    /// The new texture handle.
+    pub image: Handle<Image>,
+    /// The new physical size.
+    pub size: UVec2,
+}
+
+/// Marker on the UI image node presenting a [`Terminal`] with [`Presentation::Ui`].
 #[derive(Component, Debug)]
-pub struct TerminalBatchRoot {
-    /// Entity holding the corresponding [`TerminalBatch`] and [`TerminalBatchOutput`].
+pub struct TerminalNode {
+    /// Entity holding the corresponding [`Terminal`] and [`TerminalTexture`].
     pub terminal: Entity,
 }
 
-/// Counters for the most recent compact scene update.
+/// Counters for the most recent scene update of one [`Terminal`].
 #[derive(Clone, Copy, Debug, Default, Component)]
-pub struct TerminalBatchStats {
+#[non_exhaustive]
+pub struct TerminalStats {
     /// Main-world synchronization frames.
     pub sync_frames: u64,
     /// Frames that produced no terminal work.
@@ -131,14 +181,12 @@ pub struct TerminalBatchStats {
     pub changed_rows: u32,
     /// Cells copied while updating the retained snapshot.
     pub snapshot_cells: u32,
-    /// Solid rectangles in the latest payload.
+    /// Solid rectangles (backgrounds, decorations, cursor) in the latest payload.
     pub solid_quads: u32,
     /// Glyph rectangles in the latest payload.
     pub glyph_quads: u32,
-    /// Draw batches in the latest payload.
+    /// Draw batches (one per glyph-atlas switch) in the latest payload.
     pub draw_batches: u32,
-    /// CPU bytes transferred to the render world in the latest payload.
-    pub extracted_bytes: u64,
     /// Shaped text sequences retained in the main-world glyph cache.
     pub cached_shapes: u32,
     /// Shape-cache misses in the latest update.
@@ -147,145 +195,35 @@ pub struct TerminalBatchStats {
     pub snapshot_ns: u64,
     /// Nanoseconds spent generating the compact CPU scene.
     pub scene_ns: u64,
-    /// Persistent vertex-buffer growth operations implied by the latest payload.
-    pub gpu_buffer_reallocations: u32,
-    /// Queue buffer writes implied by the latest payload.
-    pub gpu_write_calls: u32,
     /// Vertex bytes written for the latest payload.
     pub gpu_bytes_written: u64,
-    /// Render passes recorded for the latest payload.
-    pub render_passes: u32,
-    /// Draw calls recorded for the latest payload.
-    pub draw_calls: u32,
-    /// Solid/glyph pipeline changes in deterministic paint order.
-    pub pipeline_switches: u32,
-    /// Glyph-atlas bind operations in the latest payload.
-    pub atlas_bindings: u32,
 }
 
-/// Installs one compact terminal renderer in Bevy's render world.
+/// Installs the terminal renderer. Add it once, then spawn [`Terminal`]
+/// entities.
 ///
-/// Glyphs are shaped and rasterized by Bevy text. The terminal scene itself is represented by
-/// compact GPU quad instances instead of one UI entity per run or rectangle. In [`Ui`](TerminalBatchPresentation::Ui)
-/// mode, a single [`ImageNode`] places that texture in Bevy UI. Add the plugin more than once to
-/// create independent terminal surfaces, textures, configurations, statistics, and optional UI
-/// nodes. GPU pipelines and scratch buffers are shared between those instances.
-pub struct BevyTerminalPlugin {
-    terminal: TerminalBatch,
-}
+/// Glyphs are shaped and rasterized by Bevy text. Each terminal is represented
+/// by compact GPU quad instances drawn into its own renderer-owned texture;
+/// GPU pipelines and scratch buffers are shared between terminals.
+pub struct TerminalPlugin;
 
-impl BevyTerminalPlugin {
-    /// Creates the compact renderer with its texture presented through Bevy UI.
-    #[must_use]
-    pub fn new(surface: TerminalSurface) -> Self {
-        Self {
-            terminal: TerminalBatch {
-                surface,
-                config: TerminalRenderConfig::default(),
-                presentation: TerminalBatchPresentation::Ui,
-            },
-        }
-    }
-
-    /// Replaces the renderer configuration.
-    #[must_use]
-    pub fn with_config(mut self, config: TerminalRenderConfig) -> Self {
-        self.terminal.config = config;
-        self
-    }
-
-    /// Selects texture-only rendering without creating a UI presentation node.
-    #[must_use]
-    pub fn headless(mut self) -> Self {
-        self.terminal.presentation = TerminalBatchPresentation::Headless;
-        self
-    }
-
-    /// Selects how the renderer-owned terminal texture is presented.
-    #[must_use]
-    pub fn with_presentation(mut self, presentation: TerminalBatchPresentation) -> Self {
-        self.terminal.presentation = presentation;
-        self
-    }
-}
-
-impl Plugin for BevyTerminalPlugin {
+impl Plugin for TerminalPlugin {
     fn build(&self, app: &mut App) {
-        if !app.is_plugin_added::<BatchRendererPlugin>() {
-            app.add_plugins(BatchRendererPlugin);
-        }
-
-        let terminal = self.terminal.clone();
-        let raster_scale =
-            resolve_raster_scale(terminal.config.render_scale, terminal.presentation, None);
-        let raster_config = physical_config(&terminal.config, raster_scale);
-        let logical_cell_size = raster_config.cell_size / raster_scale;
-        terminal
-            .surface
-            .set_cell_size(logical_cell_size.x, logical_cell_size.y);
-        let snapshot = terminal.surface.snapshot();
-        let size = terminal_pixel_size(&snapshot, &raster_config);
-        let output_image = make_target_image(size);
-        let output = app
-            .world_mut()
-            .resource_mut::<Assets<Image>>()
-            .add(output_image);
-        let glyph_atlas = {
-            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-            images.add(make_glyph_atlas_image())
-        };
-
-        let terminal_entity = app.world_mut().spawn_empty().id();
-        let ui_root = if terminal.presentation == TerminalBatchPresentation::Ui {
-            Some(
-                app.world_mut()
-                    .spawn((
-                        TerminalBatchRoot {
-                            terminal: terminal_entity,
-                        },
-                        super::TerminalRoot,
-                        ImageNode::new(output.clone()),
-                        presentation_node(size, &terminal.config, raster_scale),
-                    ))
-                    .id(),
+        app.init_resource::<TerminalRegistry>()
+            .configure_sets(
+                Update,
+                (super::TerminalSystems::Setup, super::TerminalSystems::Sync).chain(),
             )
-        } else {
-            None
-        };
-
-        app.world_mut().entity_mut(terminal_entity).insert((
-            terminal.clone(),
-            TerminalBatchOutput {
-                image: output.clone(),
-                size,
-                logical_size: size.as_vec2() / raster_scale,
-                raster_scale,
-            },
-            BatchMainState::new(
-                output,
-                glyph_atlas,
-                ui_root,
-                terminal.presentation,
-                raster_scale,
-                raster_config,
-            ),
-            TerminalBatchStats::default(),
-        ));
-    }
-
-    fn is_unique(&self) -> bool {
-        false
-    }
-}
-
-struct BatchRendererPlugin;
-
-impl Plugin for BatchRendererPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            sync_batch_terminals.in_set(super::TerminalSystems::Sync),
-        );
+            .add_systems(
+                Update,
+                (cleanup_removed_terminals, initialize_terminals)
+                    .chain()
+                    .in_set(super::TerminalSystems::Setup),
+            )
+            .add_systems(
+                Update,
+                sync_batch_terminals.in_set(super::TerminalSystems::Sync),
+            );
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<PendingBatchScenes>()
@@ -306,12 +244,124 @@ impl Plugin for BatchRendererPlugin {
     }
 }
 
-fn terminal_pixel_size(snapshot: &TerminalSnapshot, config: &TerminalRenderConfig) -> UVec2 {
+/// Bevy's text resources, required for shaping and measurement.
+type TextResources<'w> = (
+    Res<'w, Assets<Font>>,
+    ResMut<'w, TextPipeline>,
+    ResMut<'w, FontAtlasSet>,
+    ResMut<'w, FontCx>,
+    ResMut<'w, LayoutCx>,
+    ResMut<'w, ScaleCx>,
+);
+
+/// Assets and entities owned by each terminal, kept so they can be released
+/// after the terminal entity is despawned.
+#[derive(Default, Resource)]
+struct TerminalRegistry {
+    owned: HashMap<Entity, OwnedTerminalAssets>,
+}
+
+struct OwnedTerminalAssets {
+    ui_root: Option<Entity>,
+    output: Handle<Image>,
+    glyph_atlas: Handle<Image>,
+}
+
+fn initialize_terminals(
+    mut commands: Commands,
+    added: Query<(Entity, &Terminal), Without<BatchMainState>>,
+    mut images: ResMut<Assets<Image>>,
+    mut registry: ResMut<TerminalRegistry>,
+) {
+    for (entity, terminal) in &added {
+        let raster_scale =
+            resolve_raster_scale(terminal.config.render_scale, terminal.presentation, None);
+        let font_size = super::effective_font_size(&terminal.config, None);
+        let raster_config = physical_config(&terminal.config, raster_scale, font_size);
+        let logical_cell_size = raster_config.cell_size / raster_scale;
+        terminal
+            .surface
+            .set_cell_size(logical_cell_size.x, logical_cell_size.y);
+        let size = terminal_pixel_size(terminal.surface.size(), &raster_config);
+        let output = images.add(make_target_image(size));
+        let glyph_atlas = images.add(make_glyph_atlas_image());
+
+        let ui_root = match terminal.presentation {
+            Presentation::Ui { origin } => Some(
+                commands
+                    .spawn((
+                        TerminalNode { terminal: entity },
+                        ImageNode::new(output.clone()),
+                        presentation_node(size, origin, raster_scale),
+                    ))
+                    .id(),
+            ),
+            Presentation::Headless => None,
+        };
+        registry.owned.insert(
+            entity,
+            OwnedTerminalAssets {
+                ui_root,
+                output: output.clone(),
+                glyph_atlas: glyph_atlas.clone(),
+            },
+        );
+        commands.entity(entity).insert((
+            TerminalTexture {
+                image: output.clone(),
+                size,
+                logical_size: size.as_vec2() / raster_scale,
+                raster_scale,
+                cell_size: raster_config.cell_size,
+                font_size,
+            },
+            BatchMainState::new(
+                output,
+                glyph_atlas,
+                ui_root,
+                terminal.presentation,
+                raster_scale,
+                raster_config,
+            ),
+            TerminalStats::default(),
+        ));
+    }
+}
+
+fn cleanup_removed_terminals(
+    mut commands: Commands,
+    mut removed: RemovedComponents<Terminal>,
+    mut registry: ResMut<TerminalRegistry>,
+    mut images: ResMut<Assets<Image>>,
+    states: Query<&BatchMainState>,
+) {
+    for entity in removed.read() {
+        let Some(owned) = registry.owned.remove(&entity) else {
+            continue;
+        };
+        if let Some(ui_root) = owned.ui_root
+            && let Ok(mut node) = commands.get_entity(ui_root)
+        {
+            node.despawn();
+        }
+        // The output handle may have been reallocated since registration.
+        if let Ok(state) = states.get(entity) {
+            images.remove(&state.output);
+        }
+        images.remove(&owned.output);
+        images.remove(&owned.glyph_atlas);
+        if let Ok(mut terminal) = commands.get_entity(entity) {
+            terminal.remove::<(BatchMainState, TerminalTexture, TerminalStats)>();
+        }
+    }
+}
+
+fn terminal_pixel_size(size: GridSize, raster: &RasterMetrics) -> UVec2 {
     UVec2::new(
-        (f32::from(snapshot.size().width) * config.cell_size.x)
+        (f32::from(size.width) * raster.cell_size.x)
             .round()
             .max(1.0) as u32,
-        (f32::from(snapshot.size().height) * config.cell_size.y)
+        (f32::from(size.height) * raster.cell_size.y)
             .round()
             .max(1.0) as u32,
     )
@@ -352,8 +402,8 @@ fn make_glyph_atlas_image() -> Image {
     image
 }
 
-fn presentation_node(size: UVec2, config: &TerminalRenderConfig, raster_scale: f32) -> Node {
-    let origin = (config.origin * raster_scale).round() / raster_scale;
+fn presentation_node(size: UVec2, origin: Vec2, raster_scale: f32) -> Node {
+    let origin = (origin * raster_scale).round() / raster_scale;
     Node {
         position_type: PositionType::Absolute,
         left: px(origin.x),
@@ -367,11 +417,11 @@ fn presentation_node(size: UVec2, config: &TerminalRenderConfig, raster_scale: f
 
 fn resolve_raster_scale(
     configured: TerminalRenderScale,
-    presentation: TerminalBatchPresentation,
+    presentation: Presentation,
     window_scale: Option<f32>,
 ) -> f32 {
     let requested = match configured {
-        TerminalRenderScale::Automatic if presentation == TerminalBatchPresentation::Ui => {
+        TerminalRenderScale::Automatic if matches!(presentation, Presentation::Ui { .. }) => {
             window_scale.unwrap_or(1.0)
         }
         TerminalRenderScale::Automatic => 1.0,
@@ -384,14 +434,29 @@ fn resolve_raster_scale(
     }
 }
 
-fn physical_config(config: &TerminalRenderConfig, raster_scale: f32) -> TerminalRenderConfig {
-    let mut physical = config.clone();
-    physical.cell_size = (config.cell_size * raster_scale).round().max(Vec2::ONE);
-    // Cells snap to whole physical pixels, but the font size stays fractional so a
-    // font can be sized to make its advance fill the cell exactly.
-    physical.font_size = (config.font_size * raster_scale).max(1.0);
-    physical.origin = Vec2::ZERO;
-    physical
+/// Physical raster metrics derived from the logical configuration.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RasterMetrics {
+    /// Physical pixels per logical pixel.
+    scale: f32,
+    /// Physical cell size, snapped to whole pixels.
+    cell_size: Vec2,
+    /// Physical font size. Cells snap to whole physical pixels, but the font
+    /// size stays fractional so a font can be sized to make its advance fill
+    /// the cell exactly.
+    font_size: f32,
+}
+
+fn physical_config(
+    config: &TerminalRenderConfig,
+    raster_scale: f32,
+    logical_font_size: f32,
+) -> RasterMetrics {
+    RasterMetrics {
+        scale: raster_scale,
+        cell_size: (config.cell_size * raster_scale).round().max(Vec2::ONE),
+        font_size: (logical_font_size * raster_scale).max(1.0),
+    }
 }
 
 #[derive(Clone)]
@@ -423,7 +488,7 @@ impl UnifiedGlyphAtlas {
     fn new(image: Handle<Image>) -> Self {
         Self {
             image,
-            glyphs: HashMap::new(),
+            glyphs: HashMap::default(),
             cursor: UVec2::splat(1),
             row_height: 0,
         }
@@ -504,11 +569,17 @@ impl UnifiedGlyphAtlas {
 }
 
 #[derive(Default)]
+/// Shaped glyph runs per symbol, one map per font face.
+///
+/// Runs are stored in `entries` and looked up by index so a cache hit costs a
+/// single hash lookup and returns a borrow that does not conflict with later
+/// insertions.
 struct ShapeCaches {
-    normal: HashMap<String, Vec<CachedGlyph>>,
-    bold: HashMap<String, Vec<CachedGlyph>>,
-    italic: HashMap<String, Vec<CachedGlyph>>,
-    bold_italic: HashMap<String, Vec<CachedGlyph>>,
+    entries: Vec<Vec<CachedGlyph>>,
+    normal: HashMap<String, usize>,
+    bold: HashMap<String, usize>,
+    italic: HashMap<String, usize>,
+    bold_italic: HashMap<String, usize>,
 }
 
 #[derive(Default)]
@@ -533,7 +604,7 @@ impl SceneScratch {
 }
 
 impl ShapeCaches {
-    fn select(&self, style: &ResolvedStyle) -> &HashMap<String, Vec<CachedGlyph>> {
+    fn select(&self, style: &ResolvedStyle) -> &HashMap<String, usize> {
         match (style.bold, style.italic) {
             (false, false) => &self.normal,
             (true, false) => &self.bold,
@@ -542,7 +613,7 @@ impl ShapeCaches {
         }
     }
 
-    fn select_mut(&mut self, style: &ResolvedStyle) -> &mut HashMap<String, Vec<CachedGlyph>> {
+    fn select_mut(&mut self, style: &ResolvedStyle) -> &mut HashMap<String, usize> {
         match (style.bold, style.italic) {
             (false, false) => &mut self.normal,
             (true, false) => &mut self.bold,
@@ -551,11 +622,23 @@ impl ShapeCaches {
         }
     }
 
+    fn lookup(&self, style: &ResolvedStyle, text: &str) -> Option<usize> {
+        self.select(style).get(text).copied()
+    }
+
+    fn insert(&mut self, style: &ResolvedStyle, text: &str, glyphs: Vec<CachedGlyph>) -> usize {
+        let index = self.entries.len();
+        self.entries.push(glyphs);
+        self.select_mut(style).insert(text.to_owned(), index);
+        index
+    }
+
     fn len(&self) -> usize {
-        self.normal.len() + self.bold.len() + self.italic.len() + self.bold_italic.len()
+        self.entries.len()
     }
 
     fn clear(&mut self) {
+        self.entries.clear();
         self.normal.clear();
         self.bold.clear();
         self.italic.clear();
@@ -567,9 +650,9 @@ impl ShapeCaches {
 struct BatchMainState {
     output: Handle<Image>,
     ui_root: Option<Entity>,
-    presentation: TerminalBatchPresentation,
+    presentation: Presentation,
     raster_scale: f32,
-    raster_config: TerminalRenderConfig,
+    raster_config: RasterMetrics,
     /// Advance of the regular font at the probe size; `None` until measured.
     measured_advance: Option<f32>,
     /// Logical font size in use.
@@ -588,9 +671,9 @@ impl BatchMainState {
         output: Handle<Image>,
         glyph_atlas: Handle<Image>,
         ui_root: Option<Entity>,
-        presentation: TerminalBatchPresentation,
+        presentation: Presentation,
         raster_scale: f32,
-        raster_config: TerminalRenderConfig,
+        raster_config: RasterMetrics,
     ) -> Self {
         Self {
             output,
@@ -645,11 +728,9 @@ struct BlinkPhases {
 impl BlinkPhases {
     fn at(elapsed: f32, config: &TerminalRenderConfig) -> Self {
         Self {
-            slow_hidden: super::blink_hidden(elapsed, config.slow_blink_hz),
-            rapid_hidden: super::blink_hidden(elapsed, config.rapid_blink_hz),
-            cursor_hidden: config
-                .cursor_blink_hz
-                .is_some_and(|frequency| super::blink_hidden(elapsed, frequency)),
+            slow_hidden: super::blink_hidden(elapsed, config.blink.slow_hz),
+            rapid_hidden: super::blink_hidden(elapsed, config.blink.rapid_hz),
+            cursor_hidden: super::blink_hidden(elapsed, config.cursor.blink_hz),
         }
     }
 
@@ -663,33 +744,45 @@ struct PendingBatchScenes(Vec<BatchScene>);
 
 #[allow(clippy::too_many_arguments)]
 fn sync_batch_terminals(
+    mut commands: Commands,
     mut terminals: Query<(
-        Ref<TerminalBatch>,
+        Entity,
+        Ref<Terminal>,
         &mut BatchMainState,
-        &mut TerminalBatchOutput,
-        &mut TerminalBatchStats,
+        &mut TerminalTexture,
+        &mut TerminalStats,
     )>,
-    fonts: Res<Assets<Font>>,
+    text: Option<TextResources>,
     mut images: ResMut<Assets<Image>>,
-    mut text_pipeline: ResMut<TextPipeline>,
-    mut font_atlas_set: ResMut<FontAtlasSet>,
-    mut font_cx: ResMut<FontCx>,
-    mut layout_cx: ResMut<LayoutCx>,
-    mut scale_cx: ResMut<ScaleCx>,
-    mut ui_nodes: Query<(&mut Node, &mut ImageNode), With<TerminalBatchRoot>>,
+    mut ui_nodes: Query<(&mut Node, &mut ImageNode), With<TerminalNode>>,
     primary_window: Query<&Window, With<PrimaryWindow>>,
-    ui_scale: Res<UiScale>,
+    ui_scale: Option<Res<UiScale>>,
     time: Option<Res<Time>>,
 ) {
+    // Without Bevy's text resources (e.g. a bare `App` in tests) there is nothing to shape.
+    let Some((
+        fonts,
+        mut text_pipeline,
+        mut font_atlas_set,
+        mut font_cx,
+        mut layout_cx,
+        mut scale_cx,
+    )) = text
+    else {
+        return;
+    };
+    let ui_scale = ui_scale.map_or(1.0, |scale| scale.0);
     let window_scale = primary_window
         .iter()
         .next()
-        .map(|window| window.scale_factor() * ui_scale.0);
+        .map(|window| window.scale_factor() * ui_scale);
     let elapsed = time.as_ref().map_or(0.0, |time| time.elapsed_secs());
     let fonts_changed = fonts.is_changed();
-    for (terminal, mut state, mut output, mut stats) in &mut terminals {
+    for (entity, terminal, mut state, mut output, mut stats) in &mut terminals {
         let terminal_changed = terminal.is_changed();
         sync_batch_terminal(
+            &mut commands,
+            entity,
             &terminal,
             terminal_changed,
             &mut state,
@@ -712,11 +805,13 @@ fn sync_batch_terminals(
 
 #[allow(clippy::too_many_arguments)]
 fn sync_batch_terminal(
-    terminal: &TerminalBatch,
+    commands: &mut Commands,
+    entity: Entity,
+    terminal: &Terminal,
     terminal_changed: bool,
     state: &mut BatchMainState,
-    output: &mut TerminalBatchOutput,
-    stats: &mut TerminalBatchStats,
+    output: &mut TerminalTexture,
+    stats: &mut TerminalStats,
     fonts: &Assets<Font>,
     fonts_changed: bool,
     images: &mut Assets<Image>,
@@ -725,7 +820,7 @@ fn sync_batch_terminal(
     font_cx: &mut FontCx,
     layout_cx: &mut LayoutCx,
     scale_cx: &mut ScaleCx,
-    ui_nodes: &mut Query<(&mut Node, &mut ImageNode), With<TerminalBatchRoot>>,
+    ui_nodes: &mut Query<(&mut Node, &mut ImageNode), With<TerminalNode>>,
     window_scale: Option<f32>,
     elapsed: f32,
 ) {
@@ -737,25 +832,18 @@ fn sync_batch_terminal(
     stats.solid_quads = 0;
     stats.glyph_quads = 0;
     stats.draw_batches = 0;
-    stats.extracted_bytes = 0;
     stats.shape_misses = 0;
     stats.snapshot_ns = 0;
     stats.scene_ns = 0;
-    stats.gpu_buffer_reallocations = 0;
-    stats.gpu_write_calls = 0;
     stats.gpu_bytes_written = 0;
-    stats.render_passes = 0;
-    stats.draw_calls = 0;
-    stats.pipeline_switches = 0;
-    stats.atlas_bindings = 0;
 
     let raster_scale = resolve_raster_scale(config.render_scale, state.presentation, window_scale);
     let scale_changed = state.raster_scale != raster_scale;
-    if config.font_sizing == super::FontSizing::FitCellWidth
+    if config.font_size == super::FontSizing::FitCellWidth
         && (state.measured_advance.is_none() || terminal_changed || fonts_changed)
     {
         state.measured_advance =
-            super::measure_advance(config, fonts, text_pipeline, font_cx, layout_cx);
+            super::measure_advance(&config.font, fonts, text_pipeline, font_cx, layout_cx);
     }
     let font_size = super::effective_font_size(config, state.measured_advance);
     let font_size_changed = state.font_size != Some(font_size);
@@ -763,11 +851,11 @@ fn sync_batch_terminal(
     let text_assets_changed =
         terminal_changed || fonts_changed || scale_changed || font_size_changed;
     if terminal_changed || scale_changed || font_size_changed {
-        let mut logical = config.clone();
-        logical.font_size = state.font_size.unwrap_or(config.font_size);
-        state.raster_config = physical_config(&logical, raster_scale);
+        state.raster_config = physical_config(config, raster_scale, font_size);
         let logical_cell_size = state.raster_config.cell_size / raster_scale;
         surface.set_cell_size(logical_cell_size.x, logical_cell_size.y);
+        output.font_size = font_size;
+        output.cell_size = state.raster_config.cell_size;
     }
     if text_assets_changed {
         state.shapes.clear();
@@ -826,23 +914,30 @@ fn sync_batch_terminal(
     // lost when that payload is superseded.
     full |= state.pending.is_some();
 
-    let new_size = terminal_pixel_size(&snapshot, &state.raster_config);
+    let new_size = terminal_pixel_size(snapshot.size(), &state.raster_config);
     let output_resized = output.size != new_size;
     if output_resized {
         // Use a new asset identity when the dimensions change. Render-asset and Bevy UI texture
         // caches can otherwise retain views or bind groups for the old allocation for a frame.
         let resized = images.add(make_target_image(new_size));
+        images.remove(&state.output);
         state.output = resized.clone();
-        output.image = resized;
+        output.image = resized.clone();
         output.size = new_size;
+        commands.trigger(TerminalResized {
+            entity,
+            image: resized,
+            size: new_size,
+        });
     }
     output.logical_size = new_size.as_vec2() / raster_scale;
     output.raster_scale = raster_scale;
     if let Some(root) = state.ui_root
         && let Ok((mut node, mut image_node)) = ui_nodes.get_mut(root)
+        && let Presentation::Ui { origin } = terminal.presentation
     {
         image_node.image = state.output.clone();
-        *node = presentation_node(new_size, config, raster_scale);
+        *node = presentation_node(new_size, origin, raster_scale);
     }
 
     let rows: Vec<u16> = if full {
@@ -861,8 +956,8 @@ fn sync_batch_terminal(
     } = &mut *state;
     let mut scene = build_scene(
         &snapshot,
-        raster_config,
-        raster_scale,
+        config,
+        *raster_config,
         &rows,
         full,
         destination,
@@ -886,19 +981,10 @@ fn sync_batch_terminal(
     stats.scene_ns = scene_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
     stats.changed_rows = u32::try_from(rows.len()).unwrap_or(u32::MAX);
     stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
-    stats.extracted_bytes = ((scene.instances.len() * std::mem::size_of::<QuadInstance>())
-        + (scene.batches.len() * std::mem::size_of::<DrawBatch>()))
-        as u64;
     let vertex_bytes = scene.instances.len() * 48;
     stats.gpu_bytes_written = vertex_bytes as u64;
-    stats.gpu_write_calls = u32::from(vertex_bytes != 0);
-    stats.render_passes = 1;
-    stats.draw_calls = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
-    stats.pipeline_switches = u32::from(!scene.batches.is_empty());
-    stats.atlas_bindings = stats.draw_calls;
     if vertex_bytes > state.vertex_capacity {
         state.vertex_capacity = vertex_bytes.next_power_of_two();
-        stats.gpu_buffer_reallocations = 1;
     }
     stats.cached_shapes = u32::try_from(state.shapes.len()).unwrap_or(u32::MAX);
     state.pending = Some(scene);
@@ -911,7 +997,7 @@ fn sync_batch_terminal(
 fn build_scene(
     snapshot: &TerminalSnapshot,
     config: &TerminalRenderConfig,
-    raster_scale: f32,
+    raster: RasterMetrics,
     rows: &[u16],
     full: bool,
     destination: AssetId<Image>,
@@ -925,10 +1011,11 @@ fn build_scene(
     shapes: &mut ShapeCaches,
     glyph_atlas: &mut UnifiedGlyphAtlas,
     scratch: &mut SceneScratch,
-    stats: &mut TerminalBatchStats,
+    stats: &mut TerminalStats,
     blink: BlinkPhases,
 ) -> BatchScene {
-    let size = terminal_pixel_size(snapshot, config).as_vec2();
+    let size = terminal_pixel_size(snapshot.size(), &raster).as_vec2();
+    let raster_scale = raster.scale;
     scratch.clear();
     scratch.styles.reserve(usize::from(snapshot.size().width));
     let SceneScratch {
@@ -945,9 +1032,9 @@ fn build_scene(
             backgrounds.push(solid_quad(
                 PixelGeometry {
                     x: 0.0,
-                    y: f32::from(row) * config.cell_size.y,
+                    y: f32::from(row) * raster.cell_size.y,
                     width: size.x,
-                    height: config.cell_size.y,
+                    height: raster.cell_size.y,
                 },
                 config.theme.background,
                 size,
@@ -973,10 +1060,10 @@ fn build_scene(
             }
             backgrounds.push(solid_quad(
                 PixelGeometry {
-                    x: background_start as f32 * config.cell_size.x,
-                    y: f32::from(row) * config.cell_size.y,
-                    width: (background_end - background_start) as f32 * config.cell_size.x,
-                    height: config.cell_size.y,
+                    x: background_start as f32 * raster.cell_size.x,
+                    y: f32::from(row) * raster.cell_size.y,
+                    width: (background_end - background_start) as f32 * raster.cell_size.x,
+                    height: raster.cell_size.y,
                 },
                 color,
                 size,
@@ -1003,6 +1090,7 @@ fn build_scene(
                     symbol,
                     style,
                     config,
+                    raster,
                     size,
                     fonts,
                     images,
@@ -1016,14 +1104,14 @@ fn build_scene(
                     stats,
                 );
                 let anchor = Vec2::new(
-                    column as f32 * config.cell_size.x,
-                    f32::from(row) * config.cell_size.y,
+                    column as f32 * raster.cell_size.x,
+                    f32::from(row) * raster.cell_size.y,
                 );
                 let cell_bounds = PixelGeometry {
                     x: anchor.x,
                     y: anchor.y,
-                    width: width as f32 * config.cell_size.x,
-                    height: config.cell_size.y,
+                    width: width as f32 * raster.cell_size.x,
+                    height: raster.cell_size.y,
                 };
                 for glyph in shaped {
                     let geometry = PixelGeometry {
@@ -1042,15 +1130,15 @@ fn build_scene(
                     }
                 }
             }
-            let decoration_x = column as f32 * config.cell_size.x;
-            let decoration_width = width as f32 * config.cell_size.x;
+            let decoration_x = column as f32 * raster.cell_size.x;
+            let decoration_width = width as f32 * raster.cell_size.x;
             let decoration_thickness = raster_scale.round().max(1.0);
             if style.underlined {
                 decorations.push(solid_quad(
                     PixelGeometry {
                         x: decoration_x,
-                        y: f32::from(row) * config.cell_size.y
-                            + (config.cell_size.y - 2.0 * decoration_thickness).max(0.0),
+                        y: f32::from(row) * raster.cell_size.y
+                            + (raster.cell_size.y - 2.0 * decoration_thickness).max(0.0),
                         width: decoration_width,
                         height: decoration_thickness,
                     },
@@ -1062,7 +1150,7 @@ fn build_scene(
                 decorations.push(solid_quad(
                     PixelGeometry {
                         x: decoration_x,
-                        y: f32::from(row) * config.cell_size.y + config.cell_size.y * 0.55,
+                        y: f32::from(row) * raster.cell_size.y + raster.cell_size.y * 0.55,
                         width: decoration_width,
                         height: decoration_thickness,
                     },
@@ -1080,29 +1168,29 @@ fn build_scene(
     {
         let position = snapshot.cursor_position();
         let cursor_thickness = raster_scale.round().max(1.0) * 2.0;
-        let (x, y, width, height) = match config.cursor_style {
-            super::CursorStyle::Block => (0.0, 0.0, config.cell_size.x, config.cell_size.y),
+        let (x, y, width, height) = match config.cursor.style {
+            super::CursorStyle::Block => (0.0, 0.0, raster.cell_size.x, raster.cell_size.y),
             super::CursorStyle::Bar => (
                 0.0,
                 0.0,
-                cursor_thickness.min(config.cell_size.x),
-                config.cell_size.y,
+                cursor_thickness.min(raster.cell_size.x),
+                raster.cell_size.y,
             ),
             super::CursorStyle::Underline => (
                 0.0,
-                (config.cell_size.y - cursor_thickness).max(0.0),
-                config.cell_size.x,
-                cursor_thickness.min(config.cell_size.y),
+                (raster.cell_size.y - cursor_thickness).max(0.0),
+                raster.cell_size.x,
+                cursor_thickness.min(raster.cell_size.y),
             ),
         };
         cursor.push(solid_quad(
             PixelGeometry {
-                x: f32::from(position.x) * config.cell_size.x + x,
-                y: f32::from(position.y) * config.cell_size.y + y,
+                x: f32::from(position.x) * raster.cell_size.x + x,
+                y: f32::from(position.y) * raster.cell_size.y + y,
                 width,
                 height,
             },
-            config.theme.cursor,
+            config.cursor.color,
             size,
         ));
     }
@@ -1136,6 +1224,7 @@ fn cached_shape<'a>(
     text: &str,
     style: &ResolvedStyle,
     config: &TerminalRenderConfig,
+    raster: RasterMetrics,
     viewport: Vec2,
     fonts: &Assets<Font>,
     images: &mut Assets<Image>,
@@ -1146,16 +1235,13 @@ fn cached_shape<'a>(
     scale_cx: &mut ScaleCx,
     shapes: &'a mut ShapeCaches,
     glyph_atlas: &mut UnifiedGlyphAtlas,
-    stats: &mut TerminalBatchStats,
+    stats: &mut TerminalStats,
 ) -> &'a [CachedGlyph] {
-    if shapes.select(style).contains_key(text) {
-        return shapes
-            .select(style)
-            .get(text)
-            .expect("shape cache key was just found");
+    if let Some(index) = shapes.lookup(style, text) {
+        return &shapes.entries[index];
     }
     stats.shape_misses = stats.shape_misses.saturating_add(1);
-    let font = text_font(config, style);
+    let font = text_font(&config.font, raster.font_size, style);
     let mut computed = ComputedTextBlock::default();
     let mut layout = TextLayoutInfo::default();
     let shape_result = text_pipeline.update_buffer(
@@ -1166,7 +1252,7 @@ fn cached_shape<'a>(
             text,
             &font,
             Color::WHITE,
-            LineHeight::Px(config.cell_size.y),
+            LineHeight::Px(raster.cell_size.y),
             LetterSpacing::default(),
         )),
         LineBreak::NoWrap,
@@ -1229,11 +1315,8 @@ fn cached_shape<'a>(
             })
         })
         .collect::<Vec<_>>();
-    shapes.select_mut(style).insert(text.to_owned(), cached);
-    shapes
-        .select(style)
-        .get(text)
-        .expect("newly shaped text was inserted")
+    let index = shapes.insert(style, text, cached);
+    &shapes.entries[index]
 }
 
 fn solid_quad(geometry: PixelGeometry, color: Color, target: Vec2) -> QuadInstance {
@@ -1701,26 +1784,35 @@ mod tests {
     }
 
     #[test]
-    fn multiple_plugin_instances_own_distinct_surfaces_outputs_and_presenters() {
+    fn spawned_terminals_own_distinct_textures_and_can_be_despawned() {
         let first_surface = TerminalSurface::new(12, 4);
         let second_surface = TerminalSurface::new(7, 9);
         let mut app = App::new();
-        app.init_resource::<Assets<Image>>().add_plugins((
-            BevyTerminalPlugin::new(first_surface.clone()),
-            BevyTerminalPlugin::new(second_surface.clone()).headless(),
-        ));
+        app.init_resource::<Assets<Image>>()
+            .add_plugins(TerminalPlugin);
+        let first = app
+            .world_mut()
+            .spawn(Terminal::new(first_surface.clone()))
+            .id();
+        app.update();
+        // A second terminal spawned later, headless.
+        let second = app
+            .world_mut()
+            .spawn(Terminal::new(second_surface.clone()).with_presentation(Presentation::Headless))
+            .id();
+        app.update();
 
         let mut terminals = app
             .world_mut()
-            .query::<(Entity, &TerminalBatch, &TerminalBatchOutput)>();
+            .query::<(Entity, &Terminal, &TerminalTexture, &TerminalStats)>();
         let mut instances = terminals
             .iter(app.world())
-            .map(|(entity, terminal, output)| {
+            .map(|(entity, terminal, texture, _)| {
                 (
                     entity,
-                    terminal.surface().snapshot().size(),
-                    output.image.id(),
-                    output.size,
+                    terminal.surface().size(),
+                    texture.image.id(),
+                    texture.size,
                     terminal.presentation(),
                 )
             })
@@ -1728,23 +1820,77 @@ mod tests {
         instances.sort_by_key(|(_, size, _, _, _)| size.width);
 
         assert_eq!(instances.len(), 2);
+        assert_eq!(instances[0].0, second);
         assert_eq!(instances[0].1, GridSize::new(7, 9));
         assert_eq!(instances[0].3, UVec2::new(77, 180));
-        assert_eq!(instances[0].4, TerminalBatchPresentation::Headless);
+        assert_eq!(instances[0].4, Presentation::Headless);
+        assert_eq!(instances[1].0, first);
         assert_eq!(instances[1].1, GridSize::new(12, 4));
         assert_eq!(instances[1].3, UVec2::new(132, 80));
-        assert_eq!(instances[1].4, TerminalBatchPresentation::Ui);
+        assert_eq!(instances[1].4, Presentation::Ui { origin: Vec2::ZERO });
         assert_ne!(instances[0].2, instances[1].2);
 
         let roots = app
             .world_mut()
-            .query::<&TerminalBatchRoot>()
+            .query::<&TerminalNode>()
             .iter(app.world())
             .map(|root| root.terminal)
             .collect::<Vec<_>>();
-        assert_eq!(roots, vec![instances[1].0]);
+        assert_eq!(roots, vec![first]);
         assert_eq!(first_surface.snapshot().size().width, 12);
         assert_eq!(second_surface.snapshot().size().width, 7);
+        let image_count = app.world().resource::<Assets<Image>>().len();
+
+        // Despawning a terminal removes its node and images.
+        app.world_mut().despawn(first);
+        app.update();
+        assert_eq!(
+            app.world_mut()
+                .query::<&TerminalNode>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        assert_eq!(
+            app.world().resource::<Assets<Image>>().len(),
+            image_count - 2
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&TerminalTexture>()
+                .iter(app.world())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn ui_presentation_places_the_node_at_the_snapped_origin() {
+        let node = presentation_node(UVec2::new(220, 400), Vec2::new(10.3, 20.6), 2.0);
+        assert_eq!(node.left, px(10.5));
+        assert_eq!(node.top, px(20.5));
+        assert_eq!(node.width, px(110.0));
+        assert_eq!(node.height, px(200.0));
+
+        let mut app = App::new();
+        app.init_resource::<Assets<Image>>()
+            .add_plugins(TerminalPlugin);
+        let terminal = app
+            .world_mut()
+            .spawn(
+                Terminal::new(TerminalSurface::new(4, 2)).with_presentation(Presentation::Ui {
+                    origin: Vec2::new(30.0, 40.0),
+                }),
+            )
+            .id();
+        app.update();
+        let mut nodes = app.world_mut().query::<(&TerminalNode, &Node)>();
+        let (marker, node) = nodes.single(app.world()).expect("one presentation node");
+        assert_eq!(marker.terminal, terminal);
+        assert_eq!(node.left, px(30.0));
+        assert_eq!(node.top, px(40.0));
+        let stats = TerminalStats::default();
+        assert_eq!(stats.sync_frames, 0);
     }
 
     #[test]
@@ -1784,7 +1930,7 @@ mod tests {
         assert_eq!(
             resolve_raster_scale(
                 TerminalRenderScale::Automatic,
-                TerminalBatchPresentation::Ui,
+                Presentation::default(),
                 Some(2.0),
             ),
             2.0
@@ -1792,7 +1938,7 @@ mod tests {
         assert_eq!(
             resolve_raster_scale(
                 TerminalRenderScale::Automatic,
-                TerminalBatchPresentation::Headless,
+                Presentation::Headless,
                 Some(2.0),
             ),
             1.0
@@ -1800,7 +1946,7 @@ mod tests {
         assert_eq!(
             resolve_raster_scale(
                 TerminalRenderScale::Fixed(1.5),
-                TerminalBatchPresentation::Headless,
+                Presentation::Headless,
                 None,
             ),
             1.5
@@ -1808,7 +1954,7 @@ mod tests {
         assert_eq!(
             resolve_raster_scale(
                 TerminalRenderScale::Fixed(f32::NAN),
-                TerminalBatchPresentation::Ui,
+                Presentation::default(),
                 None,
             ),
             1.0
@@ -1819,10 +1965,9 @@ mod tests {
     fn physical_metrics_and_geometry_are_pixel_aligned() {
         let config = TerminalRenderConfig {
             cell_size: Vec2::new(10.8, 19.6),
-            font_size: 17.6,
             ..default()
         };
-        let physical = physical_config(&config, 2.0);
+        let physical = physical_config(&config, 2.0, 17.6);
         assert_eq!(physical.cell_size, Vec2::new(22.0, 39.0));
         assert!((physical.font_size - 35.2).abs() < 1e-4);
 
@@ -2011,9 +2156,14 @@ mod tests {
     #[test]
     fn blink_phases_follow_slow_rapid_and_disabled_cursor_rates() {
         let mut config = TerminalRenderConfig {
-            slow_blink_hz: 1.0,
-            rapid_blink_hz: 2.0,
-            cursor_blink_hz: None,
+            blink: super::super::BlinkConfig {
+                slow_hz: Some(1.0),
+                rapid_hz: Some(2.0),
+            },
+            cursor: super::super::CursorConfig {
+                blink_hz: None,
+                ..default()
+            },
             ..default()
         };
         let visible = BlinkPhases::at(0.1, &config);
@@ -2021,7 +2171,7 @@ mod tests {
         let hidden = BlinkPhases::at(0.3, &config);
         assert!(!hidden.slow_hidden && hidden.rapid_hidden && !hidden.cursor_hidden);
 
-        config.cursor_blink_hz = Some(1.0);
+        config.cursor.blink_hz = Some(1.0);
         assert!(BlinkPhases::at(0.6, &config).cursor_hidden);
     }
 }

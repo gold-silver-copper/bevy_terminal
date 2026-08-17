@@ -18,7 +18,8 @@ use bevy::{
     window::{CursorMoved, PrimaryWindow, WindowResizeConstraints, WindowResolution},
 };
 use bevy_terminal_ratatui::{
-    BevyTerminalPlugin, RatatuiBackend, TerminalRenderConfig, TerminalSurface, TerminalSystems,
+    Presentation, RatatuiBackend, RatatuiTerminalExt, Terminal as TerminalEntity, TerminalPlugin,
+    TerminalRenderConfig, TerminalSurface, TerminalSystems,
 };
 use ratatui::{Terminal, layout::Size};
 
@@ -36,8 +37,6 @@ fn main() {
     let surface = gallery.surface();
     let config = TerminalRenderConfig {
         cell_size: Vec2::new(CELL_WIDTH, CELL_HEIGHT),
-        font_size: 16.0,
-        origin: Vec2::splat(MARGIN),
         ..default()
     };
     let width = f32::from(catalog::COLUMNS).mul_add(CELL_WIDTH, MARGIN * 2.0);
@@ -59,14 +58,22 @@ fn main() {
         ..default()
     }));
     let fonts = fonts::load(&mut app);
-    app.add_plugins(BevyTerminalPlugin::new(surface).with_config(fonts.configure(config)))
+    let config = fonts.configure(config);
+    app.add_plugins(TerminalPlugin)
         .insert_resource(gallery)
         .insert_resource(AnimationClock(Timer::from_seconds(
             0.1,
             TimerMode::Repeating,
         )))
-        .add_systems(Startup, |mut commands: Commands| {
+        .add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(Camera2d);
+            commands.spawn(
+                TerminalEntity::new(surface.clone())
+                    .with_config(config.clone())
+                    .with_presentation(Presentation::Ui {
+                        origin: Vec2::splat(MARGIN),
+                    }),
+            );
         })
         .add_systems(
             Update,
@@ -123,10 +130,7 @@ impl Gallery {
         if self.size() == size {
             return false;
         }
-        self.terminal.backend_mut().resize(size.width, size.height);
-        self.terminal
-            .autoresize()
-            .expect("the in-memory backend is infallible");
+        self.terminal.resize_grid(size.width, size.height);
         self.redraw();
         true
     }

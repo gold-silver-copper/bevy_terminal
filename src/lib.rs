@@ -2,20 +2,23 @@
 
 mod backend;
 
-pub use backend::RatatuiBackend;
+pub use backend::{RatatuiBackend, RatatuiTerminalExt};
 /// The Bevy terminal renderer this backend writes into, re-exported in full.
 pub use bevy_terminal;
 pub use bevy_terminal::{
-    BevyTerminalPlugin, CellOccupancy, CellPosition, CellSymbol, CursorStyle, FontSizing, GridSize,
-    RetainedBevyTerminalPlugin, SnapshotDelta, StyleFlags, SurfaceMetrics, SurfaceUpdate,
-    TerminalBatch, TerminalBatchOutput, TerminalBatchPresentation, TerminalBatchRoot,
-    TerminalBatchStats, TerminalCell, TerminalColor, TerminalRenderConfig, TerminalRenderScale,
-    TerminalRenderStats, TerminalRoot, TerminalSnapshot, TerminalStyle, TerminalSurface,
-    TerminalSystems, TerminalTheme,
+    BlinkConfig, CellOccupancy, CellPosition, CellSymbol, CursorConfig, CursorStyle, FontFaces,
+    FontHinting, FontSizing, FontSource, GridSize, Presentation, StyleFlags, SurfaceMetrics,
+    SurfaceUpdate, Terminal, TerminalCell, TerminalColor, TerminalNode, TerminalPlugin,
+    TerminalRenderConfig, TerminalRenderScale, TerminalResized, TerminalSnapshot, TerminalStats,
+    TerminalStyle, TerminalSurface, TerminalSystems, TerminalTexture, TerminalTheme,
 };
 
-/// Convenient imports for applications using `bevy_terminal_ratatui`.
+/// Convenient imports for applications rendering Ratatui with Bevy.
 pub mod prelude {
-    pub use crate::RatatuiBackend;
-    pub use bevy_terminal::prelude::*;
+    pub use crate::{
+        BlinkConfig, CursorConfig, CursorStyle, FontFaces, FontSizing, Presentation,
+        RatatuiBackend, RatatuiTerminalExt, Terminal, TerminalNode, TerminalPlugin,
+        TerminalRenderConfig, TerminalRenderScale, TerminalResized, TerminalStats, TerminalSurface,
+        TerminalTexture, TerminalTheme,
+    };
 }

@@ -18,7 +18,8 @@ use bevy::{
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::{
-    BevyTerminalPlugin, TerminalBatch, TerminalRenderConfig, TerminalRenderScale, TerminalSystems,
+    BlinkConfig, CursorConfig, Presentation, Terminal, TerminalPlugin, TerminalRenderConfig,
+    TerminalRenderScale, TerminalSystems,
 };
 
 const CELL_WIDTH: f32 = 10.0;
@@ -43,12 +44,12 @@ fn main() {
     let surface = catalog::draw_surface(&catalog::EXAMPLES[0]);
     let config = TerminalRenderConfig {
         cell_size: Vec2::new(CELL_WIDTH, CELL_HEIGHT),
-        font_size: 16.0,
         render_scale: TerminalRenderScale::Fixed(1.0),
-        origin: Vec2::splat(MARGIN),
-        cursor_blink_hz: None,
-        slow_blink_hz: 0.0,
-        rapid_blink_hz: 0.0,
+        cursor: CursorConfig {
+            blink_hz: None,
+            ..default()
+        },
+        blink: BlinkConfig::NONE,
         ..default()
     };
     let export_plugin = ImageExportPlugin::default();
@@ -76,10 +77,19 @@ fn main() {
         example_index: 0,
         frames_on_example: 0,
     })
-    .add_plugins((
-        export_plugin,
-        BevyTerminalPlugin::new(surface).with_config(fonts.configure(config)),
-    ))
+    .add_plugins((export_plugin, TerminalPlugin))
+    .add_systems(Startup, {
+        let config = fonts.configure(config);
+        move |mut commands: Commands| {
+            commands.spawn(
+                Terminal::new(surface.clone())
+                    .with_config(config.clone())
+                    .with_presentation(Presentation::Ui {
+                        origin: Vec2::splat(MARGIN),
+                    }),
+            );
+        }
+    })
     .add_systems(Startup, setup_export)
     .add_systems(Update, advance_capture.before(TerminalSystems::Sync))
     .run();
@@ -146,7 +156,7 @@ fn setup_export(
 }
 
 fn advance_capture(
-    terminals: Query<&TerminalBatch>,
+    terminals: Query<&Terminal>,
     mut sequence: ResMut<CaptureSequence>,
     mut settings: Query<&mut ImageExportSettings>,
     mut exit: MessageWriter<AppExit>,

@@ -15,8 +15,8 @@ use bevy::{
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::{
-    BevyTerminalPlugin, RatatuiBackend, TerminalBatch, TerminalRenderConfig, TerminalRenderScale,
-    TerminalSystems,
+    CursorConfig, Presentation, RatatuiBackend, Terminal, TerminalPlugin, TerminalRenderConfig,
+    TerminalRenderScale, TerminalSystems,
 };
 
 const WIDTH: u32 = 832;
@@ -27,10 +27,11 @@ fn main() {
     let surface = common::demo_surface();
     let config = TerminalRenderConfig {
         cell_size: Vec2::new(11.0, 20.0),
-        font_size: 18.0,
         render_scale: TerminalRenderScale::Fixed(1.0),
-        origin: Vec2::new(20.0, 20.0),
-        cursor_blink_hz: None,
+        cursor: CursorConfig {
+            blink_hz: None,
+            ..default()
+        },
         ..default()
     };
     let export_plugin = ImageExportPlugin::default();
@@ -54,14 +55,21 @@ fn main() {
             }),
     );
     let fonts = common::fonts::load(&mut app);
-    app.add_plugins((
-        export_plugin,
-        BevyTerminalPlugin::new(surface).with_config(fonts.configure(config)),
-    ))
-    .add_systems(Startup, setup_export)
-    .add_systems(Update, resize_for_qa.before(TerminalSystems::Sync))
-    .add_systems(Update, stop_after_export)
-    .run();
+    let config = fonts.configure(config);
+    app.add_plugins((export_plugin, TerminalPlugin))
+        .add_systems(Startup, move |mut commands: Commands| {
+            commands.spawn(
+                Terminal::new(surface.clone())
+                    .with_config(config.clone())
+                    .with_presentation(Presentation::Ui {
+                        origin: Vec2::new(20.0, 20.0),
+                    }),
+            );
+        })
+        .add_systems(Startup, setup_export)
+        .add_systems(Update, resize_for_qa.before(TerminalSystems::Sync))
+        .add_systems(Update, stop_after_export)
+        .run();
 
     export_threads.finish();
 }
@@ -112,7 +120,7 @@ fn setup_export(
     ));
 }
 
-fn resize_for_qa(terminals: Query<&TerminalBatch>, mut frame: Local<u32>) {
+fn resize_for_qa(terminals: Query<&Terminal>, mut frame: Local<u32>) {
     *frame += 1;
     if *frame == 8 {
         let terminal = terminals

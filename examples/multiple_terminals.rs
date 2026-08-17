@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use bevy::{prelude::*, window::WindowResolution};
 use bevy_terminal_ratatui::{
-    BevyTerminalPlugin, RatatuiBackend, TerminalRenderConfig, TerminalSystems,
+    Presentation, RatatuiBackend, RatatuiTerminalExt, Terminal as TerminalEntity, TerminalPlugin,
+    TerminalRenderConfig, TerminalSystems,
 };
 use ratatui::{
     Terminal,
@@ -49,28 +50,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..default()
     }));
     let fonts = fonts::load(&mut app);
-    let left_config = fonts.configure(TerminalRenderConfig {
+    let config = fonts.configure(TerminalRenderConfig {
         cell_size: Vec2::new(10.0, 18.0),
-        font_size: 16.0,
-        origin: Vec2::new(24.0, 56.0),
-        ..default()
-    });
-    let right_config = fonts.configure(TerminalRenderConfig {
-        cell_size: Vec2::new(10.0, 18.0),
-        font_size: 16.0,
-        origin: Vec2::new(496.0, 56.0),
         ..default()
     });
     app.insert_resource(fonts)
-        .add_plugins((
-            BevyTerminalPlugin::new(left_surface).with_config(left_config),
-            BevyTerminalPlugin::new(right_surface).with_config(right_config),
-        ))
+        .add_plugins(TerminalPlugin)
         .insert_resource(terminals)
+        .insert_resource(PendingRight {
+            surface: Some(right_surface),
+            config: config.clone(),
+        })
         .add_systems(Startup, setup)
-        .add_systems(Update, update_terminals.before(TerminalSystems::Sync))
+        .add_systems(Startup, move |mut commands: Commands| {
+            // The left terminal exists from the first frame.
+            commands.spawn(
+                TerminalEntity::new(left_surface.clone())
+                    .with_config(config.clone())
+                    .with_presentation(Presentation::Ui {
+                        origin: Vec2::new(24.0, 56.0),
+                    }),
+            );
+        })
+        .add_systems(
+            Update,
+            (spawn_right_terminal, update_terminals).before(TerminalSystems::Sync),
+        )
         .run();
     Ok(())
+}
+
+/// The right terminal is spawned a moment after startup to show that terminals
+/// can be added while the app is running.
+#[derive(Resource)]
+struct PendingRight {
+    surface: Option<bevy_terminal_ratatui::TerminalSurface>,
+    config: TerminalRenderConfig,
+}
+
+fn spawn_right_terminal(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut pending: ResMut<PendingRight>,
+) {
+    if time.elapsed_secs() > 0.75
+        && let Some(surface) = pending.surface.take()
+    {
+        commands.spawn(
+            TerminalEntity::new(surface)
+                .with_config(pending.config.clone())
+                .with_presentation(Presentation::Ui {
+                    origin: Vec2::new(496.0, 56.0),
+                }),
+        );
+    }
 }
 
 fn setup(mut commands: Commands, fonts: Res<fonts::ExampleFonts>) {
@@ -94,11 +127,7 @@ fn update_terminals(time: Res<Time>, mut terminals: ResMut<IndependentTerminals>
     }
     terminals.tick = terminals.tick.wrapping_add(1);
     if terminals.tick == 8 && !terminals.right_resized {
-        terminals.right.backend_mut().resize(38, 14);
-        terminals
-            .right
-            .autoresize()
-            .expect("the in-memory backend is infallible");
+        terminals.right.resize_grid(38, 14);
         terminals.right_resized = true;
     }
     redraw(&mut terminals).expect("the in-memory backend is infallible");

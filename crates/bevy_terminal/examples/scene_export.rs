@@ -5,11 +5,11 @@ mod common;
 use bevy::{prelude::*, render::RenderPlugin, window::WindowResolution};
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal::{
-    BevyTerminalPlugin, TerminalBatch, TerminalBatchOutput, TerminalRenderConfig,
-    TerminalRenderScale, TerminalSurface,
+    CursorConfig, Presentation, Terminal, TerminalPlugin, TerminalRenderConfig,
+    TerminalRenderScale, TerminalSurface, TerminalTexture,
 };
 
-const EXPORT_FRAMES: u32 = 6;
+const EXPORT_FRAMES: u32 = 8;
 
 #[derive(Resource)]
 struct Surfaces {
@@ -43,39 +43,50 @@ fn main() {
         &mut app,
         TerminalRenderConfig {
             cell_size: common::CELL_SIZE,
-            font_size: 18.0,
             render_scale: TerminalRenderScale::Fixed(1.0),
-            cursor_blink_hz: None,
+            cursor: CursorConfig {
+                blink_hz: None,
+                ..default()
+            },
             ..default()
         },
     );
-    app.add_plugins((
-        export_plugin,
-        BevyTerminalPlugin::new(main.clone())
-            .with_config(config.clone())
-            .headless(),
-        BevyTerminalPlugin::new(status.clone())
-            .with_config(config)
-            .headless(),
-    ))
-    .insert_resource(Surfaces { main, status })
-    .add_systems(Startup, setup_export)
-    .add_systems(Update, stop_after_export)
-    .run();
+    app.add_plugins((export_plugin, TerminalPlugin))
+        .insert_resource(Surfaces {
+            main: main.clone(),
+            status: status.clone(),
+        })
+        .add_systems(Startup, move |mut commands: Commands| {
+            for surface in [&main, &status] {
+                commands.spawn(
+                    Terminal::new(surface.clone())
+                        .with_config(config.clone())
+                        .with_presentation(Presentation::Headless),
+                );
+            }
+        })
+        .add_systems(Update, (setup_export, stop_after_export).chain())
+        .run();
 
     export_threads.finish();
 }
 
+/// Registers an exporter for each terminal texture once both textures exist.
 fn setup_export(
     mut commands: Commands,
+    mut done: Local<bool>,
     surfaces: Res<Surfaces>,
-    outputs: Query<(&TerminalBatch, &TerminalBatchOutput)>,
+    outputs: Query<(&Terminal, &TerminalTexture)>,
     mut export_sources: ResMut<Assets<ImageExportSource>>,
 ) {
+    if *done || outputs.iter().count() < 2 {
+        return;
+    }
+    *done = true;
     for (terminal, output) in &outputs {
-        let name = if terminal.renders_surface(&surfaces.main) {
+        let name = if terminal.surface().shares_state_with(&surfaces.main) {
             "scene"
-        } else if terminal.renders_surface(&surfaces.status) {
+        } else if terminal.surface().shares_state_with(&surfaces.status) {
             "status"
         } else {
             continue;

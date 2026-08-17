@@ -16,7 +16,8 @@ use bevy::{
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::{
-    BevyTerminalPlugin, RatatuiBackend, TerminalRenderConfig, TerminalRenderScale, TerminalSystems,
+    CursorConfig, Presentation, RatatuiBackend, RatatuiTerminalExt, Terminal as TerminalEntity,
+    TerminalPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalSystems,
 };
 use ratatui::{
     Terminal,
@@ -64,29 +65,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
     );
     let fonts = fonts::load(&mut app);
-    let left_config = fonts.configure(TerminalRenderConfig {
+    let config = fonts.configure(TerminalRenderConfig {
         cell_size: Vec2::new(10.0, 18.0),
-        font_size: 16.0,
         render_scale: TerminalRenderScale::Fixed(1.0),
-        origin: Vec2::new(20.0, 62.0),
-        cursor_blink_hz: None,
-        ..default()
-    });
-    let right_config = fonts.configure(TerminalRenderConfig {
-        cell_size: Vec2::new(10.0, 18.0),
-        font_size: 16.0,
-        render_scale: TerminalRenderScale::Fixed(1.0),
-        origin: Vec2::new(450.0, 62.0),
-        cursor_blink_hz: None,
+        cursor: CursorConfig {
+            blink_hz: None,
+            ..default()
+        },
         ..default()
     });
     app.insert_resource(fonts)
-        .add_plugins((
-            export_plugin,
-            BevyTerminalPlugin::new(left_surface).with_config(left_config),
-            BevyTerminalPlugin::new(right_surface).with_config(right_config),
-        ))
+        .add_plugins((export_plugin, TerminalPlugin))
         .insert_resource(terminals)
+        .add_systems(Startup, move |mut commands: Commands| {
+            for (surface, origin) in [
+                (&left_surface, Vec2::new(20.0, 62.0)),
+                (&right_surface, Vec2::new(450.0, 62.0)),
+            ] {
+                commands.spawn(
+                    TerminalEntity::new(surface.clone())
+                        .with_config(config.clone())
+                        .with_presentation(Presentation::Ui { origin }),
+                );
+            }
+        })
         .add_systems(Startup, setup_export)
         .add_systems(Update, mutate_for_qa.before(TerminalSystems::Sync))
         .add_systems(Update, stop_after_export)
@@ -160,11 +162,7 @@ fn mutate_for_qa(mut terminals: ResMut<QaTerminals>, mut frame: Local<u32>) {
         return;
     }
 
-    terminals.right.backend_mut().resize(36, 12);
-    terminals
-        .right
-        .autoresize()
-        .expect("the in-memory backend is infallible");
+    terminals.right.resize_grid(36, 12);
     draw_terminals(&mut terminals, 5).expect("the in-memory backend is infallible");
 }
 

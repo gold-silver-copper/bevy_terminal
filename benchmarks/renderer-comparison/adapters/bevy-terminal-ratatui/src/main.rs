@@ -1,7 +1,8 @@
 use bevy::{app::SubApps, prelude::*, text::FontSource};
 use bevy_terminal_ratatui::{
-    BevyTerminalPlugin, FontSizing, RatatuiBackend, TerminalBatchStats, TerminalRenderConfig,
-    TerminalSurface,
+    BlinkConfig, CursorConfig, FontSizing, Presentation, RatatuiBackend, Terminal as TerminalEntity,
+    TerminalPlugin,
+    TerminalRenderConfig, TerminalStats, TerminalSurface, TerminalTexture,
 };
 use ratatui::Terminal;
 use renderer_bench_sdk::{
@@ -12,8 +13,8 @@ use renderer_bench_sdk::{
 struct BevyTerminalRatatuiAdapter {
     terminal: Terminal<RatatuiBackend>,
     surface: TerminalSurface,
-    last_stats: TerminalBatchStats,
-    max_extracted_bytes: u64,
+    last_stats: TerminalStats,
+    max_gpu_bytes_written: u64,
     max_shape_misses: u32,
 }
 
@@ -24,8 +25,8 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
         Ok(Self {
             terminal: Terminal::new(backend)?,
             surface,
-            last_stats: TerminalBatchStats::default(),
-            max_extracted_bytes: 0,
+            last_stats: TerminalStats::default(),
+            max_gpu_bytes_written: 0,
             max_shape_misses: 0,
         })
     }
@@ -36,19 +37,21 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
             .world_mut()
             .resource_mut::<Assets<Font>>()
             .add(Font::from_bytes(bytes));
-        app.add_plugins(
-            BevyTerminalPlugin::new(self.surface.clone())
+        app.add_plugins(TerminalPlugin);
+        app.world_mut().spawn(
+            TerminalEntity::new(self.surface.clone())
                 .with_config(TerminalRenderConfig {
                     cell_size: Vec2::new(config.cell_width, config.cell_height),
-                    font_size: config.font_size as f32,
-                    font_sizing: FontSizing::Explicit,
-                    font: FontSource::Handle(font),
-                    cursor_blink_hz: None,
-                    slow_blink_hz: 0.0,
-                    rapid_blink_hz: 0.0,
+                    font_size: FontSizing::Px(config.font_size as f32),
+                    font: FontSource::Handle(font).into(),
+                    cursor: CursorConfig {
+                        blink_hz: None,
+                        ..default()
+                    },
+                    blink: BlinkConfig::NONE,
                     ..default()
                 })
-                .headless(),
+                .with_presentation(Presentation::Headless),
         );
         Ok(())
     }
@@ -63,13 +66,15 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
         config: &BenchConfig,
         frame_index: u64,
     ) -> BenchResult<AdapterFrame> {
-        self.last_stats = *world
+        // Stats are attached by TerminalPlugin during the first update, so they
+        // may not exist yet on the very first measured frame.
+        self.last_stats = world
             .iter_entities()
-            .find_map(|entity| entity.get::<TerminalBatchStats>())
-            .expect("the adapter creates exactly one terminal renderer");
-        self.max_extracted_bytes = self
-            .max_extracted_bytes
-            .max(self.last_stats.extracted_bytes);
+            .find_map(|entity| entity.get::<TerminalStats>().copied())
+            .unwrap_or_default();
+        self.max_gpu_bytes_written = self
+            .max_gpu_bytes_written
+            .max(self.last_stats.gpu_bytes_written);
         self.max_shape_misses = self.max_shape_misses.max(self.last_stats.shape_misses);
         let (result, draw_ns) = measure(|| {
             self.terminal.draw(|frame| {
@@ -92,7 +97,7 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
             .main
             .world()
             .iter_entities()
-            .find_map(|entity| entity.get::<bevy_terminal_ratatui::TerminalBatchOutput>())
+            .find_map(|entity| entity.get::<TerminalTexture>())
             .expect("the adapter creates exactly one terminal output")
             .image
             .clone();
@@ -118,7 +123,7 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
                 "Bevy text shaping, glyph atlas preparation, extraction, upload, render submission, and synchronization are included"
                     .to_owned(),
                 format!(
-                    "renderer counters: glyph_quads={}, solid_quads={}, batches={}, last_changed_rows={}, last_snapshot_cells={}, cached_shapes={}, max_shape_misses={}, max_extracted_bytes={}, snapshot_ns={}, scene_ns={}, gpu_buffer_reallocations={}, gpu_write_calls={}, gpu_bytes_written={}, render_passes={}, draw_calls={}, pipeline_switches={}, atlas_bindings={}",
+                    "renderer counters: glyph_quads={}, solid_quads={}, batches={}, last_changed_rows={}, last_snapshot_cells={}, cached_shapes={}, max_shape_misses={}, snapshot_ns={}, scene_ns={}, gpu_bytes_written={}, max_gpu_bytes_written={}",
                     self.last_stats.glyph_quads,
                     self.last_stats.solid_quads,
                     self.last_stats.draw_batches,
@@ -126,16 +131,10 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
                     self.last_stats.snapshot_cells,
                     self.last_stats.cached_shapes,
                     self.max_shape_misses,
-                    self.max_extracted_bytes,
                     self.last_stats.snapshot_ns,
                     self.last_stats.scene_ns,
-                    self.last_stats.gpu_buffer_reallocations,
-                    self.last_stats.gpu_write_calls,
                     self.last_stats.gpu_bytes_written,
-                    self.last_stats.render_passes,
-                    self.last_stats.draw_calls,
-                    self.last_stats.pipeline_switches,
-                    self.last_stats.atlas_bindings,
+                    self.max_gpu_bytes_written,
                 ),
             ],
         }

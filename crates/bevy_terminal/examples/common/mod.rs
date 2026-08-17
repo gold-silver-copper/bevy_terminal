@@ -7,7 +7,7 @@
 
 use bevy::prelude::*;
 use bevy_terminal::{
-    CellOccupancy, StyleFlags, TerminalCell, TerminalColor, TerminalRenderConfig, TerminalStyle,
+    FontFaces, StyleFlags, TerminalCell, TerminalColor, TerminalRenderConfig, TerminalStyle,
     TerminalSurface,
 };
 
@@ -52,10 +52,12 @@ pub fn configure_fonts(app: &mut App, mut config: TerminalRenderConfig) -> Termi
     let mut handles = faces
         .into_iter()
         .map(|bytes| fonts.add(Font::from_bytes(bytes)));
-    config.font = handles.next().expect("four faces").into();
-    config.bold_font = Some(handles.next().expect("four faces").into());
-    config.italic_font = Some(handles.next().expect("four faces").into());
-    config.bold_italic_font = Some(handles.next().expect("four faces").into());
+    config.font = FontFaces {
+        regular: handles.next().expect("four faces").into(),
+        bold: Some(handles.next().expect("four faces").into()),
+        italic: Some(handles.next().expect("four faces").into()),
+        bold_italic: Some(handles.next().expect("four faces").into()),
+    };
     config
 }
 
@@ -123,10 +125,9 @@ pub fn scene_surface() -> TerminalSurface {
             .fg(TerminalColor::LIGHT_MAGENTA)
             .bg(TerminalColor::Indexed(236)),
     );
-    update.set_cell(8, 6, &wide);
+    update.set_cell((8, 6), &wide);
     update.set_cell(
-        10,
-        6,
+        (10, 6),
         &TerminalCell::wide("😀", 2).with_style(plain.bg(TerminalColor::Indexed(236))),
     );
     write_text(&mut update, 13, 6, "| next column stays put", plain);
@@ -168,7 +169,7 @@ pub fn scene_surface() -> TerminalSurface {
         "cursor >",
         plain.fg(TerminalColor::LIGHT_GREEN),
     );
-    update.set_cursor_position(39, 11);
+    update.set_cursor_position((39, 11));
     update.set_cursor_visible(true);
     update.commit();
     surface
@@ -220,8 +221,8 @@ pub fn write_text(
     style: TerminalStyle,
 ) {
     for (offset, symbol) in text.chars().enumerate() {
-        let cell = TerminalCell::from_char(symbol).with_style(style);
-        update.set_cell(x + offset as u16, y, &cell);
+        let cell = TerminalCell::from(symbol).with_style(style);
+        update.set_cell((x + offset as u16, y), &cell);
     }
 }
 
@@ -237,35 +238,19 @@ pub fn draw_box(
     let right = x + width - 1;
     let bottom = y + height - 1;
     for column in x + 1..right {
-        update.set_cell(column, y, &cell("─", style));
-        update.set_cell(column, bottom, &cell("─", style));
+        update.set_cell((column, y), &cell("─", style));
+        update.set_cell((column, bottom), &cell("─", style));
     }
     for row in y + 1..bottom {
-        update.set_cell(x, row, &cell("│", style));
-        update.set_cell(right, row, &cell("│", style));
+        update.set_cell((x, row), &cell("│", style));
+        update.set_cell((right, row), &cell("│", style));
     }
-    update.set_cell(x, y, &cell("┌", style));
-    update.set_cell(right, y, &cell("┐", style));
-    update.set_cell(x, bottom, &cell("└", style));
-    update.set_cell(right, bottom, &cell("┘", style));
+    update.set_cell((x, y), &cell("┌", style));
+    update.set_cell((right, y), &cell("┐", style));
+    update.set_cell((x, bottom), &cell("└", style));
+    update.set_cell((right, bottom), &cell("┘", style));
 }
 
 fn cell(symbol: &str, style: TerminalStyle) -> TerminalCell {
-    TerminalCell::new(symbol)
-        .with_style(style)
-        .with_occupancy(CellOccupancy::Single)
-}
-
-/// Adds a helper for constructing cells from characters.
-trait FromChar {
-    fn from_char(symbol: char) -> Self;
-}
-
-impl FromChar for TerminalCell {
-    fn from_char(symbol: char) -> Self {
-        Self {
-            symbol: symbol.into(),
-            ..Self::EMPTY
-        }
-    }
+    TerminalCell::new(symbol).with_style(style)
 }
