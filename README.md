@@ -134,7 +134,10 @@ regular font's advance by shaping it and picks the font size at which one
 advance equals `cell_size.x`, so glyphs designed to fill their advance tile the
 grid without seams regardless of which font is used; `font_size` is only the
 fallback until the font can be measured. Set `FontSizing::Explicit` to use
-`font_size` as given.
+`font_size` as given. Glyphs are rasterized unhinted by default
+(`font_hinting`), because hinting snaps the font to whole-pixel sizes and would
+reintroduce fractional seams on displays whose scale factor makes the physical
+font size fractional.
 
 All Ratatui colors are supported, including the ANSI 256-color cube and true
 color. Bold, dim, italic, underline, reverse, hidden, crossed-out, slow-blink,

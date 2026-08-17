@@ -25,8 +25,8 @@ use bevy::{
         texture::GpuImage,
     },
     text::{
-        ComputedTextBlock, FontAtlasSet, FontCx, FontHinting, LayoutCx, LetterSpacing, LineBreak,
-        LineHeight, ScaleCx, TextBounds, TextLayoutInfo, TextPipeline,
+        ComputedTextBlock, FontAtlasSet, FontCx, LayoutCx, LetterSpacing, LineBreak, LineHeight,
+        ScaleCx, TextBounds, TextLayoutInfo, TextPipeline,
     },
     window::PrimaryWindow,
 };
@@ -570,7 +570,9 @@ struct BatchMainState {
     presentation: TerminalBatchPresentation,
     raster_scale: f32,
     raster_config: TerminalRenderConfig,
-    /// Logical font size in use; `None` until the font has been measured.
+    /// Advance of the regular font at the probe size; `None` until measured.
+    measured_advance: Option<f32>,
+    /// Logical font size in use.
     font_size: Option<f32>,
     last_snapshot: Option<TerminalSnapshot>,
     pending: Option<BatchScene>,
@@ -596,6 +598,7 @@ impl BatchMainState {
             presentation,
             raster_scale,
             raster_config,
+            measured_advance: None,
             font_size: None,
             last_snapshot: None,
             pending: None,
@@ -748,18 +751,15 @@ fn sync_batch_terminal(
 
     let raster_scale = resolve_raster_scale(config.render_scale, state.presentation, window_scale);
     let scale_changed = state.raster_scale != raster_scale;
-    let mut font_size_changed = false;
-    if state.font_size.is_none() || terminal_changed || fonts_changed {
-        let measured = match config.font_sizing {
-            super::FontSizing::FitCellWidth => {
-                super::measure_advance(config, fonts, text_pipeline, font_cx, layout_cx)
-            }
-            super::FontSizing::Explicit => None,
-        };
-        let font_size = super::effective_font_size(config, measured);
-        font_size_changed = state.font_size != Some(font_size);
-        state.font_size = Some(font_size);
+    if config.font_sizing == super::FontSizing::FitCellWidth
+        && (state.measured_advance.is_none() || terminal_changed || fonts_changed)
+    {
+        state.measured_advance =
+            super::measure_advance(config, fonts, text_pipeline, font_cx, layout_cx);
     }
+    let font_size = super::effective_font_size(config, state.measured_advance);
+    let font_size_changed = state.font_size != Some(font_size);
+    state.font_size = Some(font_size);
     let text_assets_changed =
         terminal_changed || fonts_changed || scale_changed || font_size_changed;
     if terminal_changed || scale_changed || font_size_changed {
@@ -1188,7 +1188,7 @@ fn cached_shape<'a>(
             scale_cx,
             TextBounds::UNBOUNDED,
             Justify::Left,
-            FontHinting::Enabled,
+            config.font_hinting,
         );
     }
     let cached = layout

@@ -2,8 +2,8 @@ use bevy::{
     ecs::schedule::SystemSet,
     prelude::*,
     text::{
-        ComputedTextBlock, FontCx, FontSource, FontStyle, FontWeight, LayoutCx, LetterSpacing,
-        LineHeight, TextPipeline,
+        ComputedTextBlock, FontCx, FontHinting, FontSource, FontStyle, FontWeight, LayoutCx,
+        LetterSpacing, LineHeight, TextPipeline,
     },
 };
 
@@ -61,6 +61,16 @@ fn measure_advance(
     font_cx: &mut FontCx,
     layout_cx: &mut LayoutCx,
 ) -> Option<f32> {
+    // A font asset is only usable once Bevy has registered it with the font
+    // context (which assigns its alias); measuring before that would shape a
+    // fallback font. Report "not yet" so the caller retries next frame.
+    if let FontSource::Handle(handle) = &config.font
+        && fonts
+            .get(handle.id())
+            .is_none_or(|font| font.alias.is_empty())
+    {
+        return None;
+    }
     let font = TextFont {
         font: config.font.clone(),
         font_size: PROBE_FONT_SIZE.into(),
@@ -141,6 +151,15 @@ pub struct TerminalRenderConfig {
     pub font_size: f32,
     /// How the effective font size is chosen.
     pub font_sizing: FontSizing,
+    /// Glyph rasterization hinting for the compact renderer.
+    ///
+    /// Defaults to [`FontHinting::Disabled`]: hinted rasterization snaps the
+    /// font to whole-pixel sizes, so a font sized to fill the cell width
+    /// exactly (see [`FontSizing::FitCellWidth`]) is rendered a fraction too
+    /// narrow or wide and adjacent block/box glyphs show seams on displays
+    /// whose scale factor makes the physical font size fractional. Unhinted
+    /// rasterization keeps the measured metrics exact.
+    pub font_hinting: FontHinting,
     /// Physical raster scale used by the compact batch renderer.
     pub render_scale: TerminalRenderScale,
     /// Bevy font source used for regular text. The generic monospace family enables system
@@ -178,6 +197,7 @@ impl Default for TerminalRenderConfig {
             cell_size: Vec2::new(11.0, 20.0),
             font_size: 18.0,
             font_sizing: FontSizing::FitCellWidth,
+            font_hinting: FontHinting::Disabled,
             render_scale: TerminalRenderScale::Automatic,
             font: FontSource::Monospace,
             bold_font: None,
@@ -282,6 +302,7 @@ struct RenderedEntities {
     cursor: Option<Entity>,
     rows: Vec<RenderedRow>,
     last_snapshot: Option<TerminalSnapshot>,
+    measured_advance: Option<f32>,
     font_size: Option<f32>,
 }
 
@@ -401,25 +422,24 @@ fn sync_terminal(
     if configured.is_changed() {
         surface.set_cell_size(configured.cell_size.x, configured.cell_size.y);
     }
-    let mut font_size_changed = false;
     if configured.font_sizing == FontSizing::FitCellWidth
-        && (configured.is_changed() || fonts_changed || rendered.font_size.is_none())
+        && (configured.is_changed() || fonts_changed || rendered.measured_advance.is_none())
         && let (Some(fonts), Some(mut text_pipeline), Some(mut font_cx), Some(mut layout_cx)) =
             (fonts, text_pipeline, font_cx, layout_cx)
     {
-        let measured = measure_advance(
+        rendered.measured_advance = measure_advance(
             &configured,
             &fonts,
             &mut text_pipeline,
             &mut font_cx,
             &mut layout_cx,
         );
-        let font_size = effective_font_size(&configured, measured);
-        font_size_changed = rendered.font_size != Some(font_size);
-        rendered.font_size = Some(font_size);
     }
+    let font_size = effective_font_size(&configured, rendered.measured_advance);
+    let font_size_changed = rendered.font_size != Some(font_size);
+    rendered.font_size = Some(font_size);
     let mut effective = configured.clone();
-    effective.font_size = rendered.font_size.unwrap_or(configured.font_size);
+    effective.font_size = font_size;
     let config = &effective;
     let config_changed = configured.is_changed() || font_size_changed;
     if rendered.root.is_some()
