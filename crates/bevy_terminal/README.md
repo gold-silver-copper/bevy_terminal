@@ -88,7 +88,10 @@ Add the plugin several times for several terminals.
 - `.headless()` renders only the texture, for custom composition, image export
   or benchmarks. Read the handle from `TerminalBatchOutput`; it changes when
   the grid dimensions or raster scale change.
-- `TerminalRenderConfig` sets the explicit `cell_size` and `font_size`, the
+- `TerminalRenderConfig` sets the explicit `cell_size`, the `FontSizing`
+  (`FitCellWidth` by default: the regular font's advance is measured and the
+  font sized so one advance equals the cell width; `Explicit` uses
+  `font_size` as given), the
   regular `font` plus optional `bold_font`, `italic_font` and
   `bold_italic_font` faces, the `TerminalTheme`, `CursorStyle`, blink rates and
   `TerminalRenderScale` (`Automatic` follows the primary window in UI mode and

@@ -6,7 +6,7 @@ pub use backend::RatatuiBackend;
 /// The Bevy terminal renderer this backend writes into, re-exported in full.
 pub use bevy_terminal;
 pub use bevy_terminal::{
-    BevyTerminalPlugin, CellOccupancy, CellPosition, CellSymbol, CursorStyle, GridSize,
+    BevyTerminalPlugin, CellOccupancy, CellPosition, CellSymbol, CursorStyle, FontSizing, GridSize,
     RetainedBevyTerminalPlugin, SnapshotDelta, StyleFlags, SurfaceMetrics, SurfaceUpdate,
     TerminalBatch, TerminalBatchOutput, TerminalBatchPresentation, TerminalBatchRoot,
     TerminalBatchStats, TerminalCell, TerminalColor, TerminalRenderConfig, TerminalRenderScale,

@@ -22,10 +22,9 @@ pub const COLUMNS: u16 = 48;
 pub const ROWS: u16 = 14;
 pub const CELL_SIZE: Vec2 = Vec2::new(11.0, 20.0);
 
-/// Registers the four JetBrains Mono faces and applies them to `config`, sizing the
-/// font so its 0.6 em advance fills the cell width exactly.
+/// Registers the four JetBrains Mono faces and applies them to `config`. The
+/// renderer measures the regular face and sizes it to the cell width itself.
 pub fn configure_fonts(app: &mut App, mut config: TerminalRenderConfig) -> TerminalRenderConfig {
-    config.font_size = config.cell_size.x / 0.6;
     let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
     let mut load = |bytes: &[u8]| fonts.add(Font::from_bytes(bytes.to_vec()));
     config.font = load(REGULAR).into();

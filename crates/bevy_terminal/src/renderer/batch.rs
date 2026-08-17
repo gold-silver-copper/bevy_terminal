@@ -570,6 +570,8 @@ struct BatchMainState {
     presentation: TerminalBatchPresentation,
     raster_scale: f32,
     raster_config: TerminalRenderConfig,
+    /// Logical font size in use; `None` until the font has been measured.
+    font_size: Option<f32>,
     last_snapshot: Option<TerminalSnapshot>,
     pending: Option<BatchScene>,
     shapes: ShapeCaches,
@@ -594,6 +596,7 @@ impl BatchMainState {
             presentation,
             raster_scale,
             raster_config,
+            font_size: None,
             last_snapshot: None,
             pending: None,
             shapes: ShapeCaches::default(),
@@ -745,9 +748,24 @@ fn sync_batch_terminal(
 
     let raster_scale = resolve_raster_scale(config.render_scale, state.presentation, window_scale);
     let scale_changed = state.raster_scale != raster_scale;
-    let text_assets_changed = terminal_changed || fonts_changed || scale_changed;
-    if terminal_changed || scale_changed {
-        state.raster_config = physical_config(config, raster_scale);
+    let mut font_size_changed = false;
+    if state.font_size.is_none() || terminal_changed || fonts_changed {
+        let measured = match config.font_sizing {
+            super::FontSizing::FitCellWidth => {
+                super::measure_advance(config, fonts, text_pipeline, font_cx, layout_cx)
+            }
+            super::FontSizing::Explicit => None,
+        };
+        let font_size = super::effective_font_size(config, measured);
+        font_size_changed = state.font_size != Some(font_size);
+        state.font_size = Some(font_size);
+    }
+    let text_assets_changed =
+        terminal_changed || fonts_changed || scale_changed || font_size_changed;
+    if terminal_changed || scale_changed || font_size_changed {
+        let mut logical = config.clone();
+        logical.font_size = state.font_size.unwrap_or(config.font_size);
+        state.raster_config = physical_config(&logical, raster_scale);
         let logical_cell_size = state.raster_config.cell_size / raster_scale;
         surface.set_cell_size(logical_cell_size.x, logical_cell_size.y);
     }

@@ -7,7 +7,7 @@ mod surface;
 
 pub use color::TerminalTheme;
 pub use renderer::{
-    BevyTerminalPlugin, CursorStyle, RetainedBevyTerminalPlugin, TerminalBatch,
+    BevyTerminalPlugin, CursorStyle, FontSizing, RetainedBevyTerminalPlugin, TerminalBatch,
     TerminalBatchOutput, TerminalBatchPresentation, TerminalBatchRoot, TerminalBatchStats,
     TerminalRenderConfig, TerminalRenderScale, TerminalRenderStats, TerminalRoot, TerminalSystems,
 };
@@ -20,10 +20,10 @@ pub use surface::{SnapshotDelta, SurfaceMetrics, SurfaceUpdate, TerminalSurface}
 /// Convenient imports for applications using `bevy_terminal`.
 pub mod prelude {
     pub use crate::{
-        BevyTerminalPlugin, CellOccupancy, CellPosition, CursorStyle, GridSize, StyleFlags,
-        TerminalBatch, TerminalBatchOutput, TerminalBatchPresentation, TerminalBatchRoot,
-        TerminalBatchStats, TerminalCell, TerminalColor, TerminalRenderConfig, TerminalRenderScale,
-        TerminalRenderStats, TerminalRoot, TerminalSnapshot, TerminalStyle, TerminalSurface,
-        TerminalTheme,
+        BevyTerminalPlugin, CellOccupancy, CellPosition, CursorStyle, FontSizing, GridSize,
+        StyleFlags, TerminalBatch, TerminalBatchOutput, TerminalBatchPresentation,
+        TerminalBatchRoot, TerminalBatchStats, TerminalCell, TerminalColor, TerminalRenderConfig,
+        TerminalRenderScale, TerminalRenderStats, TerminalRoot, TerminalSnapshot, TerminalStyle,
+        TerminalSurface, TerminalTheme,
     };
 }

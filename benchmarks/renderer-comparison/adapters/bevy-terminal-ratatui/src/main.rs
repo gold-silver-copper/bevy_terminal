@@ -1,6 +1,7 @@
 use bevy::{app::SubApps, prelude::*, text::FontSource};
 use bevy_terminal_ratatui::{
-    BevyTerminalPlugin, RatatuiBackend, TerminalBatchStats, TerminalRenderConfig, TerminalSurface,
+    BevyTerminalPlugin, FontSizing, RatatuiBackend, TerminalBatchStats, TerminalRenderConfig,
+    TerminalSurface,
 };
 use ratatui::Terminal;
 use renderer_bench_sdk::{
@@ -40,6 +41,7 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
                 .with_config(TerminalRenderConfig {
                     cell_size: Vec2::new(config.cell_width, config.cell_height),
                     font_size: config.font_size as f32,
+                    font_sizing: FontSizing::Explicit,
                     font: FontSource::Handle(font),
                     cursor_blink_hz: None,
                     slow_blink_hz: 0.0,

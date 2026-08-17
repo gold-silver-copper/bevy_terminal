@@ -129,10 +129,12 @@ glyph's natural advance. This prevents column drift, but a poorly matched font
 can still make the glyph look too narrow or too wide inside those two columns.
 Every glyph, including box-drawing, block, shade, quadrant and braille
 characters, is rendered from the configured font: nothing is drawn
-procedurally. Seamless borders and blocks therefore depend on a font designed to
-fill its advance and on `cell_size` matching that advance and line height (for
-JetBrains Mono at 18 px that is 10.8 × 20 logical pixels; the examples round to
-11 px cells and rely on the renderer's per-cell glyph anchoring).
+procedurally. By default (`FontSizing::FitCellWidth`) the renderer measures the
+regular font's advance by shaping it and picks the font size at which one
+advance equals `cell_size.x`, so glyphs designed to fill their advance tile the
+grid without seams regardless of which font is used; `font_size` is only the
+fallback until the font can be measured. Set `FontSizing::Explicit` to use
+`font_size` as given.
 
 All Ratatui colors are supported, including the ANSI 256-color cube and true
 color. Bold, dim, italic, underline, reverse, hidden, crossed-out, slow-blink,

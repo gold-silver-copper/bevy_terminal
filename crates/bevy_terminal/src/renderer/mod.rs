@@ -1,7 +1,10 @@
 use bevy::{
     ecs::schedule::SystemSet,
     prelude::*,
-    text::{FontSource, FontStyle, FontWeight, LineHeight},
+    text::{
+        ComputedTextBlock, FontCx, FontSource, FontStyle, FontWeight, LayoutCx, LetterSpacing,
+        LineHeight, TextPipeline,
+    },
 };
 
 use crate::{
@@ -27,6 +30,78 @@ pub enum CursorStyle {
     Bar,
     /// A two-logical-pixel line at the cell's bottom edge.
     Underline,
+}
+
+/// How the rasterized font size is chosen.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FontSizing {
+    /// Measure the regular font's advance width by shaping it and pick the
+    /// font size at which one glyph advance equals `cell_size.x`, so
+    /// box-drawing and block glyphs designed to fill their advance tile the
+    /// grid without seams. Nothing about the font is assumed; the measurement
+    /// is repeated whenever fonts or the configuration change.
+    #[default]
+    FitCellWidth,
+    /// Use `font_size` exactly as configured.
+    Explicit,
+}
+
+/// Number of probe glyphs shaped by [`measure_advance`].
+const PROBE_GLYPHS: usize = 100;
+/// Font size in logical pixels used to shape the probe run.
+const PROBE_FONT_SIZE: f32 = 64.0;
+
+/// Measures the average advance of the regular font at [`PROBE_FONT_SIZE`] by
+/// shaping a run of `0` glyphs; returns `None` until the font can be shaped.
+#[allow(clippy::too_many_arguments)]
+fn measure_advance(
+    config: &TerminalRenderConfig,
+    fonts: &Assets<Font>,
+    text_pipeline: &mut TextPipeline,
+    font_cx: &mut FontCx,
+    layout_cx: &mut LayoutCx,
+) -> Option<f32> {
+    let font = TextFont {
+        font: config.font.clone(),
+        font_size: PROBE_FONT_SIZE.into(),
+        ..default()
+    };
+    let probe = "0".repeat(PROBE_GLYPHS);
+    let mut computed = ComputedTextBlock::default();
+    let measure = text_pipeline
+        .create_text_measure(
+            Entity::PLACEHOLDER,
+            fonts,
+            std::iter::once((
+                Entity::PLACEHOLDER,
+                0,
+                probe.as_str(),
+                &font,
+                Color::WHITE,
+                LineHeight::Px(PROBE_FONT_SIZE),
+                LetterSpacing::default(),
+            )),
+            1.0,
+            &TextLayout::new(Justify::Left, LineBreak::NoWrap),
+            &mut computed,
+            font_cx,
+            layout_cx,
+            Vec2::new(f32::MAX, f32::MAX),
+            20.0,
+        )
+        .ok()?;
+    let advance = measure.max.x / PROBE_GLYPHS as f32;
+    (advance.is_finite() && advance > 0.0).then_some(advance)
+}
+
+/// Returns the logical font size to rasterize with, given a measured advance.
+fn effective_font_size(config: &TerminalRenderConfig, measured_advance: Option<f32>) -> f32 {
+    match (config.font_sizing, measured_advance) {
+        (FontSizing::FitCellWidth, Some(advance)) => {
+            (config.cell_size.x * PROBE_FONT_SIZE / advance).max(1.0)
+        }
+        _ => config.font_size,
+    }
 }
 
 /// Selects the physical resolution used by the compact batch renderer.
@@ -59,7 +134,13 @@ pub struct TerminalRenderConfig {
     /// Width and height of one terminal cell in Bevy logical pixels.
     pub cell_size: Vec2,
     /// Rasterized font size in logical pixels.
+    ///
+    /// With [`FontSizing::FitCellWidth`] (the default) this value is only a
+    /// fallback used until the regular font can be measured; the effective
+    /// size is derived from `cell_size.x` and the font's own advance width.
     pub font_size: f32,
+    /// How the effective font size is chosen.
+    pub font_sizing: FontSizing,
     /// Physical raster scale used by the compact batch renderer.
     pub render_scale: TerminalRenderScale,
     /// Bevy font source used for regular text. The generic monospace family enables system
@@ -96,6 +177,7 @@ impl Default for TerminalRenderConfig {
         Self {
             cell_size: Vec2::new(11.0, 20.0),
             font_size: 18.0,
+            font_sizing: FontSizing::FitCellWidth,
             render_scale: TerminalRenderScale::Automatic,
             font: FontSource::Monospace,
             bold_font: None,
@@ -200,6 +282,7 @@ struct RenderedEntities {
     cursor: Option<Entity>,
     rows: Vec<RenderedRow>,
     last_snapshot: Option<TerminalSnapshot>,
+    font_size: Option<f32>,
 }
 
 impl RenderedEntities {
@@ -298,41 +381,67 @@ struct TerminalCursor {
     requested: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_terminal(
     mut commands: Commands,
     surface: Res<TerminalSurface>,
-    config: Res<TerminalRenderConfig>,
+    configured: Res<TerminalRenderConfig>,
     mut rendered: ResMut<RenderedEntities>,
     mut stats: ResMut<TerminalRenderStats>,
+    fonts: Option<Res<Assets<Font>>>,
+    text_pipeline: Option<ResMut<TextPipeline>>,
+    font_cx: Option<ResMut<FontCx>>,
+    layout_cx: Option<ResMut<LayoutCx>>,
 ) {
     stats.sync_frames = stats.sync_frames.wrapping_add(1);
     stats.changed_rows = 0;
     stats.snapshot_cells = 0;
     stats.spawned_primitives = 0;
-    if config.is_changed() {
-        surface.set_cell_size(config.cell_size.x, config.cell_size.y);
+    let fonts_changed = fonts.as_ref().is_some_and(|fonts| fonts.is_changed());
+    if configured.is_changed() {
+        surface.set_cell_size(configured.cell_size.x, configured.cell_size.y);
     }
+    let mut font_size_changed = false;
+    if configured.font_sizing == FontSizing::FitCellWidth
+        && (configured.is_changed() || fonts_changed || rendered.font_size.is_none())
+        && let (Some(fonts), Some(mut text_pipeline), Some(mut font_cx), Some(mut layout_cx)) =
+            (fonts, text_pipeline, font_cx, layout_cx)
+    {
+        let measured = measure_advance(
+            &configured,
+            &fonts,
+            &mut text_pipeline,
+            &mut font_cx,
+            &mut layout_cx,
+        );
+        let font_size = effective_font_size(&configured, measured);
+        font_size_changed = rendered.font_size != Some(font_size);
+        rendered.font_size = Some(font_size);
+    }
+    let mut effective = configured.clone();
+    effective.font_size = rendered.font_size.unwrap_or(configured.font_size);
+    let config = &effective;
+    let config_changed = configured.is_changed() || font_size_changed;
     if rendered.root.is_some()
         && rendered
             .last_snapshot
             .as_ref()
             .is_some_and(|snapshot| snapshot.revision() == surface.revision())
-        && !config.is_changed()
+        && !config_changed
     {
         stats.unchanged_frames = stats.unchanged_frames.wrapping_add(1);
         return;
     }
 
     let old_pooled = rendered.primitive_counts().2;
-    let rebuild =
-        rendered.root.is_none() || config.is_changed() || rendered.last_snapshot.is_none();
+    let rebuild = rendered.root.is_none() || config_changed || rendered.last_snapshot.is_none();
     let mut full_rebuild = rebuild;
 
     if rebuild {
         let snapshot = surface.snapshot();
         stats.snapshot_cells = u32::try_from(snapshot.cells().len()).unwrap_or(u32::MAX);
         rendered.clear(&mut commands);
-        spawn_structure(&mut commands, &snapshot, &config, &mut rendered);
+        spawn_structure(&mut commands, &snapshot, config, &mut rendered);
         stats.changed_rows = u32::from(snapshot.size().height);
         rendered.last_snapshot = Some(snapshot);
     } else {
@@ -345,20 +454,20 @@ fn sync_terminal(
         if update.resized {
             full_rebuild = true;
             rendered.clear(&mut commands);
-            spawn_structure(&mut commands, &snapshot, &config, &mut rendered);
+            spawn_structure(&mut commands, &snapshot, config, &mut rendered);
             stats.changed_rows = u32::from(snapshot.size().height);
         } else {
             stats.changed_rows = update_changed_rows(
                 &mut commands,
                 &snapshot,
-                &config,
+                config,
                 &mut rendered,
                 &update.changed_rows,
             );
             update_cursor(
                 &mut commands,
                 &snapshot,
-                &config,
+                config,
                 &rendered,
                 update.cursor_position_changed,
                 update.cursor_visibility_changed,
@@ -1194,6 +1303,24 @@ mod tests {
         assert_eq!(runs[1].start, 1);
         assert_eq!(runs[1].width, 2);
         assert_eq!(runs[1].color, theme.ansi[1]);
+    }
+
+    #[test]
+    fn measured_advance_sizes_the_font_to_the_cell_width() {
+        let config = TerminalRenderConfig {
+            cell_size: Vec2::new(11.0, 20.0),
+            font_size: 18.0,
+            ..default()
+        };
+        // A font whose advance is 0.6 em measures 38.4 px at the 64 px probe.
+        let fitted = effective_font_size(&config, Some(38.4));
+        assert!((fitted - 11.0 / 0.6).abs() < 1e-3);
+        assert_eq!(effective_font_size(&config, None), 18.0);
+        let explicit = TerminalRenderConfig {
+            font_sizing: FontSizing::Explicit,
+            ..config
+        };
+        assert_eq!(effective_font_size(&explicit, Some(38.4)), 18.0);
     }
 
     #[test]
