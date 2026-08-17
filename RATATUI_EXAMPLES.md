@@ -47,8 +47,9 @@ uses the Git development dependency `bevy_image_export`; it is not a normal
 library dependency. It creates a fresh canonical state for every capture, so
 exports stay deterministic even though the gallery is interactive.
 
-Both the gallery and exporter embed the complete static JetBrains Mono 2.304
-family. Regular, bold, italic, and bold-italic Ratatui text is bound directly to
+Both the gallery and exporter load the vendored Iosevka Fixed 34.8.0 family
+(falling back to the embedded JetBrains Mono faces). Regular, bold, italic, and
+bold-italic Ratatui text is bound directly to
 the corresponding face, so rendering does not depend on fonts installed on the
 host or accidentally select an emoji presentation for supported symbols.
 

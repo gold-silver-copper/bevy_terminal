@@ -145,8 +145,12 @@ and rapid-blink modifiers are mapped to Bevy text behavior. Bold and italic
 depend on the selected font family exposing suitable faces or variable axes.
 For deterministic static-face selection, set `bold_font`, `italic_font`, and
 `bold_italic_font` alongside the regular `font` source. Every executable example
-does this with the vendored JetBrains Mono 2.304 family; all 16 static weights
-and styles live under `assets/fonts/jetbrains-mono` with their OFL license.
+does this with the vendored Iosevka Fixed 34.8.0 family (`assets/fonts/iosevka-fixed`,
+OFL), whose Regular/Bold/Italic/BoldItalic faces cover box drawing, blocks,
+braille, arrows and geometric shapes so terminal symbols rarely need a system
+fallback font; the faces are read from the checkout at runtime and the
+embedded JetBrains Mono faces are used if they are absent. See
+`assets/fonts/README.md` for every vendored family and its coverage.
 
 ## Resizing
 

@@ -120,8 +120,9 @@ cargo run -p bevy_terminal --example scene_export
 
 `scene` renders two independent surfaces (styles, box drawing, blocks, a wide
 glyph, colors and a moving cursor) written directly through the surface API,
-using the vendored JetBrains Mono Regular/Bold/Italic/BoldItalic faces under
-`assets/fonts/jetbrains-mono` (OFL). `scene_export` writes the same textures
+using the repository's Iosevka Fixed faces when run from a checkout and the
+vendored JetBrains Mono Regular/Bold/Italic/BoldItalic faces under
+`assets/fonts/jetbrains-mono` (OFL) otherwise. `scene_export` writes the same textures
 headlessly under `target/bevy-terminal-qa/`.
 
 ## License

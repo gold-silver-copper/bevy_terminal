@@ -35,6 +35,14 @@ use ratatui::{
 /// (display name, directory, regular, bold, italic, bold-italic).
 const FAMILIES: [(&str, &str, &str, &str, &str, &str); 6] = [
     (
+        "Iosevka Fixed 34.8.0",
+        "iosevka-fixed",
+        "IosevkaFixed-Regular.ttf",
+        "IosevkaFixed-Bold.ttf",
+        "IosevkaFixed-Italic.ttf",
+        "IosevkaFixed-BoldItalic.ttf",
+    ),
+    (
         "JetBrains Mono 2.304",
         "jetbrains-mono",
         "JetBrainsMono-Regular.ttf",
@@ -65,14 +73,6 @@ const FAMILIES: [(&str, &str, &str, &str, &str, &str); 6] = [
         "DejaVuSansMono-Bold.ttf",
         "DejaVuSansMono-Oblique.ttf",
         "DejaVuSansMono-BoldOblique.ttf",
-    ),
-    (
-        "Iosevka Fixed 34.8.0",
-        "iosevka-fixed",
-        "IosevkaFixed-Regular.ttf",
-        "IosevkaFixed-Bold.ttf",
-        "IosevkaFixed-Italic.ttf",
-        "IosevkaFixed-BoldItalic.ttf",
     ),
     (
         "Source Code Pro 2.042",

@@ -1,42 +1,43 @@
-//! Shared vendored font setup for the executable examples.
+//! Shared font setup for the executable examples.
+//!
+//! The examples use the vendored Iosevka Fixed family (`assets/fonts/iosevka-fixed`),
+//! which covers box drawing, blocks, braille, arrows, geometric shapes and
+//! powerline glyphs so almost nothing in the terminal scenes needs a system
+//! fallback font. The faces are read from disk at runtime (they are too large
+//! to embed or publish); if they are missing, the smaller JetBrains Mono faces
+//! embedded in the package are used instead.
 
 use bevy::prelude::*;
 use bevy_terminal_ratatui::TerminalRenderConfig;
 
-const FONT_FACES: [&[u8]; 16] = [
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Thin.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-ThinItalic.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-ExtraLight.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-ExtraLightItalic.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Light.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-LightItalic.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Italic.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Medium.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-MediumItalic.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-SemiBold.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-SemiBoldItalic.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Bold.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-BoldItalic.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-ExtraBold.ttf"),
-    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-ExtraBoldItalic.ttf"),
+const IOSEVKA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/iosevka-fixed");
+const IOSEVKA_FACES: [&str; 4] = [
+    "IosevkaFixed-Regular.ttf",
+    "IosevkaFixed-Bold.ttf",
+    "IosevkaFixed-Italic.ttf",
+    "IosevkaFixed-BoldItalic.ttf",
 ];
 
-const REGULAR: usize = 6;
-const ITALIC: usize = 7;
-const BOLD: usize = 12;
-const BOLD_ITALIC: usize = 13;
+const JETBRAINS_FACES: [&[u8]; 4] = [
+    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf"),
+    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Bold.ttf"),
+    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Italic.ttf"),
+    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-BoldItalic.ttf"),
+];
 
 /// Handles for the four font faces Ratatui can select through its modifiers.
 #[derive(Clone, Resource)]
-pub struct JetBrainsMonoFonts {
+pub struct ExampleFonts {
+    /// Human-readable family name, for titles and captions.
+    #[allow(dead_code)]
+    pub family: &'static str,
     regular: Handle<Font>,
     bold: Handle<Font>,
     italic: Handle<Font>,
     bold_italic: Handle<Font>,
 }
 
-impl JetBrainsMonoFonts {
+impl ExampleFonts {
     /// Applies deterministic regular, bold, italic, and bold-italic faces. The
     /// renderer measures the regular face and sizes it to the cell width itself.
     pub fn configure(&self, mut config: TerminalRenderConfig) -> TerminalRenderConfig {
@@ -54,18 +55,38 @@ impl JetBrainsMonoFonts {
     }
 }
 
-/// Registers all 16 static JetBrains Mono faces and returns the four Ratatui style handles.
+/// Registers the four Iosevka Fixed faces (or the embedded JetBrains Mono
+/// fallback) and returns their handles.
 ///
 /// Call this after adding `DefaultPlugins`, which initializes Bevy's font assets.
-pub fn load(app: &mut App) -> JetBrainsMonoFonts {
-    let handles = {
-        let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
-        FONT_FACES.map(|bytes| fonts.add(Font::from_bytes(bytes.to_vec())))
+pub fn load(app: &mut App) -> ExampleFonts {
+    let iosevka: Option<Vec<Vec<u8>>> = IOSEVKA_FACES
+        .iter()
+        .map(|face| std::fs::read(std::path::Path::new(IOSEVKA_DIR).join(face)).ok())
+        .collect();
+    let (family, faces): (&str, Vec<Vec<u8>>) = match iosevka {
+        Some(faces) => ("Iosevka Fixed", faces),
+        None => {
+            warn!("Iosevka Fixed faces not found under {IOSEVKA_DIR}; using JetBrains Mono");
+            (
+                "JetBrains Mono",
+                JETBRAINS_FACES.iter().map(|bytes| bytes.to_vec()).collect(),
+            )
+        }
     };
-    JetBrainsMonoFonts {
-        regular: handles[REGULAR].clone(),
-        bold: handles[BOLD].clone(),
-        italic: handles[ITALIC].clone(),
-        bold_italic: handles[BOLD_ITALIC].clone(),
+    let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
+    let mut handles = faces
+        .into_iter()
+        .map(|bytes| fonts.add(Font::from_bytes(bytes)));
+    let regular = handles.next().expect("four faces");
+    let bold = handles.next().expect("four faces");
+    let italic = handles.next().expect("four faces");
+    let bold_italic = handles.next().expect("four faces");
+    ExampleFonts {
+        family,
+        regular,
+        bold,
+        italic,
+        bold_italic,
     }
 }

@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn setup(mut commands: Commands, fonts: Res<fonts::JetBrainsMonoFonts>) {
+fn setup(mut commands: Commands, fonts: Res<fonts::ExampleFonts>) {
     commands.spawn(Camera2d);
     commands.spawn((
         Text::new("Two Ratatui surfaces · two textures · one Bevy app"),

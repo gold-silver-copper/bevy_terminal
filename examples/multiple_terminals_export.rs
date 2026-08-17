@@ -98,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn setup_export(
     mut commands: Commands,
-    fonts: Res<fonts::JetBrainsMonoFonts>,
+    fonts: Res<fonts::ExampleFonts>,
     mut images: ResMut<Assets<Image>>,
     mut export_sources: ResMut<Assets<ImageExportSource>>,
 ) {
