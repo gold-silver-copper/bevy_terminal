@@ -20,10 +20,11 @@ pub struct TerminalSurface {
 }
 
 impl TerminalSurface {
-    /// Creates an empty terminal surface with the given size in cells.
+    /// Creates an empty terminal surface with the given size in cells
+    /// (`(columns, rows)` or a [`GridSize`]).
     #[must_use]
-    pub fn new(columns: u16, rows: u16) -> Self {
-        let size = GridSize::new(columns, rows);
+    pub fn new(size: impl Into<GridSize>) -> Self {
+        let size = size.into();
         Self {
             shared: Arc::new(Mutex::new(SurfaceState {
                 size,
@@ -76,7 +77,7 @@ impl TerminalSurface {
     ///
     /// ```
     /// # use bevy_terminal::{TerminalSurface, TerminalCell};
-    /// let surface = TerminalSurface::new(4, 1);
+    /// let surface = TerminalSurface::new((4, 1));
     /// let changed = surface.update(|update| {
     ///     update.set_cell((0, 0), &TerminalCell::new("A"));
     ///     update.set_cursor_position((1, 0));
@@ -510,9 +511,13 @@ impl SurfaceUpdate<'_> {
 
     /// Resizes the grid, preserving the overlapping cells and clamping the
     /// cursor into the new bounds. Every cell is marked dirty.
-    pub fn resize(&mut self, columns: u16, rows: u16) -> bool {
+    pub fn resize(&mut self, size: impl Into<GridSize>) -> bool {
         let state = &mut *self.state;
-        let new_size = GridSize::new(columns, rows);
+        let new_size = size.into();
+        let GridSize {
+            width: columns,
+            height: rows,
+        } = new_size;
         if state.size == new_size {
             return false;
         }
@@ -552,6 +557,9 @@ impl SurfaceUpdate<'_> {
     }
 
     /// Publishes the update, returning whether a new revision was created.
+    ///
+    /// Dropping the guard publishes too; [`TerminalSurface::update`] returns
+    /// this same value for its closure.
     pub fn commit(mut self) -> bool {
         self.finish()
     }
@@ -606,7 +614,7 @@ mod tests {
 
     #[test]
     fn transactions_publish_at_most_one_revision_and_none_when_unchanged() {
-        let surface = TerminalSurface::new(3, 2);
+        let surface = TerminalSurface::new((3, 2));
         let initial = surface.revision();
         {
             let mut update = surface.begin_update();
@@ -614,7 +622,7 @@ mod tests {
             update.set_cursor_position((0, 0));
             update.set_cursor_visible(false);
             update.clear();
-            update.resize(3, 2);
+            update.resize((3, 2));
             assert!(!update.has_changes());
         }
         assert_eq!(surface.revision(), initial);
@@ -635,7 +643,7 @@ mod tests {
 
     #[test]
     fn partial_updates_preserve_other_cells_and_clip_invalid_coordinates() {
-        let surface = TerminalSurface::new(3, 2);
+        let surface = TerminalSurface::new((3, 2));
         let cell = TerminalCell::new("X").with_style(
             TerminalStyle::new()
                 .fg(TerminalColor::RED)
@@ -653,7 +661,7 @@ mod tests {
 
     #[test]
     fn incremental_snapshots_copy_only_changed_cells_and_report_rows() {
-        let surface = TerminalSurface::new(4, 3);
+        let surface = TerminalSurface::new((4, 3));
         let mut snapshot = surface.snapshot();
         let changed = TerminalCell::new("X");
         surface.begin_update().set_cell((2, 1), &changed);
@@ -672,7 +680,7 @@ mod tests {
         assert!(cursor_delta.cursor_position_changed);
         assert!(!cursor_delta.cursor_visibility_changed);
 
-        surface.begin_update().resize(2, 2);
+        surface.begin_update().resize((2, 2));
         let resized = surface.update_snapshot(&mut snapshot);
         assert!(resized.resized);
         assert_eq!(resized.changed_cells, 4);
@@ -682,7 +690,7 @@ mod tests {
 
     #[test]
     fn wide_anchors_write_continuations_and_narrow_replacements_clear_them() {
-        let surface = TerminalSurface::new(4, 1);
+        let surface = TerminalSurface::new((4, 1));
         let wide =
             TerminalCell::wide("界", 2).with_style(TerminalStyle::new().bg(TerminalColor::BLUE));
         surface.begin_update().set_cell((1, 0), &wide);
@@ -707,7 +715,7 @@ mod tests {
 
     #[test]
     fn clear_range_clamps_and_rejects_reversed_ranges() {
-        let surface = TerminalSurface::new(4, 2);
+        let surface = TerminalSurface::new((4, 2));
         fill(&surface, "ABCDEFGH", 4);
         assert!(!surface.begin_update().clear_range((2, 0), (1, 0)));
         assert!(surface.begin_update().clear_range((3, 1), (99, 99)));
@@ -724,7 +732,7 @@ mod tests {
 
     #[test]
     fn clear_operations_follow_row_major_semantics() {
-        let surface = TerminalSurface::new(4, 2);
+        let surface = TerminalSurface::new((4, 2));
         fill(&surface, "ABCDEFGH", 4);
         surface.begin_update().clear_range((1, 0), (3, 0));
         let snapshot = surface.snapshot();
@@ -756,7 +764,7 @@ mod tests {
 
     #[test]
     fn scroll_regions_move_and_clear_rows() {
-        let surface = TerminalSurface::new(2, 3);
+        let surface = TerminalSurface::new((2, 3));
         fill(&surface, "AABBCC", 2);
         surface.begin_update().scroll_up(0..3, 1);
         let up = surface.snapshot();
@@ -777,10 +785,10 @@ mod tests {
 
     #[test]
     fn resize_preserves_the_two_dimensional_overlap_and_reports_metrics() {
-        let surface = TerminalSurface::new(4, 3);
+        let surface = TerminalSurface::new((4, 3));
         fill(&surface, "AAAABBBBCCCC", 4);
         surface.begin_update().set_cursor_position((3, 2));
-        surface.begin_update().resize(2, 3);
+        surface.begin_update().resize((2, 3));
         let snapshot = surface.snapshot();
         assert_eq!(snapshot.size(), GridSize::new(2, 3));
         assert_eq!(snapshot[(0, 0)].symbol(), "A");
@@ -797,9 +805,9 @@ mod tests {
 
     #[test]
     fn cloned_surface_handles_have_stable_identity() {
-        let first = TerminalSurface::new(2, 1);
+        let first = TerminalSurface::new((2, 1));
         let first_clone = first.clone();
-        let second = TerminalSurface::new(2, 1);
+        let second = TerminalSurface::new((2, 1));
         assert!(first.shares_state_with(&first_clone));
         assert!(!first.shares_state_with(&second));
     }

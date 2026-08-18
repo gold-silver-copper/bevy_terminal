@@ -1,7 +1,6 @@
 use bevy::{app::SubApps, prelude::*, text::FontSource};
 use bevy_terminal_ratatui::{
-    BlinkConfig, CursorConfig, FontSizing, Presentation, RatatuiBackend, Terminal as TerminalEntity,
-    TerminalPlugin,
+    BlinkConfig, CursorConfig, FontSizing, RatatuiBackend, TerminalPlugin, TerminalRenderer,
     TerminalRenderConfig, TerminalStats, TerminalSurface, TerminalTexture,
 };
 use ratatui::Terminal;
@@ -37,22 +36,21 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
             .world_mut()
             .resource_mut::<Assets<Font>>()
             .add(Font::from_bytes(bytes));
-        app.add_plugins(TerminalPlugin);
-        app.world_mut().spawn(
-            TerminalEntity::new(self.surface.clone())
-                .with_config(TerminalRenderConfig {
-                    cell_size: Vec2::new(config.cell_width, config.cell_height),
-                    font_size: FontSizing::Px(config.font_size as f32),
-                    font: FontSource::Handle(font).into(),
-                    cursor: CursorConfig {
-                        blink_hz: None,
-                        ..default()
-                    },
-                    blink: BlinkConfig::NONE,
+        app.add_plugins(TerminalPlugin::default());
+        app.world_mut().spawn((
+            TerminalRenderer::new(self.surface.clone()),
+            TerminalRenderConfig {
+                cell_size: Vec2::new(config.cell_width, config.cell_height),
+                font_size: FontSizing::Px(config.font_size as f32),
+                font: FontSource::Handle(font).into(),
+                cursor: CursorConfig {
+                    blink_hz: None,
                     ..default()
-                })
-                .with_presentation(Presentation::Headless),
-        );
+                },
+                blink: BlinkConfig::NONE,
+                ..default()
+            },
+        ));
         Ok(())
     }
 

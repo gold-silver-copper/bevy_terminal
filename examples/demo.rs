@@ -3,7 +3,7 @@
 mod common;
 
 use bevy::{prelude::*, window::WindowResolution};
-use bevy_terminal_ratatui::{Presentation, Terminal, TerminalPlugin, TerminalRenderConfig};
+use bevy_terminal_ratatui::{TerminalPlugin, TerminalRenderConfig, TerminalRenderer};
 
 fn main() {
     let surface = common::demo_surface();
@@ -24,16 +24,14 @@ fn main() {
     }));
     let fonts = common::fonts::load(&mut app);
     let config = fonts.configure(config);
-    app.add_plugins(TerminalPlugin)
+    app.add_plugins(TerminalPlugin::default())
         .add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(Camera2d);
-            commands.spawn(
-                Terminal::new(surface.clone())
-                    .with_config(config.clone())
-                    .with_presentation(Presentation::Ui {
-                        origin: Vec2::new(20.0, 20.0),
-                    }),
-            );
+            commands.spawn(common::app::ui_terminal(
+                TerminalRenderer::new(surface.clone()),
+                config.clone(),
+                Vec2::new(20.0, 20.0),
+            ));
         })
         .run();
 }

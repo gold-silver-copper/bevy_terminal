@@ -1,5 +1,7 @@
 //! Exports every deterministic Ratatui example port for visual regression QA.
 
+#[path = "common/app.rs"]
+mod app;
 #[path = "ratatui_examples/mod.rs"]
 mod catalog;
 #[path = "common/fonts.rs"]
@@ -18,8 +20,8 @@ use bevy::{
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::{
-    BlinkConfig, CursorConfig, Presentation, Terminal, TerminalPlugin, TerminalRenderConfig,
-    TerminalRenderScale, TerminalSystems,
+    BlinkConfig, CursorConfig, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale,
+    TerminalRenderer, TerminalSystems,
 };
 
 const CELL_WIDTH: f32 = 10.0;
@@ -77,17 +79,15 @@ fn main() {
         example_index: 0,
         frames_on_example: 0,
     })
-    .add_plugins((export_plugin, TerminalPlugin))
+    .add_plugins((export_plugin, TerminalPlugin::default()))
     .add_systems(Startup, {
         let config = fonts.configure(config);
         move |mut commands: Commands| {
-            commands.spawn(
-                Terminal::new(surface.clone())
-                    .with_config(config.clone())
-                    .with_presentation(Presentation::Ui {
-                        origin: Vec2::splat(MARGIN),
-                    }),
-            );
+            commands.spawn(app::ui_terminal(
+                TerminalRenderer::new(surface.clone()),
+                config.clone(),
+                Vec2::splat(MARGIN),
+            ));
         }
     })
     .add_systems(Startup, setup_export)
@@ -156,7 +156,7 @@ fn setup_export(
 }
 
 fn advance_capture(
-    terminals: Query<&Terminal>,
+    terminals: Query<&TerminalRenderer>,
     mut sequence: ResMut<CaptureSequence>,
     mut settings: Query<&mut ImageExportSettings>,
     mut exit: MessageWriter<AppExit>,

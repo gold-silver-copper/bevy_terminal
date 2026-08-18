@@ -1,5 +1,7 @@
 //! Headless visual QA for multiple independently rendered terminal textures.
 
+#[path = "common/app.rs"]
+mod app;
 #[path = "common/fonts.rs"]
 mod fonts;
 
@@ -16,8 +18,8 @@ use bevy::{
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::{
-    CursorConfig, Presentation, RatatuiBackend, RatatuiTerminalExt, Terminal as TerminalEntity,
-    TerminalPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalSystems,
+    CursorConfig, RatatuiBackend, RatatuiTerminalExt, TerminalPlugin, TerminalRenderConfig,
+    TerminalRenderScale, TerminalRenderer, TerminalSystems,
 };
 use ratatui::{
     Terminal,
@@ -75,18 +77,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..default()
     });
     app.insert_resource(fonts)
-        .add_plugins((export_plugin, TerminalPlugin))
+        .add_plugins((export_plugin, TerminalPlugin::default()))
         .insert_resource(terminals)
         .add_systems(Startup, move |mut commands: Commands| {
             for (surface, origin) in [
                 (&left_surface, Vec2::new(20.0, 62.0)),
                 (&right_surface, Vec2::new(450.0, 62.0)),
             ] {
-                commands.spawn(
-                    TerminalEntity::new(surface.clone())
-                        .with_config(config.clone())
-                        .with_presentation(Presentation::Ui { origin }),
-                );
+                commands.spawn(app::ui_terminal(
+                    TerminalRenderer::new(surface.clone()),
+                    config.clone(),
+                    origin,
+                ));
             }
         })
         .add_systems(Startup, setup_export)

@@ -16,6 +16,15 @@ bevy_terminal_ratatui ──> bevy_terminal
                          └> ratatui
 ```
 
+| concept | type | role |
+|---|---|---|
+| surface | `TerminalSurface` | thread-safe retained grid producers write into |
+| cell | `TerminalCell` (`CellSymbol` + `TerminalStyle` + occupancy) | one grid cell |
+| snapshot | `TerminalSnapshot` | owned copy of the grid the renderer reads incrementally |
+| terminal entity | `Terminal` + `TerminalRenderConfig` (+ your `ImageNode`) | one rendered terminal |
+| texture | `TerminalTexture` | the renderer-owned image (stable handle) and its metrics |
+| config | `TerminalRenderConfig` | cell size, fonts, theme, cursor, blink, raster scale |
+
 ## Scene model
 
 - `GridSize` and `CellPosition`: small integer terminal coordinates.
@@ -40,7 +49,7 @@ bevy_terminal_ratatui ──> bevy_terminal
 use bevy::prelude::*;
 use bevy_terminal::prelude::*;
 
-let surface = TerminalSurface::new(40, 10);
+let surface = TerminalSurface::new((40, 10));
 // One lock, many cells, at most one published revision.
 surface.update(|update| {
     let title = TerminalStyle::new()
@@ -57,10 +66,14 @@ surface.update(|update| {
 });
 
 App::new()
-    .add_plugins((DefaultPlugins, TerminalPlugin))
+    .add_plugins((DefaultPlugins, TerminalPlugin::default()))
     .add_systems(Startup, move |mut commands: Commands| {
         commands.spawn(Camera2d);
-        commands.spawn(Terminal::new(surface.clone()));
+        commands.spawn((
+            Terminal::new(surface.clone()),
+            ImageNode::default(),
+            Node { position_type: PositionType::Absolute, left: px(16.0), top: px(16.0), ..default() },
+        ));
     })
     .run();
 ```
@@ -79,46 +92,56 @@ path stays intact.
 
 ## Rendering
 
-Add `TerminalPlugin` once, then spawn a `Terminal` component per terminal:
+Add `TerminalPlugin` once, then spawn a `Terminal` component per terminal
+together with a `TerminalRenderConfig` (required; a default is inserted if you
+omit it) and, to show it, an `ImageNode`:
 
 ```no_run
 # use bevy::prelude::*;
 # use bevy_terminal::prelude::*;
-# let surface = TerminalSurface::new(80, 24);
+# let surface = TerminalSurface::new((80, 24));
 # let mut app = App::new();
-app.add_plugins(TerminalPlugin);
-app.world_mut().spawn(
-    Terminal::new(surface)
-        .with_config(TerminalRenderConfig {
-            cell_size: Vec2::new(11.0, 20.0),
-            font: FontFaces::regular(bevy::text::FontSource::Monospace),
-            font_size: FontSizing::FitCellWidth,
-            ..default()
-        })
-        .with_presentation(Presentation::Ui { origin: Vec2::splat(16.0) }),
-);
+app.add_plugins(TerminalPlugin::default());
+app.world_mut().spawn((
+    Terminal::new(surface),
+    TerminalRenderConfig {
+        cell_size: Vec2::new(11.0, 20.0),
+        font: FontFaces::regular(bevy::text::FontSource::Monospace),
+        font_size: FontSizing::FitCellWidth,
+        ..default()
+    },
+    ImageNode::default(),
+    Node { position_type: PositionType::Absolute, left: px(16.0), top: px(16.0), ..default() },
+));
 ```
 
 The plugin attaches to every `Terminal` entity:
 
-- `TerminalTexture` — the renderer-owned `Handle<Image>`, its physical `size`,
-  `logical_size`, `raster_scale`, physical `cell_size` and the effective
-  `font_size`. The handle changes identity when the grid or raster scale
-  changes and a `TerminalResized` entity event is triggered on the terminal.
+- `TerminalTexture` — the renderer-owned `Handle<Image>` (stable for the
+  terminal's lifetime; resizes reallocate the image in place), its physical
+  `size`, `logical_size`, `raster_scale`, physical `cell_size` and the
+  effective `font_size`. `TerminalReady` is triggered on the entity once the
+  texture exists.
 - `TerminalStats` — per-frame counters (changed rows, snapshot cells, quads,
-  draw batches, shape-cache hits/misses, timings).
-- For `Presentation::Ui { origin }`, an `ImageNode` marked with
-  `TerminalNode { terminal }`; `Presentation::Headless` renders only the
-  texture, for custom composition, image export or benchmarks.
+  draw batches, shape-cache hits/misses, timings; `Display` prints a one-line
+  summary; `TerminalPlugin { collect_timings: false }` skips the timers).
 
-Terminals can be spawned and despawned at any time; despawning removes the
-node and images. Editing `Terminal::config_mut()` rebuilds only that terminal.
+If the entity has an `ImageNode`, the plugin keeps its image and its `Node`
+width/height in sync with the texture; where the node goes (absolute position,
+a flex/grid parent, …) is ordinary Bevy UI layout. Without an `ImageNode` the
+terminal is headless — only the texture is produced, for custom composition,
+image export or benchmarks — and `TerminalRenderScale::Automatic` resolves to
+1.0.
+
+Terminals can be spawned and despawned at any time; the images are released
+with the entity. Mutating `TerminalRenderConfig` rebuilds only that terminal.
 Terminals share the GPU pipeline and scratch buffers but keep independent
 surfaces, configurations, textures and statistics.
 
 `TerminalRenderConfig` holds the explicit `cell_size`, the `FontFaces`
 (regular plus optional bold/italic/bold-italic; missing faces fall back
-bold-italic → bold → italic → regular), the `FontSizing` (`FitCellWidth` by
+bold-italic → bold → italic → regular, and `synthesize` decides whether the
+fallback face is asked for the bold weight / italic style), the `FontSizing` (`FitCellWidth` by
 default: the regular font's advance is measured and the font sized so one
 advance equals the cell width; `Px(size)` uses an explicit size),
 `font_hinting` (unhinted by default so measured metrics stay exact), the

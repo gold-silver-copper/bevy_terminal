@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use bevy::{prelude::*, window::WindowResolution};
 use bevy_terminal_ratatui::{
-    Presentation, RatatuiBackend, RatatuiTerminalExt, Terminal as TerminalEntity, TerminalPlugin,
-    TerminalRenderConfig, TerminalSystems,
+    RatatuiBackend, RatatuiTerminalExt, TerminalPlugin, TerminalRenderConfig, TerminalRenderer,
+    TerminalSystems,
 };
 use ratatui::{
     Terminal,
@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..default()
     });
     app.insert_resource(fonts)
-        .add_plugins(TerminalPlugin)
+        .add_plugins(TerminalPlugin::default())
         .insert_resource(terminals)
         .insert_resource(PendingRight {
             surface: Some(right_surface),
@@ -63,14 +63,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .add_systems(Startup, setup)
         .add_systems(Startup, move |mut commands: Commands| {
-            // The left terminal exists from the first frame.
-            commands.spawn(
-                TerminalEntity::new(left_surface.clone())
-                    .with_config(config.clone())
-                    .with_presentation(Presentation::Ui {
-                        origin: Vec2::new(24.0, 56.0),
-                    }),
-            );
+            // Both terminals live in one flex row; the left one exists from the
+            // first frame, the right one is added to the row later.
+            commands
+                .spawn((
+                    TerminalRow,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(24.0),
+                        top: px(56.0),
+                        column_gap: px(52.0),
+                        ..default()
+                    },
+                ))
+                .with_children(|row| {
+                    row.spawn((
+                        TerminalRenderer::new(left_surface.clone()),
+                        config.clone(),
+                        ImageNode::default(),
+                        Node::default(),
+                    ));
+                });
         })
         .add_systems(
             Update,
@@ -80,8 +93,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// The flex row containing both terminals.
+#[derive(Component)]
+struct TerminalRow;
+
 /// The right terminal is spawned a moment after startup to show that terminals
-/// can be added while the app is running.
+/// can be added while the app is running and participate in UI layout.
 #[derive(Resource)]
 struct PendingRight {
     surface: Option<bevy_terminal_ratatui::TerminalSurface>,
@@ -92,17 +109,20 @@ fn spawn_right_terminal(
     mut commands: Commands,
     time: Res<Time>,
     mut pending: ResMut<PendingRight>,
+    row: Query<Entity, With<TerminalRow>>,
 ) {
     if time.elapsed_secs() > 0.75
         && let Some(surface) = pending.surface.take()
+        && let Ok(row) = row.single()
     {
-        commands.spawn(
-            TerminalEntity::new(surface)
-                .with_config(pending.config.clone())
-                .with_presentation(Presentation::Ui {
-                    origin: Vec2::new(496.0, 56.0),
-                }),
-        );
+        commands.entity(row).with_children(|row| {
+            row.spawn((
+                TerminalRenderer::new(surface),
+                pending.config.clone(),
+                ImageNode::default(),
+                Node::default(),
+            ));
+        });
     }
 }
 

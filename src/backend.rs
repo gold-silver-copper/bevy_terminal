@@ -24,7 +24,7 @@ impl RatatuiBackend {
     #[must_use]
     pub fn new(columns: u16, rows: u16) -> Self {
         Self {
-            surface: TerminalSurface::new(columns, rows),
+            surface: TerminalSurface::new((columns, rows)),
         }
     }
 
@@ -32,6 +32,29 @@ impl RatatuiBackend {
     #[must_use]
     pub const fn from_surface(surface: TerminalSurface) -> Self {
         Self { surface }
+    }
+
+    /// Creates a backend together with the [`bevy_terminal::Terminal`]
+    /// component that renders it — the common one-call setup:
+    ///
+    /// ```
+    /// # use bevy_terminal_ratatui::RatatuiBackend;
+    /// let (backend, renderer) = RatatuiBackend::with_terminal(80, 24);
+    /// let terminal = ratatui::Terminal::new(backend).unwrap();
+    /// // commands.spawn(renderer);
+    /// # let _ = (terminal, renderer);
+    /// ```
+    #[must_use]
+    pub fn with_terminal(columns: u16, rows: u16) -> (Self, bevy_terminal::Terminal) {
+        let backend = Self::new(columns, rows);
+        let renderer = bevy_terminal::Terminal::new(backend.surface());
+        (backend, renderer)
+    }
+
+    /// Returns a [`bevy_terminal::Terminal`] component rendering this backend's surface.
+    #[must_use]
+    pub fn terminal(&self) -> bevy_terminal::Terminal {
+        bevy_terminal::Terminal::new(self.surface())
     }
 
     /// Returns a handle that can be passed to the Bevy renderer plugin.
@@ -46,7 +69,7 @@ impl RatatuiBackend {
     /// [`RatatuiTerminalExt::resize_grid`], which also makes Ratatui's own
     /// double buffers adopt the new size.
     pub fn resize(&mut self, columns: u16, rows: u16) {
-        self.surface.begin_update().resize(columns, rows);
+        self.surface.begin_update().resize((columns, rows));
     }
 }
 
@@ -55,12 +78,19 @@ pub trait RatatuiTerminalExt {
     /// Resizes the backend grid and Ratatui's own double buffers together, so
     /// the next `draw` renders at the new size.
     fn resize_grid(&mut self, columns: u16, rows: u16);
+
+    /// Returns the surface this terminal draws into.
+    fn surface(&self) -> TerminalSurface;
 }
 
 impl RatatuiTerminalExt for ratatui::Terminal<RatatuiBackend> {
     fn resize_grid(&mut self, columns: u16, rows: u16) {
         self.backend_mut().resize(columns, rows);
         let Ok(()) = self.autoresize();
+    }
+
+    fn surface(&self) -> TerminalSurface {
+        self.backend().surface()
     }
 }
 
@@ -492,15 +522,14 @@ mod tests {
 
         let mut app = bevy::app::App::new();
         app.init_resource::<bevy::asset::Assets<bevy::image::Image>>()
-            .add_plugins(bevy_terminal::TerminalPlugin);
-        app.world_mut().spawn(
-            bevy_terminal::Terminal::new(backend.surface())
-                .with_config(bevy_terminal::TerminalRenderConfig {
-                    cell_size: bevy::math::Vec2::new(10.8, 20.0),
-                    ..Default::default()
-                })
-                .with_presentation(bevy_terminal::Presentation::Headless),
-        );
+            .add_plugins(bevy_terminal::TerminalPlugin::default());
+        app.world_mut().spawn((
+            backend.terminal(),
+            bevy_terminal::TerminalRenderConfig {
+                cell_size: bevy::math::Vec2::new(10.8, 20.0),
+                ..Default::default()
+            },
+        ));
         app.update();
         let window_size = backend.window_size().unwrap();
         assert_eq!(window_size.pixels, Size::new(22, 60));
@@ -540,6 +569,15 @@ mod tests {
         backend.append_lines(0).unwrap();
         assert_eq!(backend.surface().snapshot().cursor_position().x, 1);
         assert_eq!(backend.surface().snapshot().cursor_position().y, 2);
+    }
+
+    #[test]
+    fn with_terminal_pairs_a_backend_with_its_renderer() {
+        let (backend, renderer) = RatatuiBackend::with_terminal(5, 2);
+        assert!(renderer.surface().shares_state_with(&backend.surface()));
+        let terminal = ratatui::Terminal::new(backend).unwrap();
+        assert!(terminal.surface().shares_state_with(renderer.surface()));
+        assert_eq!(terminal.surface().size(), GridSize::new(5, 2));
     }
 
     #[test]

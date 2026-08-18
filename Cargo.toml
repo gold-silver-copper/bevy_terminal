@@ -4,7 +4,7 @@ resolver = "3"
 
 [package]
 name = "bevy_terminal_ratatui"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 description = "A Ratatui backend for the bevy_terminal Bevy terminal renderer"
@@ -22,7 +22,7 @@ exclude = [
 ]
 
 [dependencies]
-bevy_terminal = { version = "0.2.0", path = "crates/bevy_terminal" }
+bevy_terminal = { version = "0.3.0", path = "crates/bevy_terminal" }
 ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets", "scrolling-regions", "std", "underline-color"] }
 
 [dev-dependencies]

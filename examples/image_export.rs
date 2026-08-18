@@ -15,8 +15,8 @@ use bevy::{
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::{
-    CursorConfig, Presentation, RatatuiBackend, Terminal, TerminalPlugin, TerminalRenderConfig,
-    TerminalRenderScale, TerminalSystems,
+    CursorConfig, RatatuiBackend, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale,
+    TerminalRenderer, TerminalSystems,
 };
 
 const WIDTH: u32 = 832;
@@ -56,15 +56,13 @@ fn main() {
     );
     let fonts = common::fonts::load(&mut app);
     let config = fonts.configure(config);
-    app.add_plugins((export_plugin, TerminalPlugin))
+    app.add_plugins((export_plugin, TerminalPlugin::default()))
         .add_systems(Startup, move |mut commands: Commands| {
-            commands.spawn(
-                Terminal::new(surface.clone())
-                    .with_config(config.clone())
-                    .with_presentation(Presentation::Ui {
-                        origin: Vec2::new(20.0, 20.0),
-                    }),
-            );
+            commands.spawn(common::app::ui_terminal(
+                TerminalRenderer::new(surface.clone()),
+                config.clone(),
+                Vec2::new(20.0, 20.0),
+            ));
         })
         .add_systems(Startup, setup_export)
         .add_systems(Update, resize_for_qa.before(TerminalSystems::Sync))
@@ -120,7 +118,7 @@ fn setup_export(
     ));
 }
 
-fn resize_for_qa(terminals: Query<&Terminal>, mut frame: Local<u32>) {
+fn resize_for_qa(terminals: Query<&TerminalRenderer>, mut frame: Local<u32>) {
     *frame += 1;
     if *frame == 8 {
         let terminal = terminals

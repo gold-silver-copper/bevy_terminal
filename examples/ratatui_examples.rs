@@ -3,6 +3,8 @@
 //! Run the full gallery with `cargo run --example ratatui_examples`. An
 //! optional slug chooses the starting example.
 
+#[path = "common/app.rs"]
+mod app;
 #[path = "ratatui_examples/mod.rs"]
 mod catalog;
 #[path = "common/fonts.rs"]
@@ -18,8 +20,8 @@ use bevy::{
     window::{CursorMoved, PrimaryWindow, WindowResizeConstraints, WindowResolution},
 };
 use bevy_terminal_ratatui::{
-    Presentation, RatatuiBackend, RatatuiTerminalExt, Terminal as TerminalEntity, TerminalPlugin,
-    TerminalRenderConfig, TerminalSurface, TerminalSystems,
+    RatatuiBackend, RatatuiTerminalExt, TerminalPlugin, TerminalRenderConfig, TerminalRenderer,
+    TerminalSurface, TerminalSystems,
 };
 use ratatui::{Terminal, layout::Size};
 
@@ -59,7 +61,7 @@ fn main() {
     }));
     let fonts = fonts::load(&mut app);
     let config = fonts.configure(config);
-    app.add_plugins(TerminalPlugin)
+    app.add_plugins(TerminalPlugin::default())
         .insert_resource(gallery)
         .insert_resource(AnimationClock(Timer::from_seconds(
             0.1,
@@ -67,13 +69,11 @@ fn main() {
         )))
         .add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(Camera2d);
-            commands.spawn(
-                TerminalEntity::new(surface.clone())
-                    .with_config(config.clone())
-                    .with_presentation(Presentation::Ui {
-                        origin: Vec2::splat(MARGIN),
-                    }),
-            );
+            commands.spawn(app::ui_terminal(
+                TerminalRenderer::new(surface.clone()),
+                config.clone(),
+                Vec2::splat(MARGIN),
+            ));
         })
         .add_systems(
             Update,

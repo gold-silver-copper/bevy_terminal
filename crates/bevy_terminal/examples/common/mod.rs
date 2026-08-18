@@ -7,8 +7,8 @@
 
 use bevy::prelude::*;
 use bevy_terminal::{
-    FontFaces, StyleFlags, TerminalCell, TerminalColor, TerminalRenderConfig, TerminalStyle,
-    TerminalSurface,
+    FontFaces, StyleFlags, Terminal, TerminalCell, TerminalColor, TerminalRenderConfig,
+    TerminalStyle, TerminalSurface,
 };
 
 const REGULAR: &[u8] =
@@ -17,6 +17,25 @@ const BOLD: &[u8] = include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsM
 const ITALIC: &[u8] = include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Italic.ttf");
 const BOLD_ITALIC: &[u8] =
     include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-BoldItalic.ttf");
+
+/// A terminal presented through a UI image node absolutely positioned at `origin`.
+pub fn ui_terminal(
+    surface: TerminalSurface,
+    config: TerminalRenderConfig,
+    origin: Vec2,
+) -> impl Bundle {
+    (
+        Terminal::new(surface),
+        config,
+        ImageNode::default(),
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(origin.x),
+            top: px(origin.y),
+            ..default()
+        },
+    )
+}
 
 pub const COLUMNS: u16 = 48;
 pub const ROWS: u16 = 14;
@@ -57,13 +76,14 @@ pub fn configure_fonts(app: &mut App, mut config: TerminalRenderConfig) -> Termi
         bold: Some(handles.next().expect("four faces").into()),
         italic: Some(handles.next().expect("four faces").into()),
         bold_italic: Some(handles.next().expect("four faces").into()),
+        synthesize: true,
     };
     config
 }
 
 /// Builds a representative scene: a box, styled text, a wide glyph, colors and a cursor.
 pub fn scene_surface() -> TerminalSurface {
-    let surface = TerminalSurface::new(COLUMNS, ROWS);
+    let surface = TerminalSurface::new((COLUMNS, ROWS));
     let mut update = surface.begin_update();
 
     let border = TerminalStyle::new().fg(TerminalColor::CYAN);
@@ -177,7 +197,7 @@ pub fn scene_surface() -> TerminalSurface {
 
 /// A second, smaller scene demonstrating an independent surface.
 pub fn status_surface() -> TerminalSurface {
-    let surface = TerminalSurface::new(24, 5);
+    let surface = TerminalSurface::new((24, 5));
     let mut update = surface.begin_update();
     draw_box(
         &mut update,

@@ -6,6 +6,15 @@ render world. It is a thin adapter over [`bevy_terminal`](crates/bevy_terminal),
 which owns the renderer-neutral scene model, the retained surface and the
 compact Bevy renderer:
 
+| concept | type | role |
+|---|---|---|
+| surface | `TerminalSurface` | thread-safe retained grid the backend writes into |
+| cell | `TerminalCell` (`CellSymbol` + `TerminalStyle` + occupancy) | one grid cell |
+| snapshot | `TerminalSnapshot` | owned copy of the grid the renderer reads incrementally |
+| terminal entity | `TerminalRenderer` (`bevy_terminal::Terminal`) + `TerminalRenderConfig` | one rendered terminal; add an `ImageNode` to show it |
+| texture | `TerminalTexture` | the renderer-owned image (stable handle) and its metrics |
+| config | `TerminalRenderConfig` | cell size, fonts, theme, cursor, blink, raster scale |
+
 ```text
 bevy_terminal ──> bevy
 bevy_terminal_ratatui ──> bevy_terminal
@@ -24,18 +33,19 @@ are preserved), synthesizes the wide-glyph continuation cells that Ratatui
 omits from its diff, and publishes at most one new surface revision. The
 `bevy_terminal` renderer then copies only dirty cells, anchors each cell string
 to its exact column, builds a compact quad scene and draws it into a
-renderer-owned `Image`. `Presentation::Ui` shows that texture through one
-`ImageNode`; `Presentation::Headless` exposes it without a camera or UI node.
-All renderer types are re-exported here, so a Ratatui application only
-installs this crate.
+renderer-owned `Image`. Put an `ImageNode` on the terminal entity to show that
+texture through Bevy UI (the renderer keeps its image and size in sync, your
+layout places it); without one the terminal is headless and only the texture is
+produced. All renderer types are re-exported here, so a Ratatui application
+only installs this crate. The renderer component is exported as
+`TerminalRenderer` so it does not collide with `ratatui::Terminal`.
 
 ```no_run
 use bevy::prelude::*;
 use bevy_terminal_ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-let backend = RatatuiBackend::new(60, 20);
-let surface = backend.surface();
+let (backend, renderer) = RatatuiBackend::with_terminal(60, 20);
 let mut terminal = ratatui::Terminal::new(backend)?;
 
 terminal.draw(|frame| {
@@ -47,20 +57,32 @@ terminal.draw(|frame| {
 })?;
 
 App::new()
-    .add_plugins((DefaultPlugins, TerminalPlugin))
+    .add_plugins((DefaultPlugins, TerminalPlugin::default()))
     .add_systems(Startup, move |mut commands: Commands| {
         commands.spawn(Camera2d);
-        commands.spawn(Terminal::new(surface.clone()));
+        commands.spawn((
+            renderer.clone(),
+            ImageNode::default(),
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(20.0),
+                top: px(20.0),
+                ..default()
+            },
+        ));
     })
     .run();
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`TerminalPlugin` is added once. Every `Terminal` component you spawn becomes an
-independently rendered terminal; the plugin attaches `TerminalTexture` (the
-renderer-owned image, its physical/logical size, raster scale and effective
-font size), `TerminalStats`, and, for `Presentation::Ui { origin }`, a
-`TerminalNode` image node. Terminals can be spawned and despawned at any time.
+`TerminalPlugin` is added once. Every `TerminalRenderer` component you spawn
+becomes an independently rendered terminal; it requires a
+`TerminalRenderConfig` (a default is inserted automatically — insert your own
+to configure, mutate it to rebuild only that terminal). The plugin attaches
+`TerminalTexture` (the renderer-owned image with a stable handle, its
+physical/logical size, raster scale, cell size and effective font size) and
+`TerminalStats`, and triggers `TerminalReady` on the entity when the texture
+exists. Terminals can be spawned and despawned at any time.
 
 Applications that do not use Ratatui can write the same surface directly; see
 the [`bevy_terminal` README](crates/bevy_terminal/README.md) for the scene API,
@@ -68,38 +90,43 @@ texture-only use, multiple surfaces and font-face configuration.
 
 ## Multiple independent terminals
 
-Each spawned `Terminal` entity owns its renderer-owned texture, configuration,
-statistics, and optional UI image node. Terminals share the render pipeline and
-reusable GPU storage, but updates and resizes remain independent:
+Each spawned terminal entity owns its renderer-owned texture, configuration and
+statistics. Terminals share the render pipeline and reusable GPU storage, but
+updates and resizes remain independent, and because presentation is an
+ordinary `ImageNode` they take part in Bevy UI layout — here a flex row:
 
 ```no_run
 # use bevy::prelude::*;
 # use bevy_terminal_ratatui::prelude::*;
-let left = RatatuiBackend::new(42, 16).surface();
-let right = RatatuiBackend::new(34, 12).surface();
+let (_left_backend, left) = RatatuiBackend::with_terminal(42, 16);
+let (_right_backend, right) = RatatuiBackend::with_terminal(34, 12);
 
 App::new()
-    .add_plugins((DefaultPlugins, TerminalPlugin))
+    .add_plugins((DefaultPlugins, TerminalPlugin::default()))
     .add_systems(Startup, move |mut commands: Commands| {
         commands.spawn(Camera2d);
-        commands.spawn(Terminal::new(left.clone()).with_presentation(Presentation::Ui {
-            origin: Vec2::new(24.0, 56.0),
-        }));
-        commands.spawn(Terminal::new(right.clone()).with_presentation(Presentation::Ui {
-            origin: Vec2::new(496.0, 56.0),
-        }));
+        commands
+            .spawn(Node {
+                position_type: PositionType::Absolute,
+                left: px(24.0),
+                top: px(56.0),
+                column_gap: px(52.0),
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn((left.clone(), ImageNode::default(), Node::default()));
+                row.spawn((right.clone(), ImageNode::default(), Node::default()));
+            });
     });
 ```
 
-`Terminal`, `TerminalTexture`, and `TerminalStats` are components on the same
-entity, so you already hold the `Entity` when you spawn it. Edit
-`Terminal::config_mut()` to change one terminal's configuration; change
-detection rebuilds only that terminal. A terminal's texture handle changes
-identity when its grid dimensions or raster scale change; a `TerminalResized`
-entity event is triggered on the terminal entity so custom presentation code
-can rebind (`app.add_observer(|resized: On<TerminalResized>, ..| ..)`).
-`TerminalNode::terminal` links the optional UI presentation node back to its
-terminal.
+`TerminalRenderer`, `TerminalRenderConfig`, `TerminalTexture`, and
+`TerminalStats` are components on the same entity, so you already hold the
+`Entity` when you spawn it. Mutate `TerminalRenderConfig` to change one
+terminal's configuration; change detection rebuilds only that terminal. The
+texture handle is stable for the terminal's lifetime (resizes reallocate the
+image in place), so custom presentation code can bind it once — from the
+`TerminalReady` event or `TerminalTexture`.
 
 Run `cargo run --example multiple_terminals` for a complete scene where both
 terminals update independently and one resizes while the other remains unchanged.
@@ -152,8 +179,9 @@ color. Bold, dim, italic, underline, reverse, hidden, crossed-out, slow-blink,
 and rapid-blink modifiers are mapped to Bevy text behavior. Bold and italic
 depend on the selected font family exposing suitable faces or variable axes.
 For deterministic static-face selection, fill in `FontFaces { regular, bold,
-italic, bold_italic }` (missing faces fall back bold-italic → bold → italic →
-regular). Every executable example
+italic, bold_italic, synthesize }` (missing faces fall back bold-italic → bold →
+italic → regular; `synthesize` controls whether the bold weight / italic style
+is still requested from the fallback face). Every executable example
 does this with the vendored Iosevka Fixed 34.8.0 family (`assets/fonts/iosevka-fixed`,
 OFL), whose Regular/Bold/Italic/BoldItalic faces cover box drawing, blocks,
 braille, arrows and geometric shapes so terminal symbols rarely need a system
@@ -273,6 +301,25 @@ are discarded rather than retained as host-side scrollback.
 | `CellSymbol::{Ascii, Inline, Heap}` variants | opaque; use `new`/`as_str`/`Deref` |
 | `SurfaceMetrics { cell_size: Option<(f32,f32)>, pixel_size: (u16,u16) }` | `Option<Vec2>`, `UVec2` |
 | `TerminalSurface::begin_update()` | still available; prefer `surface.update(|u| { .. })` |
+
+## Migrating from 0.2
+
+0.3 splits the terminal into plain components and hands UI presentation to you:
+
+| 0.2 | 0.3 |
+|---|---|
+| `Terminal::new(s).with_config(c).with_presentation(Presentation::Ui { origin })` | `(TerminalRenderer::new(s), c, ImageNode::default(), Node { position_type: Absolute, left, top, .. })` — any UI placement works |
+| `Presentation::Headless` | spawn without an `ImageNode` |
+| `Presentation`, `TerminalNode`, `TerminalResized` | removed; texture handle is now stable; `TerminalReady` fires once when the texture exists |
+| `terminal.config()` / `config_mut()` | `TerminalRenderConfig` is its own (required) component; query/mutate it directly |
+| `TerminalPlugin` (unit) | `TerminalPlugin::default()` (`collect_timings` field) |
+| `bevy_terminal::Terminal` in the Ratatui prelude | `TerminalRenderer` (alias; the lower crate still calls it `Terminal`) |
+| `RatatuiBackend::new(c, r)` + `Terminal::new(backend.surface())` | `RatatuiBackend::with_terminal(c, r)` → `(backend, renderer)`; also `backend.terminal()`, `terminal.surface()` |
+| `TerminalSurface::new(c, r)`, `update.resize(c, r)` | `new((c, r))`, `resize((c, r))` (any `Into<GridSize>`) |
+| `snapshot.cell(x, y)`, `GridSize::contains(pos)` | `cell((x, y))`, `contains((x, y))` (any `Into<CellPosition>`) |
+| `TerminalTheme::cursor` | removed (use `CursorConfig::color`) |
+| `TerminalTheme::{foreground, background, resolve}` | crate-private |
+| `FontFaces { .. }` | new field `synthesize: bool` (default `true`; `FontFaces::regular(..)`/`From` set it) |
 
 ## License
 

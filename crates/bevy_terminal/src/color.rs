@@ -8,8 +8,6 @@ pub struct TerminalTheme {
     pub foreground: BevyColor,
     /// Background used for [`TerminalColor::Default`].
     pub background: BevyColor,
-    /// Cursor overlay color.
-    pub cursor: BevyColor,
     /// ANSI colors 0 through 15 (normal, then bright).
     pub ansi: [BevyColor; 16],
 }
@@ -19,7 +17,6 @@ impl Default for TerminalTheme {
         Self {
             foreground: BevyColor::srgb_u8(229, 229, 229),
             background: BevyColor::srgb_u8(18, 18, 18),
-            cursor: BevyColor::srgba(0.82, 0.88, 1.0, 0.48),
             ansi: [
                 BevyColor::srgb_u8(0, 0, 0),
                 BevyColor::srgb_u8(205, 0, 0),
@@ -44,20 +41,17 @@ impl Default for TerminalTheme {
 
 impl TerminalTheme {
     /// Resolves a foreground color; [`TerminalColor::Default`] is the theme foreground.
-    #[must_use]
-    pub fn foreground(&self, color: TerminalColor) -> BevyColor {
+    pub(crate) fn foreground(&self, color: TerminalColor) -> BevyColor {
         self.resolve(color, self.foreground)
     }
 
     /// Resolves a background color; [`TerminalColor::Default`] is the theme background.
-    #[must_use]
-    pub fn background(&self, color: TerminalColor) -> BevyColor {
+    pub(crate) fn background(&self, color: TerminalColor) -> BevyColor {
         self.resolve(color, self.background)
     }
 
     /// Resolves `color`, using `default` for [`TerminalColor::Default`].
-    #[must_use]
-    pub fn resolve(&self, color: TerminalColor, default: BevyColor) -> BevyColor {
+    pub(crate) fn resolve(&self, color: TerminalColor, default: BevyColor) -> BevyColor {
         match color {
             TerminalColor::Default => default,
             TerminalColor::Rgb(red, green, blue) => BevyColor::srgb_u8(red, green, blue),

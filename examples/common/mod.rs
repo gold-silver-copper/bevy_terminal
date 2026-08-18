@@ -7,6 +7,9 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, Paragraph, Wrap},
 };
 
+pub mod app;
+#[allow(dead_code)]
+pub mod export;
 pub mod fonts;
 
 pub const COLUMNS: u16 = 72;

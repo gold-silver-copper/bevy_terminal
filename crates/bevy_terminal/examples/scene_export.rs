@@ -5,8 +5,8 @@ mod common;
 use bevy::{prelude::*, render::RenderPlugin, window::WindowResolution};
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal::{
-    CursorConfig, Presentation, Terminal, TerminalPlugin, TerminalRenderConfig,
-    TerminalRenderScale, TerminalSurface, TerminalTexture,
+    CursorConfig, Terminal, TerminalPlugin, TerminalReady, TerminalRenderConfig,
+    TerminalRenderScale, TerminalSurface,
 };
 
 const EXPORT_FRAMES: u32 = 8;
@@ -51,54 +51,48 @@ fn main() {
             ..default()
         },
     );
-    app.add_plugins((export_plugin, TerminalPlugin))
+    app.add_plugins((export_plugin, TerminalPlugin::default()))
         .insert_resource(Surfaces {
             main: main.clone(),
             status: status.clone(),
         })
         .add_systems(Startup, move |mut commands: Commands| {
             for surface in [&main, &status] {
-                commands.spawn(
-                    Terminal::new(surface.clone())
-                        .with_config(config.clone())
-                        .with_presentation(Presentation::Headless),
-                );
+                commands.spawn((Terminal::new(surface.clone()), config.clone()));
             }
         })
-        .add_systems(Update, (setup_export, stop_after_export).chain())
+        .add_observer(export_when_ready)
+        .add_systems(Update, stop_after_export)
         .run();
 
     export_threads.finish();
 }
 
-/// Registers an exporter for each terminal texture once both textures exist.
-fn setup_export(
+/// Registers an exporter for a terminal texture as soon as it exists.
+fn export_when_ready(
+    ready: On<TerminalReady>,
     mut commands: Commands,
-    mut done: Local<bool>,
     surfaces: Res<Surfaces>,
-    outputs: Query<(&Terminal, &TerminalTexture)>,
+    terminals: Query<&Terminal>,
     mut export_sources: ResMut<Assets<ImageExportSource>>,
 ) {
-    if *done || outputs.iter().count() < 2 {
+    let Ok(terminal) = terminals.get(ready.entity) else {
         return;
-    }
-    *done = true;
-    for (terminal, output) in &outputs {
-        let name = if terminal.surface().shares_state_with(&surfaces.main) {
-            "scene"
-        } else if terminal.surface().shares_state_with(&surfaces.status) {
-            "status"
-        } else {
-            continue;
-        };
-        commands.spawn((
-            ImageExport(export_sources.add(output.image.clone())),
-            ImageExportSettings {
-                output_dir: format!("target/bevy-terminal-qa/{name}"),
-                extension: "png".into(),
-            },
-        ));
-    }
+    };
+    let name = if terminal.surface().shares_state_with(&surfaces.main) {
+        "scene"
+    } else if terminal.surface().shares_state_with(&surfaces.status) {
+        "status"
+    } else {
+        return;
+    };
+    commands.spawn((
+        ImageExport(export_sources.add(ready.image.clone())),
+        ImageExportSettings {
+            output_dir: format!("target/bevy-terminal-qa/{name}"),
+            extension: "png".into(),
+        },
+    ));
 }
 
 fn stop_after_export(mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {

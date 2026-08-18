@@ -38,7 +38,8 @@ impl GridSize {
 
     /// Returns whether `position` lies inside the grid.
     #[must_use]
-    pub const fn contains(self, position: CellPosition) -> bool {
+    pub fn contains(self, position: impl Into<CellPosition>) -> bool {
+        let position = position.into();
         position.x < self.width && position.y < self.height
     }
 }
@@ -127,7 +128,10 @@ impl TerminalColor {
 /// A compact set of text attribute flags.
 ///
 /// The set is a plain `u16` bit field so style comparison on the render hot
-/// path is a couple of integer compares.
+/// path is a couple of integer compares. The bit layout is a stable contract:
+/// bit 0 `BOLD`, 1 `DIM`, 2 `ITALIC`, 3 `UNDERLINED`, 4 `SLOW_BLINK`,
+/// 5 `RAPID_BLINK`, 6 `REVERSED`, 7 `HIDDEN`, 8 `CROSSED_OUT` — the same order
+/// as Ratatui's `Modifier`, so adapters can translate with a mask.
 #[derive(Clone, Copy, Default, Eq, Hash, PartialEq)]
 pub struct StyleFlags(u16);
 
@@ -603,12 +607,13 @@ impl TerminalSnapshot {
 
     /// Returns the cell at a position, or `None` outside the grid.
     #[must_use]
-    pub fn cell(&self, x: u16, y: u16) -> Option<&TerminalCell> {
-        if !self.size.contains(CellPosition::new(x, y)) {
+    pub fn cell(&self, position: impl Into<CellPosition>) -> Option<&TerminalCell> {
+        let position = position.into();
+        if !self.size.contains(position) {
             return None;
         }
         self.cells
-            .get(usize::from(y) * usize::from(self.size.width) + usize::from(x))
+            .get(usize::from(position.y) * usize::from(self.size.width) + usize::from(position.x))
     }
 
     /// Returns the cursor position in cells.
@@ -650,7 +655,7 @@ impl std::ops::Index<(u16, u16)> for TerminalSnapshot {
     type Output = TerminalCell;
 
     fn index(&self, (x, y): (u16, u16)) -> &TerminalCell {
-        self.cell(x, y)
+        self.cell((x, y))
             .unwrap_or_else(|| panic!("cell ({x}, {y}) is outside {:?}", self.size))
     }
 }
@@ -722,7 +727,7 @@ mod tests {
         snapshot.cells[4] = TerminalCell::new("X");
         assert_eq!(snapshot[(1, 1)].symbol(), "X");
         assert_eq!(snapshot.row(1)[1].symbol(), "X");
-        assert!(snapshot.cell(3, 0).is_none());
+        assert!(snapshot.cell((3, 0)).is_none());
         assert!(snapshot.row(2).is_empty());
     }
 }

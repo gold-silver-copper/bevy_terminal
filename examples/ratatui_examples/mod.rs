@@ -308,7 +308,7 @@ pub fn redraw_interactive_surface(
     let snapshot = rendered_surface.snapshot();
     let width = usize::from(snapshot.size().width);
     let mut destination = surface.begin_update();
-    destination.resize(COLUMNS, ROWS);
+    destination.resize((COLUMNS, ROWS));
     destination.set_cells(
         snapshot
             .cells()

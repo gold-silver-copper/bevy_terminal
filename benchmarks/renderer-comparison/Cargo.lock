@@ -1574,14 +1574,14 @@ dependencies = [
 
 [[package]]
 name = "bevy_terminal"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bevy",
 ]
 
 [[package]]
 name = "bevy_terminal_ratatui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bevy_terminal",
  "ratatui",

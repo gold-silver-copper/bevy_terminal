@@ -19,10 +19,10 @@
 mod common;
 
 use bevy::{prelude::*, render::RenderPlugin, window::WindowResolution};
-use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
+use bevy_image_export::ImageExportPlugin;
 use bevy_terminal_ratatui::{
-    CursorConfig, FontFaces, Presentation, RatatuiBackend, Terminal as TerminalEntity,
-    TerminalPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalTexture,
+    CursorConfig, FontFaces, RatatuiBackend, TerminalPlugin, TerminalRenderConfig,
+    TerminalRenderScale, TerminalRenderer,
 };
 use ratatui::{
     Terminal,
@@ -138,6 +138,7 @@ impl LoadedFamily {
             bold: Some(self.bold.clone().into()),
             italic: Some(self.italic.clone().into()),
             bold_italic: Some(self.bold_italic.clone().into()),
+            synthesize: true,
         };
     }
 }
@@ -250,34 +251,33 @@ fn main() {
     let mut config = config;
     families[initial].apply(&mut config);
     draw_render_test(&mut terminal, families[initial].name);
-    let presentation = if export {
-        Presentation::Headless
-    } else {
-        Presentation::Ui {
-            origin: Vec2::splat(MARGIN),
-        }
-    };
-    app.add_plugins(TerminalPlugin)
+    let output_dir = format!("target/render-test/{}", FAMILIES[initial].1);
+    app.add_plugins(TerminalPlugin::default())
         .insert_resource(FontCycle {
             families,
             current: initial,
             terminal,
-        })
-        .add_systems(Startup, move |mut commands: Commands| {
-            commands.spawn(
-                TerminalEntity::new(surface.clone())
-                    .with_config(config.clone())
-                    .with_presentation(presentation),
-            );
         });
     if export {
+        common::export::export_terminals_on_ready(&mut app, output_dir);
         app.add_plugins(export_plugin)
-            .add_systems(Update, (setup_export, stop_after_export).chain())
+            .add_systems(Startup, move |mut commands: Commands| {
+                commands.spawn(common::app::headless_terminal(
+                    TerminalRenderer::new(surface.clone()),
+                    config.clone(),
+                ));
+            })
+            .add_systems(Update, common::export::exit_after(10))
             .run();
         export_threads.finish();
     } else {
-        app.add_systems(Startup, |mut commands: Commands| {
+        app.add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(Camera2d);
+            commands.spawn(common::app::ui_terminal(
+                TerminalRenderer::new(surface.clone()),
+                config.clone(),
+                Vec2::splat(MARGIN),
+            ));
         })
         .add_systems(Update, cycle_fonts)
         .run();
@@ -288,7 +288,7 @@ fn main() {
 fn cycle_fonts(
     keys: Res<ButtonInput<KeyCode>>,
     mut cycle: ResMut<FontCycle>,
-    mut terminals: Query<&mut TerminalEntity>,
+    mut configs: Query<&mut TerminalRenderConfig>,
     mut windows: Query<&mut Window>,
 ) {
     let count = cycle.families.len();
@@ -305,44 +305,14 @@ fn cycle_fonts(
     };
     cycle.current = next;
     let family = cycle.families[next].clone();
-    for mut terminal in &mut terminals {
-        family.apply(terminal.config_mut());
+    for mut config in &mut configs {
+        family.apply(&mut config);
     }
     for mut window in &mut windows {
         window.title = format!("bevy_terminal_ratatui · render test · {}", family.name);
     }
     let FontCycle { terminal, .. } = &mut *cycle;
     draw_render_test(terminal, family.name);
-}
-
-fn setup_export(
-    mut commands: Commands,
-    mut done: Local<bool>,
-    cycle: Res<FontCycle>,
-    outputs: Query<&TerminalTexture>,
-    mut export_sources: ResMut<Assets<ImageExportSource>>,
-) {
-    if *done {
-        return;
-    }
-    let Ok(output) = outputs.single() else {
-        return;
-    };
-    *done = true;
-    commands.spawn((
-        ImageExport(export_sources.add(output.image.clone())),
-        ImageExportSettings {
-            output_dir: format!("target/render-test/{}", FAMILIES[cycle.current].1),
-            extension: "png".into(),
-        },
-    ));
-}
-
-fn stop_after_export(mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
-    *frame += 1;
-    if *frame >= 10 {
-        exit.write(AppExit::Success);
-    }
 }
 
 fn heading(text: &str) -> Line<'static> {

@@ -17,10 +17,7 @@ use crate::{
 
 mod batch;
 
-pub use batch::{
-    Presentation, Terminal, TerminalNode, TerminalPlugin, TerminalResized, TerminalStats,
-    TerminalTexture,
-};
+pub use batch::{Terminal, TerminalPlugin, TerminalReady, TerminalStats, TerminalTexture};
 
 /// Visual shape used for the terminal cursor.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -85,6 +82,12 @@ impl BlinkConfig {
 ///
 /// Missing faces fall back in the order bold-italic → bold → italic → regular
 /// with the corresponding weight/style requested from the fallback face.
+///
+/// When a style falls back to another face, `synthesize` (default `true`)
+/// controls whether the bold weight / italic style is still *requested* from
+/// that face, so a variable font or a system family can produce it from its own
+/// axes or sibling faces. With `synthesize` off, the fallback face is used
+/// exactly as is (no faux bold or oblique).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontFaces {
     /// Regular text. The generic monospace family enables system fallback.
@@ -95,6 +98,8 @@ pub struct FontFaces {
     pub italic: Option<FontSource>,
     /// Optional face for text that is both bold and italic.
     pub bold_italic: Option<FontSource>,
+    /// Whether to request bold weight / italic style from a fallback face.
+    pub synthesize: bool,
 }
 
 impl FontFaces {
@@ -107,7 +112,44 @@ impl FontFaces {
             bold: None,
             italic: None,
             bold_italic: None,
+            synthesize: true,
         }
+    }
+
+    /// Sets whether missing faces are synthesized (see the type docs).
+    #[must_use]
+    pub const fn with_synthesis(mut self, synthesize: bool) -> Self {
+        self.synthesize = synthesize;
+        self
+    }
+
+    /// Returns the face for a style together with the weight and style to
+    /// request from it.
+    fn resolve(&self, bold: bool, italic: bool) -> (&FontSource, FontWeight, FontStyle) {
+        let (face, exact) = match (bold, italic) {
+            (true, true) => self
+                .bold_italic
+                .as_ref()
+                .map(|face| (face, true))
+                .or_else(|| self.bold.as_ref().map(|face| (face, false)))
+                .or_else(|| self.italic.as_ref().map(|face| (face, false))),
+            (true, false) => self.bold.as_ref().map(|face| (face, true)),
+            (false, true) => self.italic.as_ref().map(|face| (face, true)),
+            (false, false) => Some((&self.regular, true)),
+        }
+        .unwrap_or((&self.regular, false));
+        let request = exact || self.synthesize;
+        let weight = if bold && request {
+            FontWeight::BOLD
+        } else {
+            FontWeight::NORMAL
+        };
+        let style = if italic && request {
+            FontStyle::Italic
+        } else {
+            FontStyle::Normal
+        };
+        (face, weight, style)
     }
 
     /// Returns the face used for the given weight and style.
@@ -246,7 +288,10 @@ pub enum TerminalRenderScale {
 /// fonts in one run, so there is no single font metric that is guaranteed to
 /// describe every Unicode glyph. Text runs are anchored to cell coordinates to
 /// prevent this from causing cumulative drift.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// This is a component: every [`Terminal`] entity requires one (a default is
+/// inserted automatically). Mutating it rebuilds only that terminal.
+#[derive(Clone, Component, Debug, PartialEq)]
 pub struct TerminalRenderConfig {
     /// Width and height of one terminal cell in Bevy logical pixels.
     pub cell_size: Vec2,
@@ -298,19 +343,12 @@ pub enum TerminalSystems {
 }
 
 fn text_font(faces: &FontFaces, font_size: f32, style: &ResolvedStyle) -> TextFont {
+    let (face, weight, font_style) = faces.resolve(style.bold, style.italic);
     TextFont {
-        font: faces.select(style.bold, style.italic).clone(),
+        font: face.clone(),
         font_size: font_size.into(),
-        weight: if style.bold {
-            FontWeight::BOLD
-        } else {
-            FontWeight::NORMAL
-        },
-        style: if style.italic {
-            FontStyle::Italic
-        } else {
-            FontStyle::Normal
-        },
+        weight,
+        style: font_style,
         ..default()
     }
 }
@@ -468,6 +506,7 @@ mod tests {
             bold: Some(bold.clone()),
             italic: Some(italic.clone()),
             bold_italic: Some(bold_italic.clone()),
+            synthesize: true,
         };
         assert_eq!(complete.select(false, false), &regular);
         assert_eq!(complete.select(true, false), &bold);
@@ -481,6 +520,35 @@ mod tests {
         assert_eq!(font.font, bold_italic);
         assert_eq!(font.weight, FontWeight::BOLD);
         assert_eq!(font.style, FontStyle::Italic);
+
+        // Synthesis: a missing italic face is requested as italic from the
+        // regular face by default, and left upright with synthesis disabled.
+        let bold_only = FontFaces {
+            bold: Some(bold.clone()),
+            ..FontFaces::regular(regular.clone())
+        };
+        let italic_cell =
+            TerminalCell::new("X").with_style(TerminalStyle::new().with(StyleFlags::ITALIC));
+        let synthesized = text_font(&bold_only, 18.0, &ResolvedStyle::new(&italic_cell, &theme));
+        assert_eq!(synthesized.font, regular);
+        assert_eq!(synthesized.style, FontStyle::Italic);
+        let plain = text_font(
+            &bold_only.clone().with_synthesis(false),
+            18.0,
+            &ResolvedStyle::new(&italic_cell, &theme),
+        );
+        assert_eq!(plain.font, regular);
+        assert_eq!(plain.style, FontStyle::Normal);
+        // An explicit face is always requested with its own weight/style.
+        let bold_cell =
+            TerminalCell::new("X").with_style(TerminalStyle::new().with(StyleFlags::BOLD));
+        let exact = text_font(
+            &bold_only.with_synthesis(false),
+            18.0,
+            &ResolvedStyle::new(&bold_cell, &theme),
+        );
+        assert_eq!(exact.font, bold);
+        assert_eq!(exact.weight, FontWeight::BOLD);
     }
 
     #[test]

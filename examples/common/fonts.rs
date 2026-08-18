@@ -52,6 +52,7 @@ impl ExampleFonts {
             bold: Some(self.bold.clone().into()),
             italic: Some(self.italic.clone().into()),
             bold_italic: Some(self.bold_italic.clone().into()),
+            synthesize: true,
         }
     }
 

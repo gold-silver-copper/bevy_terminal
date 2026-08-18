@@ -4,9 +4,7 @@
 mod common;
 
 use bevy::prelude::*;
-use bevy_terminal::{
-    Presentation, Terminal, TerminalPlugin, TerminalRenderConfig, TerminalSurface, TerminalSystems,
-};
+use bevy_terminal::{TerminalPlugin, TerminalRenderConfig, TerminalSurface, TerminalSystems};
 
 #[derive(Resource)]
 struct Scenes {
@@ -40,7 +38,7 @@ fn main() {
     );
     // The main terminal is spawned at startup; the status terminal a moment
     // later to show that terminals can be added while the app runs.
-    app.add_plugins(TerminalPlugin)
+    app.add_plugins(TerminalPlugin::default())
         .insert_resource(Scenes {
             main: main.clone(),
             tick: 0,
@@ -48,13 +46,11 @@ fn main() {
         .insert_resource(PendingStatus(Some((status, config.clone()))))
         .add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(Camera2d);
-            commands.spawn(
-                Terminal::new(main.clone())
-                    .with_config(config.clone())
-                    .with_presentation(Presentation::Ui {
-                        origin: Vec2::splat(16.0),
-                    }),
-            );
+            commands.spawn(common::ui_terminal(
+                main.clone(),
+                config.clone(),
+                Vec2::splat(16.0),
+            ));
         })
         .add_systems(
             Update,
@@ -65,13 +61,7 @@ fn main() {
                     if time.elapsed_secs() > 1.0
                         && let Some((surface, config)) = pending.0.take()
                     {
-                        commands.spawn(
-                            Terminal::new(surface)
-                                .with_config(config)
-                                .with_presentation(Presentation::Ui {
-                                    origin: status_origin,
-                                }),
-                        );
+                        commands.spawn(common::ui_terminal(surface, config, status_origin));
                     }
                 },
                 animate,

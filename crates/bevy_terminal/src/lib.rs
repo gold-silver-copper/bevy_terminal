@@ -8,9 +8,9 @@ mod surface;
 pub use bevy::text::{FontHinting, FontSource};
 pub use color::TerminalTheme;
 pub use renderer::{
-    BlinkConfig, CursorConfig, CursorStyle, FontFaces, FontSizing, Presentation, Terminal,
-    TerminalNode, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalResized,
-    TerminalStats, TerminalSystems, TerminalTexture,
+    BlinkConfig, CursorConfig, CursorStyle, FontFaces, FontSizing, Terminal, TerminalPlugin,
+    TerminalReady, TerminalRenderConfig, TerminalRenderScale, TerminalStats, TerminalSystems,
+    TerminalTexture,
 };
 pub use scene::{
     CellOccupancy, CellPosition, CellSymbol, GridSize, StyleFlags, TerminalCell, TerminalColor,
@@ -22,9 +22,8 @@ pub use surface::{SurfaceMetrics, SurfaceUpdate, TerminalSurface};
 pub mod prelude {
     pub use crate::{
         BlinkConfig, CellOccupancy, CellPosition, CursorConfig, CursorStyle, FontFaces, FontSizing,
-        GridSize, Presentation, StyleFlags, Terminal, TerminalCell, TerminalColor, TerminalNode,
-        TerminalPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalResized,
-        TerminalSnapshot, TerminalStats, TerminalStyle, TerminalSurface, TerminalTexture,
-        TerminalTheme,
+        GridSize, StyleFlags, Terminal, TerminalCell, TerminalColor, TerminalPlugin, TerminalReady,
+        TerminalRenderConfig, TerminalRenderScale, TerminalSnapshot, TerminalStats, TerminalStyle,
+        TerminalSurface, TerminalTexture, TerminalTheme,
     };
 }

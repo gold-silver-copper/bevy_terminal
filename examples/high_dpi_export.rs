@@ -3,10 +3,9 @@
 mod common;
 
 use bevy::{prelude::*, render::RenderPlugin, window::WindowResolution};
-use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
+use bevy_image_export::ImageExportPlugin;
 use bevy_terminal_ratatui::{
-    CursorConfig, Presentation, Terminal, TerminalPlugin, TerminalRenderConfig,
-    TerminalRenderScale, TerminalTexture,
+    CursorConfig, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalRenderer,
 };
 
 const EXPORT_FRAMES: u32 = 8;
@@ -42,46 +41,16 @@ fn main() {
     );
     let fonts = common::fonts::load(&mut app);
     let config = fonts.configure(config);
-    app.add_plugins((export_plugin, TerminalPlugin))
+    common::export::export_terminals_on_ready(&mut app, "target/render-qa-2x");
+    app.add_plugins((export_plugin, TerminalPlugin::default()))
         .add_systems(Startup, move |mut commands: Commands| {
-            commands.spawn(
-                Terminal::new(common::demo_surface())
-                    .with_config(config.clone())
-                    .with_presentation(Presentation::Headless),
-            );
+            commands.spawn(common::app::headless_terminal(
+                TerminalRenderer::new(common::demo_surface()),
+                config.clone(),
+            ));
         })
-        .add_systems(Update, (setup_export, stop_after_export).chain())
+        .add_systems(Update, common::export::exit_after(EXPORT_FRAMES))
         .run();
 
     export_threads.finish();
-}
-
-/// Registers the exporter once the terminal texture exists.
-fn setup_export(
-    mut commands: Commands,
-    mut done: Local<bool>,
-    outputs: Query<&TerminalTexture>,
-    mut export_sources: ResMut<Assets<ImageExportSource>>,
-) {
-    if *done {
-        return;
-    }
-    let Ok(output) = outputs.single() else {
-        return;
-    };
-    *done = true;
-    commands.spawn((
-        ImageExport(export_sources.add(output.image.clone())),
-        ImageExportSettings {
-            output_dir: "target/render-qa-2x".into(),
-            extension: "png".into(),
-        },
-    ));
-}
-
-fn stop_after_export(mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
-    *frame += 1;
-    if *frame >= EXPORT_FRAMES {
-        exit.write(AppExit::Success);
-    }
 }
