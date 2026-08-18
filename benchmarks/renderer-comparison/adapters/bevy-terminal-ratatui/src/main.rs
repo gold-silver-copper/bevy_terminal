@@ -1,19 +1,17 @@
 use bevy::{app::SubApps, prelude::*, text::FontSource};
-use bevy_terminal_ratatui::{
-    BlinkConfig, CursorConfig, FontSizing, RatatuiBackend, TerminalPlugin, TerminalRenderer,
-    TerminalRenderConfig, TerminalStats, TerminalSurface, TerminalTexture,
-};
+use bevy_terminal_ratatui::{RatatuiBackend, TerminalRenderer};
+use bevy_terminal_ratatui::prelude::{BlinkConfig, CursorConfig, FontSizing, TerminalPlugin, TerminalRenderConfig, TerminalStats, TerminalSurface, TerminalTexture};
 use ratatui::Terminal;
 use renderer_bench_sdk::{
     AdapterFrame, AdapterMetadata, BenchConfig, BenchResult, RendererAdapter, SharedFontFixture,
-    linear_rgba8_to_srgb, measure, read_bevy_image_rgba, render_workload, run,
+    measure, read_bevy_image_rgba, render_workload, run,
 };
 
 struct BevyTerminalRatatuiAdapter {
     terminal: Terminal<RatatuiBackend>,
     surface: TerminalSurface,
     last_stats: TerminalStats,
-    max_gpu_bytes_written: u64,
+    max_glyph_quads: u32,
     max_shape_misses: u32,
 }
 
@@ -25,7 +23,7 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
             terminal: Terminal::new(backend)?,
             surface,
             last_stats: TerminalStats::default(),
-            max_gpu_bytes_written: 0,
+            max_glyph_quads: 0,
             max_shape_misses: 0,
         })
     }
@@ -36,11 +34,11 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
             .world_mut()
             .resource_mut::<Assets<Font>>()
             .add(Font::from_bytes(bytes));
-        app.add_plugins(TerminalPlugin::default());
+        app.add_plugins(TerminalPlugin);
         app.world_mut().spawn((
             TerminalRenderer::new(self.surface.clone()),
             TerminalRenderConfig {
-                cell_size: Vec2::new(config.cell_width, config.cell_height),
+                cell_size: Vec2::new(config.cell_width, config.cell_height).into(),
                 font_size: FontSizing::Px(config.font_size as f32),
                 font: FontSource::Handle(font).into(),
                 cursor: CursorConfig {
@@ -70,9 +68,7 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
             .iter_entities()
             .find_map(|entity| entity.get::<TerminalStats>().copied())
             .unwrap_or_default();
-        self.max_gpu_bytes_written = self
-            .max_gpu_bytes_written
-            .max(self.last_stats.gpu_bytes_written);
+        self.max_glyph_quads = self.max_glyph_quads.max(self.last_stats.glyph_quads);
         self.max_shape_misses = self.max_shape_misses.max(self.last_stats.shape_misses);
         let (result, draw_ns) = measure(|| {
             self.terminal.draw(|frame| {
@@ -99,11 +95,8 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
             .expect("the adapter creates exactly one terminal output")
             .image
             .clone();
-        let mut rgba = read_bevy_image_rgba(sub_apps, image)?;
-        // The batch target is linear RGBA8 because the shader emits linear colors. Normalize the
-        // diagnostic PNG bytes to the same visual encoding used by the other adapters.
-        linear_rgba8_to_srgb(&mut rgba);
-        Ok(rgba)
+        // The terminal texture is sRGB-encoded, matching the other adapters' capture encoding.
+        read_bevy_image_rgba(sub_apps, image)
     }
 
     fn metadata(&self) -> AdapterMetadata {
@@ -121,18 +114,16 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
                 "Bevy text shaping, glyph atlas preparation, extraction, upload, render submission, and synchronization are included"
                     .to_owned(),
                 format!(
-                    "renderer counters: glyph_quads={}, solid_quads={}, batches={}, last_changed_rows={}, last_snapshot_cells={}, cached_shapes={}, max_shape_misses={}, snapshot_ns={}, scene_ns={}, gpu_bytes_written={}, max_gpu_bytes_written={}",
+                    "renderer counters: glyph_quads={}, solid_quads={}, batches={}, last_changed_rows={}, last_snapshot_cells={}, max_shape_misses={}, snapshot_ns={}, scene_ns={}, max_glyph_quads={}",
                     self.last_stats.glyph_quads,
                     self.last_stats.solid_quads,
                     self.last_stats.draw_batches,
                     self.last_stats.changed_rows,
                     self.last_stats.snapshot_cells,
-                    self.last_stats.cached_shapes,
                     self.max_shape_misses,
                     self.last_stats.snapshot_ns,
                     self.last_stats.scene_ns,
-                    self.last_stats.gpu_bytes_written,
-                    self.max_gpu_bytes_written,
+                    self.max_glyph_quads,
                 ),
             ],
         }

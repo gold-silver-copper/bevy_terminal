@@ -6,10 +6,7 @@
 #![allow(dead_code)]
 
 use bevy::prelude::*;
-use bevy_terminal::{
-    FontFaces, StyleFlags, Terminal, TerminalCell, TerminalColor, TerminalRenderConfig,
-    TerminalStyle, TerminalSurface,
-};
+use bevy_terminal::prelude::*;
 
 const REGULAR: &[u8] =
     include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf");
@@ -84,18 +81,27 @@ pub fn configure_fonts(app: &mut App, mut config: TerminalRenderConfig) -> Termi
 /// Builds a representative scene: a box, styled text, a wide glyph, colors and a cursor.
 pub fn scene_surface() -> TerminalSurface {
     let surface = TerminalSurface::new((COLUMNS, ROWS));
-    let mut update = surface.begin_update();
+    surface.update(draw_scene);
+    surface
+}
 
+/// Draws the representative scene into `update` at its current size: the frame
+/// follows the grid, the content keeps its layout (cells outside a smaller grid
+/// are ignored by the surface).
+pub fn draw_scene(update: &mut SurfaceUpdate<'_>) {
+    let update = &mut *update;
+    let size = update.size();
+    update.clear();
     let border = TerminalStyle::new().fg(TerminalColor::CYAN);
-    draw_box(&mut update, 0, 0, COLUMNS, ROWS, border);
+    draw_box(update, 0, 0, size.width, size.height, border);
 
     let title = TerminalStyle::new()
         .fg(TerminalColor::BLACK)
         .bg(TerminalColor::LIGHT_CYAN)
         .with(StyleFlags::BOLD);
-    write_text(&mut update, 2, 0, " bevy_terminal ", title);
+    write_text(update, 2, 0, " bevy_terminal ", title);
     write_text(
-        &mut update,
+        update,
         18,
         0,
         " direct scene, no TUI lib ",
@@ -103,11 +109,11 @@ pub fn scene_surface() -> TerminalSurface {
     );
 
     let plain = TerminalStyle::new();
-    write_text(&mut update, 2, 2, "regular", plain);
-    write_text(&mut update, 12, 2, "bold", plain.with(StyleFlags::BOLD));
-    write_text(&mut update, 19, 2, "italic", plain.with(StyleFlags::ITALIC));
+    write_text(update, 2, 2, "regular", plain);
+    write_text(update, 12, 2, "bold", plain.with(StyleFlags::BOLD));
+    write_text(update, 19, 2, "italic", plain.with(StyleFlags::ITALIC));
     write_text(
-        &mut update,
+        update,
         28,
         2,
         "bold italic",
@@ -115,7 +121,7 @@ pub fn scene_surface() -> TerminalSurface {
     );
 
     write_text(
-        &mut update,
+        update,
         2,
         4,
         "underline",
@@ -124,22 +130,22 @@ pub fn scene_surface() -> TerminalSurface {
             .underline_color(TerminalColor::LIGHT_RED),
     );
     write_text(
-        &mut update,
+        update,
         14,
         4,
         "crossed",
         plain.with(StyleFlags::CROSSED_OUT),
     );
-    write_text(&mut update, 24, 4, "dim", plain.with(StyleFlags::DIM));
+    write_text(update, 24, 4, "dim", plain.with(StyleFlags::DIM));
     write_text(
-        &mut update,
+        update,
         30,
         4,
         "reversed",
         plain.fg(TerminalColor::GREEN).with(StyleFlags::REVERSED),
     );
 
-    write_text(&mut update, 2, 6, "wide:", plain);
+    write_text(update, 2, 6, "wide:", plain);
     let wide = TerminalCell::wide("界", 2).with_style(
         plain
             .fg(TerminalColor::LIGHT_MAGENTA)
@@ -150,17 +156,18 @@ pub fn scene_surface() -> TerminalSurface {
         (10, 6),
         &TerminalCell::wide("😀", 2).with_style(plain.bg(TerminalColor::Indexed(236))),
     );
-    write_text(&mut update, 13, 6, "| next column stays put", plain);
+    write_text(update, 13, 6, "| next column stays put", plain);
 
-    for (index, column) in (2..COLUMNS - 2).step_by(3).enumerate() {
+    let columns = size.width.max(4);
+    for (index, column) in (2..columns - 2).step_by(3).enumerate() {
         let index = index as u8;
         let color = TerminalColor::Indexed(16 + index * 6 % 216);
-        write_text(&mut update, column, 8, "██▓", plain.fg(color));
+        write_text(update, column, 8, "██▓", plain.fg(color));
     }
-    for (index, column) in (2..COLUMNS - 2).step_by(3).enumerate() {
+    for (index, column) in (2..columns - 2).step_by(3).enumerate() {
         let level = (index * 12).min(255) as u8;
         write_text(
-            &mut update,
+            update,
             column,
             9,
             "▀▄▚",
@@ -169,21 +176,21 @@ pub fn scene_surface() -> TerminalSurface {
     }
 
     write_text(
-        &mut update,
+        update,
         2,
         11,
         "┌──┬──┐  ┏━━┳━━┓  ╔══╦══╗",
         TerminalStyle::new(),
     );
     write_text(
-        &mut update,
+        update,
         2,
         12,
         "└──┴──┘  ┗━━┻━━┛  ╚══╩══╝",
         TerminalStyle::new(),
     );
     write_text(
-        &mut update,
+        update,
         30,
         11,
         "cursor >",
@@ -191,16 +198,18 @@ pub fn scene_surface() -> TerminalSurface {
     );
     update.set_cursor_position((39, 11));
     update.set_cursor_visible(true);
-    update.commit();
-    surface
 }
 
 /// A second, smaller scene demonstrating an independent surface.
 pub fn status_surface() -> TerminalSurface {
     let surface = TerminalSurface::new((24, 5));
-    let mut update = surface.begin_update();
+    surface.update(draw_status);
+    surface
+}
+
+fn draw_status(update: &mut SurfaceUpdate<'_>) {
     draw_box(
-        &mut update,
+        update,
         0,
         0,
         24,
@@ -208,33 +217,31 @@ pub fn status_surface() -> TerminalSurface {
         TerminalStyle::new().fg(TerminalColor::YELLOW),
     );
     write_text(
-        &mut update,
+        update,
         2,
         1,
         "second surface",
         TerminalStyle::new().with(StyleFlags::BOLD),
     );
     write_text(
-        &mut update,
+        update,
         2,
         2,
         "own texture + config",
         TerminalStyle::new().fg(TerminalColor::Rgb(180, 220, 255)),
     );
     write_text(
-        &mut update,
+        update,
         2,
         3,
         "▁▂▃▄▅▆▇█ ░▒▓█",
         TerminalStyle::new().fg(TerminalColor::LIGHT_BLUE),
     );
-    update.commit();
-    surface
 }
 
 /// Writes ASCII/BMP text one cell per `char`.
 pub fn write_text(
-    update: &mut bevy_terminal::SurfaceUpdate<'_>,
+    update: &mut SurfaceUpdate<'_>,
     x: u16,
     y: u16,
     text: &str,
@@ -248,7 +255,7 @@ pub fn write_text(
 
 /// Draws a light box-drawing frame.
 pub fn draw_box(
-    update: &mut bevy_terminal::SurfaceUpdate<'_>,
+    update: &mut SurfaceUpdate<'_>,
     x: u16,
     y: u16,
     width: u16,

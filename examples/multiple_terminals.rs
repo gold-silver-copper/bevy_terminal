@@ -1,15 +1,20 @@
 //! Displays two independently updated Ratatui terminals in one Bevy UI scene.
+//! The window is resizable: each terminal refits its grid to its half of the
+//! window at the renderer's measured cell size.
 
 #[path = "common/fonts.rs"]
 mod fonts;
 
 use std::time::Duration;
 
-use bevy::{prelude::*, window::WindowResolution};
-use bevy_terminal_ratatui::{
-    RatatuiBackend, RatatuiTerminalExt, TerminalPlugin, TerminalRenderConfig, TerminalRenderer,
-    TerminalSystems,
+use bevy::{
+    prelude::*,
+    window::{PrimaryWindow, WindowResolution},
 };
+use bevy_terminal_ratatui::prelude::{
+    TerminalPlugin, TerminalRenderConfig, TerminalSystems, TerminalTexture,
+};
+use bevy_terminal_ratatui::{RatatuiBackend, RatatuiTerminalExt, TerminalRenderer};
 use ratatui::{
     Terminal,
     layout::{Alignment, Constraint, Layout},
@@ -24,8 +29,12 @@ struct IndependentTerminals {
     right: Terminal<RatatuiBackend>,
     tick: u64,
     timer: Timer,
-    right_resized: bool,
 }
+
+const ROW_LEFT: f32 = 24.0;
+const ROW_TOP: f32 = 56.0;
+const ROW_GAP: f32 = 52.0;
+const ROW_BOTTOM_MARGIN: f32 = 24.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminals = IndependentTerminals {
@@ -33,7 +42,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         right: Terminal::new(RatatuiBackend::new(34, 12))?,
         tick: 0,
         timer: Timer::new(Duration::from_millis(250), TimerMode::Repeating),
-        right_resized: false,
     };
     redraw(&mut terminals)?;
     let left_surface = terminals.left.backend().surface();
@@ -44,18 +52,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         primary_window: Some(Window {
             title: "bevy_terminal_ratatui · multiple independent terminals".into(),
             resolution: WindowResolution::new(940, 430),
-            resizable: false,
             ..default()
         }),
         ..default()
     }));
     let fonts = fonts::load(&mut app);
     let config = fonts.configure(TerminalRenderConfig {
-        cell_size: Vec2::new(10.0, 18.0),
+        cell_size: Vec2::new(10.0, 18.0).into(),
         ..default()
     });
     app.insert_resource(fonts)
-        .add_plugins(TerminalPlugin::default())
+        .add_plugins(TerminalPlugin)
         .insert_resource(terminals)
         .insert_resource(PendingRight {
             surface: Some(right_surface),
@@ -70,9 +77,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     TerminalRow,
                     Node {
                         position_type: PositionType::Absolute,
-                        left: px(24.0),
-                        top: px(56.0),
-                        column_gap: px(52.0),
+                        left: px(ROW_LEFT),
+                        top: px(ROW_TOP),
+                        column_gap: px(ROW_GAP),
                         ..default()
                     },
                 ))
@@ -87,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .add_systems(
             Update,
-            (spawn_right_terminal, update_terminals).before(TerminalSystems::Sync),
+            (spawn_right_terminal, fit_to_window, update_terminals).before(TerminalSystems::Sync),
         )
         .run();
     Ok(())
@@ -101,7 +108,7 @@ struct TerminalRow;
 /// can be added while the app is running and participate in UI layout.
 #[derive(Resource)]
 struct PendingRight {
-    surface: Option<bevy_terminal_ratatui::TerminalSurface>,
+    surface: Option<bevy_terminal_ratatui::prelude::TerminalSurface>,
     config: TerminalRenderConfig,
 }
 
@@ -141,20 +148,50 @@ fn setup(mut commands: Commands, fonts: Res<fonts::ExampleFonts>) {
     ));
 }
 
+/// Each terminal takes half of the window width (minus margins and the gap)
+/// and the height below the heading, at its own measured cell size.
+fn fit_to_window(
+    mut terminals: ResMut<IndependentTerminals>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    textures: Query<(&TerminalRenderer, &TerminalTexture)>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let size = window.resolution.size();
+    let half = Vec2::new(
+        ((size.x - ROW_LEFT * 2.0 - ROW_GAP) / 2.0).max(1.0),
+        (size.y - ROW_TOP - ROW_BOTTOM_MARGIN).max(1.0),
+    );
+    let mut changed = false;
+    let IndependentTerminals { left, right, .. } = &mut *terminals;
+    for (renderer, texture) in &textures {
+        for terminal in [&mut *left, &mut *right] {
+            if renderer
+                .surface()
+                .shares_state_with(&terminal.backend().surface())
+            {
+                changed |= terminal.fit_to(texture, half);
+            }
+        }
+    }
+    if changed {
+        redraw(&mut terminals).expect("the in-memory backend is infallible");
+    }
+}
+
 fn update_terminals(time: Res<Time>, mut terminals: ResMut<IndependentTerminals>) {
     if !terminals.timer.tick(time.delta()).just_finished() {
         return;
     }
     terminals.tick = terminals.tick.wrapping_add(1);
-    if terminals.tick == 8 && !terminals.right_resized {
-        terminals.right.resize_grid(38, 14);
-        terminals.right_resized = true;
-    }
     redraw(&mut terminals).expect("the in-memory backend is infallible");
 }
 
 fn redraw(terminals: &mut IndependentTerminals) -> Result<(), Box<dyn std::error::Error>> {
     let tick = terminals.tick;
+    let left_size = terminals.left.size()?;
+    let right_size = terminals.right.size()?;
     terminals.left.draw(|frame| {
         let [heading, gauge, message] = Layout::vertical([
             Constraint::Length(4),
@@ -173,7 +210,11 @@ fn redraw(terminals: &mut IndependentTerminals) -> Result<(), Box<dyn std::error
                 Span::raw(format!("  revision {tick}")),
             ]))
             .alignment(Alignment::Center)
-            .block(Block::new().borders(Borders::ALL).title(" 42 × 16 ")),
+            .block(
+                Block::new()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} × {} ", left_size.width, left_size.height)),
+            ),
             heading,
         );
         frame.render_widget(
@@ -195,7 +236,6 @@ fn redraw(terminals: &mut IndependentTerminals) -> Result<(), Box<dyn std::error
         );
     })?;
 
-    let resized = terminals.right_resized;
     terminals.right.draw(|frame| {
         let events = (0..8).rev().map(|offset| {
             let revision = tick.saturating_sub(offset);
@@ -203,11 +243,10 @@ fn redraw(terminals: &mut IndependentTerminals) -> Result<(), Box<dyn std::error
         });
         frame.render_widget(
             List::new(events)
-                .block(Block::new().borders(Borders::ALL).title(if resized {
-                    " RIGHT · resized to 38 × 14 "
-                } else {
-                    " RIGHT · 34 × 12 "
-                }))
+                .block(Block::new().borders(Borders::ALL).title(format!(
+                    " RIGHT · {} × {} ",
+                    right_size.width, right_size.height
+                )))
                 .style(Style::new().fg(Color::LightYellow)),
             frame.area(),
         );

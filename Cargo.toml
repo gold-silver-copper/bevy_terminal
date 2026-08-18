@@ -4,7 +4,7 @@ resolver = "3"
 
 [package]
 name = "bevy_terminal_ratatui"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.95"
 description = "A Ratatui backend for the bevy_terminal Bevy terminal renderer"
@@ -21,8 +21,15 @@ exclude = [
     "!assets/fonts/jetbrains-mono",
 ]
 
+[features]
+default = ["ui", "system_fonts"]
+# Present terminals through Bevy UI `ImageNode`s (forwards `bevy_terminal/ui`).
+ui = ["bevy_terminal/ui"]
+# Discover system fonts (forwards `bevy_terminal/system_fonts`).
+system_fonts = ["bevy_terminal/system_fonts"]
+
 [dependencies]
-bevy_terminal = { version = "0.3.0", path = "crates/bevy_terminal" }
+bevy_terminal = { version = "0.5.0", path = "crates/bevy_terminal", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets", "scrolling-regions", "std", "underline-color"] }
 
 [dev-dependencies]

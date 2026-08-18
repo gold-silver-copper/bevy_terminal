@@ -35,9 +35,15 @@ use super::{
     PixelGeometry, ResolvedStyle, TerminalRenderConfig, TerminalRenderScale, cell_span,
     cursor_should_be_visible, text_font,
 };
-use crate::{GridSize, TerminalSnapshot, TerminalSurface};
+use crate::{
+    scene::{GridSize, TerminalSnapshot},
+    surface::TerminalSurface,
+};
 
-const TARGET_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
+/// The terminal texture format: the shader emits linear colors and the sRGB
+/// target encodes them, so the image is display-ready for UI, sprites and 3D
+/// materials and dark tones do not band in 8-bit storage.
+const TARGET_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
 const GLYPH_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
 const GLYPH_ATLAS_SIZE: u32 = 2048;
 
@@ -81,6 +87,9 @@ impl From<TerminalSurface> for Terminal {
 
 /// The renderer-owned terminal texture and its current dimensions.
 ///
+/// The image is `Rgba8UnormSrgb` (display-ready, straight alpha) and its
+/// handle is stable for the terminal's lifetime.
+///
 /// Attached to every [`Terminal`] entity by [`TerminalPlugin`] on the first
 /// update after it is spawned; [`TerminalReady`] is triggered on the entity at
 /// that moment. The image handle stays the same for the lifetime of the
@@ -95,35 +104,75 @@ pub struct TerminalTexture {
     pub logical_size: Vec2,
     /// Physical pixels per logical pixel used to rasterize `image`.
     pub raster_scale: f32,
-    /// Physical pixel size of one cell.
+    /// Effective logical size of one cell: the physical cell (whole pixels,
+    /// possibly grown to the font's line box — see [`super::FontSizing`])
+    /// divided by `raster_scale`.
     pub cell_size: Vec2,
     /// Effective logical font size (measured for [`super::FontSizing::FitCellWidth`]).
     pub font_size: f32,
 }
 
-/// Triggered once on a [`Terminal`] entity when its [`TerminalTexture`] has
-/// been allocated and can be presented or exported.
-#[derive(Clone, Debug, EntityEvent)]
-pub struct TerminalReady {
-    /// The terminal entity.
-    pub entity: Entity,
-    /// The texture handle (stable for the terminal's lifetime).
-    pub image: Handle<Image>,
-    /// The initial physical size.
-    pub size: UVec2,
+impl TerminalTexture {
+    /// Returns the grid that fits into `logical_size` (floor, at least 1×1)
+    /// at this terminal's current cell size.
+    #[must_use]
+    pub fn grid_for(&self, logical_size: Vec2) -> GridSize {
+        grid_for(logical_size, self.cell_size)
+    }
 }
 
-/// Counters for the most recent scene update of one [`Terminal`].
+/// Returns the grid that fits `logical_size` with cells of `cell_size`
+/// (floor, clamped to at least 1×1 and at most `u16::MAX`).
+#[must_use]
+pub fn grid_for(logical_size: Vec2, cell_size: Vec2) -> GridSize {
+    let cell = cell_size.max(Vec2::ONE);
+    let columns = (logical_size.x / cell.x)
+        .floor()
+        .clamp(1.0, f32::from(u16::MAX)) as u16;
+    let rows = (logical_size.y / cell.y)
+        .floor()
+        .clamp(1.0, f32::from(u16::MAX)) as u16;
+    GridSize::new(columns, rows)
+}
+
+/// Returns the grid that fills `window` with cells of `cell_size` (logical pixels).
+#[must_use]
+pub fn grid_for_window(window: &Window, cell_size: Vec2) -> GridSize {
+    grid_for(window.resolution.size(), cell_size)
+}
+
+/// Returns the physical-to-logical ratio of `window`'s actual framebuffer
+/// (at least 1.0), suitable for [`TerminalRenderScale::Fixed`] so the
+/// texture maps one-to-one onto physical pixels even when the reported scale
+/// factor and the real ratio disagree (mixed-DPI setups).
+#[must_use]
+pub fn raster_scale_for_window(window: &Window) -> f32 {
+    let logical = window.resolution.size().max(Vec2::ONE);
+    let physical = window.resolution.physical_size().as_vec2();
+    (physical.x / logical.x)
+        .min(physical.y / logical.y)
+        .max(1.0)
+}
+
+/// Triggered once on a [`Terminal`] entity when its [`TerminalTexture`] has
+/// been allocated at its measured size and can be presented or exported.
 ///
-/// `snapshot_ns`/`scene_ns` are only measured when
-/// [`TerminalPlugin::collect_timings`] is enabled (the default).
+/// This happens on the first sync after every configured font asset that is
+/// loaded has been registered with Bevy's font system (fonts that are still
+/// loading, or Bevy's optional default font, do not hold it back; a font that
+/// arrives later re-measures the terminal and may resize the texture in place
+/// — the handle never changes).
+#[derive(Clone, Debug, EntityEvent)]
+pub struct TerminalReady {
+    /// The terminal entity; read its [`TerminalTexture`] for the handle and size.
+    pub entity: Entity,
+}
+
+/// Counters for the most recent scene update of one [`Terminal`]; all zero on
+/// frames that produced no terminal work.
 #[derive(Clone, Copy, Debug, Default, Component)]
 #[non_exhaustive]
 pub struct TerminalStats {
-    /// Main-world synchronization frames.
-    pub sync_frames: u64,
-    /// Frames that produced no terminal work.
-    pub unchanged_frames: u64,
     /// Rows rebuilt into the latest payload.
     pub changed_rows: u32,
     /// Cells copied while updating the retained snapshot.
@@ -134,35 +183,27 @@ pub struct TerminalStats {
     pub glyph_quads: u32,
     /// Draw batches (one per glyph-atlas switch) in the latest payload.
     pub draw_batches: u32,
-    /// Shaped text sequences retained in the main-world glyph cache.
-    pub cached_shapes: u32,
     /// Shape-cache misses in the latest update.
     pub shape_misses: u32,
     /// Nanoseconds spent updating the retained terminal snapshot.
     pub snapshot_ns: u64,
     /// Nanoseconds spent generating the compact CPU scene.
     pub scene_ns: u64,
-    /// Vertex bytes written for the latest payload.
-    pub gpu_bytes_written: u64,
 }
 
 impl std::fmt::Display for TerminalStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "frames {} ({} unchanged) · rows {} · cells {} · quads {} solid + {} glyph in {} batches · shapes {} cached / {} misses · snapshot {} µs · scene {} µs · {} B",
-            self.sync_frames,
-            self.unchanged_frames,
+            "rows {} · cells {} · quads {} solid + {} glyph in {} batches · {} shape misses · snapshot {} µs · scene {} µs",
             self.changed_rows,
             self.snapshot_cells,
             self.solid_quads,
             self.glyph_quads,
             self.draw_batches,
-            self.cached_shapes,
             self.shape_misses,
             self.snapshot_ns / 1000,
             self.scene_ns / 1000,
-            self.gpu_bytes_written,
         )
     }
 }
@@ -173,41 +214,17 @@ impl std::fmt::Display for TerminalStats {
 /// Glyphs are shaped and rasterized by Bevy text. Each terminal is represented
 /// by compact GPU quad instances drawn into its own renderer-owned texture;
 /// GPU pipelines and scratch buffers are shared between terminals.
-#[derive(Clone, Copy, Debug)]
-pub struct TerminalPlugin {
-    /// Whether to measure `snapshot_ns`/`scene_ns` in [`TerminalStats`].
-    pub collect_timings: bool,
-}
-
-impl Default for TerminalPlugin {
-    fn default() -> Self {
-        Self {
-            collect_timings: true,
-        }
-    }
-}
-
-#[derive(Resource)]
-struct TerminalSettings {
-    collect_timings: bool,
-}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TerminalPlugin;
 
 impl Plugin for TerminalPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(TerminalSettings {
-            collect_timings: self.collect_timings,
-        })
-        .configure_sets(
+        app.add_systems(
             Update,
-            (super::TerminalSystems::Setup, super::TerminalSystems::Sync).chain(),
-        )
-        .add_systems(
-            Update,
-            initialize_terminals.in_set(super::TerminalSystems::Setup),
-        )
-        .add_systems(
-            Update,
-            sync_batch_terminals.in_set(super::TerminalSystems::Sync),
+            (
+                initialize_terminals.before(super::TerminalSystems::Sync),
+                sync_batch_terminals.in_set(super::TerminalSystems::Sync),
+            ),
         );
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
@@ -231,13 +248,57 @@ impl Plugin for TerminalPlugin {
 
 /// Everything the sync system touches on a terminal entity.
 type TerminalQuery<'w> = (
+    Entity,
     &'w Terminal,
     Ref<'w, TerminalRenderConfig>,
     &'w mut BatchMainState,
     &'w mut TerminalTexture,
     &'w mut TerminalStats,
-    Option<(&'w mut Node, &'w mut ImageNode)>,
+    UiNode<'w>,
 );
+
+/// The user-owned UI presentation of a terminal, when the `ui` feature is on
+/// and the entity has an `ImageNode`.
+#[cfg(feature = "ui")]
+type UiNode<'w> = Option<(&'w mut Node, &'w mut ImageNode)>;
+#[cfg(not(feature = "ui"))]
+type UiNode<'w> = ();
+
+/// The fetched item of [`UiNode`].
+#[cfg(feature = "ui")]
+type UiNodeItem<'w> = Option<(Mut<'w, Node>, Mut<'w, ImageNode>)>;
+#[cfg(not(feature = "ui"))]
+type UiNodeItem<'w> = ();
+
+/// Whether a terminal entity is presented through Bevy UI.
+#[cfg(feature = "ui")]
+type Presented = Has<ImageNode>;
+#[cfg(not(feature = "ui"))]
+type Presented = ();
+
+#[cfg(feature = "ui")]
+const fn is_presented(presented: bool) -> bool {
+    presented
+}
+#[cfg(not(feature = "ui"))]
+const fn is_presented((): ()) -> bool {
+    false
+}
+
+/// The UI scale resource, when the `ui` feature is on.
+#[cfg(feature = "ui")]
+type UiScaleRes<'w> = Option<Res<'w, UiScale>>;
+#[cfg(not(feature = "ui"))]
+type UiScaleRes<'w> = ();
+
+#[cfg(feature = "ui")]
+fn ui_scale_value(ui_scale: &UiScaleRes<'_>) -> f32 {
+    ui_scale.as_ref().map_or(1.0, |scale| scale.0)
+}
+#[cfg(not(feature = "ui"))]
+fn ui_scale_value((): &UiScaleRes<'_>) -> f32 {
+    1.0
+}
 
 /// Bevy's text resources, required for shaping and measurement.
 type TextResources<'w> = (
@@ -251,16 +312,13 @@ type TextResources<'w> = (
 
 fn initialize_terminals(
     mut commands: Commands,
-    added: Query<
-        (Entity, &Terminal, &TerminalRenderConfig, Has<ImageNode>),
-        Without<BatchMainState>,
-    >,
+    added: Query<(Entity, &Terminal, &TerminalRenderConfig, Presented), Without<BatchMainState>>,
     mut images: ResMut<Assets<Image>>,
 ) {
     for (entity, terminal, config, presented) in &added {
-        let raster_scale = resolve_raster_scale(config.render_scale, presented, None);
-        let font_size = super::effective_font_size(config, None);
-        let raster_config = physical_config(config, raster_scale, font_size);
+        let raster_scale = resolve_raster_scale(config.raster.scale, is_presented(presented), None);
+        let metrics = super::resolve_metrics(config, None);
+        let raster_config = physical_config(metrics, raster_scale);
         let logical_cell_size = raster_config.cell_size / raster_scale;
         terminal
             .surface
@@ -274,17 +332,12 @@ fn initialize_terminals(
                 size,
                 logical_size: size.as_vec2() / raster_scale,
                 raster_scale,
-                cell_size: raster_config.cell_size,
-                font_size,
+                cell_size: metrics.cell_size,
+                font_size: metrics.font_size,
             },
             BatchMainState::new(output.clone(), glyph_atlas, raster_scale, raster_config),
             TerminalStats::default(),
         ));
-        commands.trigger(TerminalReady {
-            entity,
-            image: output,
-            size,
-        });
     }
 }
 
@@ -337,6 +390,7 @@ fn make_glyph_atlas_image() -> Image {
 /// Sizes a user-owned UI node to the terminal's logical dimensions and points
 /// its image at the texture. Placement (`position_type`, `left`, `top`, or a
 /// parent layout) is left to the user.
+#[cfg(feature = "ui")]
 fn apply_ui_node(
     node: &mut Node,
     image_node: &mut ImageNode,
@@ -355,6 +409,30 @@ fn apply_ui_node(
     if image_node.image != *image {
         image_node.image = image.clone();
     }
+}
+
+#[cfg(feature = "ui")]
+fn present(ui: UiNodeItem<'_>, image: &Handle<Image>, size: UVec2, raster_scale: f32) -> bool {
+    match ui {
+        Some((mut node, mut image_node)) => {
+            apply_ui_node(&mut node, &mut image_node, image, size, raster_scale);
+            true
+        }
+        None => false,
+    }
+}
+#[cfg(not(feature = "ui"))]
+fn present((): UiNodeItem<'_>, _: &Handle<Image>, _: UVec2, _: f32) -> bool {
+    false
+}
+
+#[cfg(feature = "ui")]
+fn ui_present(ui: &UiNodeItem<'_>) -> bool {
+    ui.is_some()
+}
+#[cfg(not(feature = "ui"))]
+fn ui_present((): &UiNodeItem<'_>) -> bool {
+    false
 }
 
 fn resolve_raster_scale(
@@ -385,18 +463,330 @@ struct RasterMetrics {
     /// size stays fractional so a font can be sized to make its advance fill
     /// the cell exactly.
     font_size: f32,
+    /// Uniform vertical shift applied to every glyph, in whole physical
+    /// pixels, so the primary font's line box sits inside the cell (see
+    /// [`super::vertical_offset`]).
+    glyph_offset: f32,
 }
 
-fn physical_config(
-    config: &TerminalRenderConfig,
-    raster_scale: f32,
-    logical_font_size: f32,
-) -> RasterMetrics {
+fn physical_config(logical: super::LogicalMetrics, raster_scale: f32) -> RasterMetrics {
     RasterMetrics {
         scale: raster_scale,
-        cell_size: (config.cell_size * raster_scale).round().max(Vec2::ONE),
-        font_size: (logical_font_size * raster_scale).max(1.0),
+        cell_size: (logical.cell_size * raster_scale).round().max(Vec2::ONE),
+        font_size: (logical.font_size * raster_scale).max(1.0),
+        glyph_offset: 0.0,
     }
+}
+
+/// ASCII glyphs whose ink must stay inside a cell: descenders, ascenders and
+/// tall brackets. Measured for every configured face.
+const CORE_PROBE: &str = "gjpqy|[]{}()_";
+/// Accented capitals: kept inside the cell when the core box leaves room.
+const ACCENT_PROBE: &str = "\u{c5}\u{c9}\u{1eaa}";
+/// A full block: its box is the font's line box, which sizes the cell and is
+/// kept covering the cell so tiles stay seamless.
+const BLOCK_PROBE: &str = "\u{2588}";
+/// Upper bound on cell-height refinement rounds.
+const FIT_ROUNDS: usize = 3;
+
+/// Refines the physical metrics after the logical fit: sizes the font from the
+/// rounded physical cell width (so a fractional raster scale cannot open seams
+/// between advances), grows the cell height to the primary font's line box
+/// (measured on a full block glyph) and derives the vertical glyph offset from
+/// the measured block, core-ASCII and accent ink boxes.
+#[allow(clippy::too_many_arguments)]
+fn refine_metrics(
+    config: &TerminalRenderConfig,
+    measured_advance: Option<f32>,
+    mut raster: RasterMetrics,
+    fonts: &Assets<Font>,
+    images: &mut Assets<Image>,
+    text_pipeline: &mut TextPipeline,
+    font_atlas_set: &mut FontAtlasSet,
+    font_cx: &mut FontCx,
+    layout_cx: &mut LayoutCx,
+    scale_cx: &mut ScaleCx,
+) -> RasterMetrics {
+    if config.font_size == super::FontSizing::FitCellWidth
+        && let Some(advance) = measured_advance
+        && advance > 0.0
+    {
+        raster.font_size = (raster.cell_size.x * super::PROBE_FONT_SIZE / advance).max(1.0);
+    }
+    let requested_height = raster.cell_size.y;
+    // An explicit font size in an explicit cell is honored exactly; a font
+    // derived from the cell width or a font-driven cell gets a cell at least
+    // as tall as the font's line box.
+    let may_grow = config.font_size == super::FontSizing::FitCellWidth
+        || matches!(config.cell_size, super::CellSizing::FromFont { .. });
+    let mut block = None;
+    for _ in 0..FIT_ROUNDS {
+        // The block's fully opaque rows are what tiles seamlessly; its anti-aliased
+        // edge rows are excluded (falling back to the bitmap minus one row per side).
+        block = shape_boxes(
+            BLOCK_PROBE,
+            &ResolvedStyle::plain(),
+            config,
+            raster,
+            fonts,
+            images,
+            text_pipeline,
+            font_atlas_set,
+            font_cx,
+            layout_cx,
+            scale_cx,
+        )
+        .map(|(bitmap, opaque)| {
+            opaque.unwrap_or(super::GlyphBox {
+                top: bitmap.top + 1.0,
+                bottom: (bitmap.bottom - 1.0).max(bitmap.top + 1.0),
+            })
+        });
+        let height = super::fitted_cell_height(raster.cell_size.y, block);
+        if !may_grow || height == raster.cell_size.y {
+            break;
+        }
+        // The line box is centered in the cell-high line, so re-measure at the new height.
+        raster.cell_size.y = height;
+    }
+    if raster.cell_size.y != requested_height {
+        debug!(
+            "bevy_terminal: cell height grown from {}px to {}px to fit the font's line box",
+            requested_height, raster.cell_size.y
+        );
+    }
+    let mut boxes = [None, None];
+    for (probe, slot) in [CORE_PROBE, ACCENT_PROBE].into_iter().zip(&mut boxes) {
+        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+            if (bold && config.font.bold.is_none() && !config.font.synthesize)
+                || (italic && config.font.italic.is_none() && !config.font.synthesize)
+            {
+                continue;
+            }
+            let mut style = ResolvedStyle::plain();
+            style.bold = bold;
+            style.italic = italic;
+            let Some(measured) = shape_box(
+                probe,
+                &style,
+                config,
+                raster,
+                fonts,
+                images,
+                text_pipeline,
+                font_atlas_set,
+                font_cx,
+                layout_cx,
+                scale_cx,
+            ) else {
+                continue;
+            };
+            *slot = Some(slot.map_or(measured, |union: super::GlyphBox| union.union(measured)));
+        }
+    }
+    let [core, accents] = boxes;
+    raster.glyph_offset = super::vertical_offset(raster.cell_size.y, block, core, accents);
+    debug!(
+        "bevy_terminal: cell {}x{}px font {:.2}px block {:?} core {:?} accents {:?} offset {}",
+        raster.cell_size.x,
+        raster.cell_size.y,
+        raster.font_size,
+        block,
+        core,
+        accents,
+        raster.glyph_offset
+    );
+    raster
+}
+
+/// Shapes `text` exactly as [`cached_shape`] does and returns the vertical
+/// extent of its glyph bitmaps relative to the line box top.
+#[allow(clippy::too_many_arguments)]
+fn shape_box(
+    text: &str,
+    style: &ResolvedStyle,
+    config: &TerminalRenderConfig,
+    raster: RasterMetrics,
+    fonts: &Assets<Font>,
+    images: &mut Assets<Image>,
+    text_pipeline: &mut TextPipeline,
+    font_atlas_set: &mut FontAtlasSet,
+    font_cx: &mut FontCx,
+    layout_cx: &mut LayoutCx,
+    scale_cx: &mut ScaleCx,
+) -> Option<super::GlyphBox> {
+    shape_boxes(
+        text,
+        style,
+        config,
+        raster,
+        fonts,
+        images,
+        text_pipeline,
+        font_atlas_set,
+        font_cx,
+        layout_cx,
+        scale_cx,
+    )
+    .map(|(bitmap, _)| bitmap)
+}
+
+/// Like [`shape_box`], but also returns the rows of the run's bitmaps that are
+/// fully opaque across their width (the coverage a block glyph guarantees; its
+/// first and last bitmap rows are usually anti-aliased edges), when the atlas
+/// data is readable.
+#[allow(clippy::too_many_arguments)]
+fn shape_boxes(
+    text: &str,
+    style: &ResolvedStyle,
+    config: &TerminalRenderConfig,
+    raster: RasterMetrics,
+    fonts: &Assets<Font>,
+    images: &mut Assets<Image>,
+    text_pipeline: &mut TextPipeline,
+    font_atlas_set: &mut FontAtlasSet,
+    font_cx: &mut FontCx,
+    layout_cx: &mut LayoutCx,
+    scale_cx: &mut ScaleCx,
+) -> Option<(super::GlyphBox, Option<super::GlyphBox>)> {
+    let layout = shape_run(
+        text,
+        style,
+        config,
+        raster,
+        Vec2::splat(4096.0),
+        fonts,
+        images,
+        text_pipeline,
+        font_atlas_set,
+        font_cx,
+        layout_cx,
+        scale_cx,
+    );
+    let mut bitmap: Option<super::GlyphBox> = None;
+    let mut opaque: Option<super::GlyphBox> = None;
+    for glyph in &layout.glyphs {
+        let rect = glyph.atlas_info.rect;
+        let height = rect.size().y;
+        let top = super::snap(glyph.position.y - height * 0.5);
+        let glyph_box = super::GlyphBox {
+            top,
+            bottom: top + height,
+        };
+        bitmap = Some(bitmap.map_or(glyph_box, |b| b.union(glyph_box)));
+        if let Some(rows) = opaque_rows(images, glyph.atlas_info.texture, rect) {
+            let rows = super::GlyphBox {
+                top: top + rows.0 as f32,
+                bottom: top + rows.1 as f32,
+            };
+            opaque = Some(opaque.map_or(rows, |b| b.union(rows)));
+        }
+    }
+    bitmap.map(|bitmap| (bitmap, opaque))
+}
+
+/// Sum of alpha over each column of an atlas glyph (all `u32::MAX` when the
+/// atlas has no CPU data, so every column counts as inked).
+fn column_coverage(image: &Image, rect: Rect) -> Vec<u32> {
+    let width = rect.size().x.max(0.0) as usize;
+    let Some(data) = image.data.as_ref() else {
+        return vec![u32::MAX; width];
+    };
+    let atlas_width = image.texture_descriptor.size.width as usize;
+    let (x0, y0, y1) = (
+        rect.min.x as usize,
+        rect.min.y as usize,
+        rect.max.y as usize,
+    );
+    (0..width)
+        .map(|x| {
+            (y0..y1)
+                .map(|y| {
+                    data.get((y * atlas_width + x0 + x) * 4 + 3)
+                        .map_or(0, |alpha| u32::from(*alpha))
+                })
+                .sum()
+        })
+        .collect()
+}
+
+/// The half-open row range `[first, last)` of an atlas glyph whose alpha is
+/// fully opaque across the glyph's width; `None` if the atlas has no CPU data
+/// or no such row.
+fn opaque_rows(images: &Assets<Image>, texture: AssetId<Image>, rect: Rect) -> Option<(u32, u32)> {
+    let image = images.get(texture)?;
+    let data = image.data.as_ref()?;
+    let width = image.texture_descriptor.size.width as usize;
+    let (x0, x1) = (rect.min.x as usize, rect.max.x as usize);
+    let (y0, y1) = (rect.min.y as usize, rect.max.y as usize);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let row_opaque = |y: usize| {
+        (x0..x1).all(|x| {
+            data.get((y * width + x) * 4 + 3)
+                .is_some_and(|alpha| *alpha >= 250)
+        })
+    };
+    let first = (y0..y1).find(|y| row_opaque(*y))?;
+    let last = (first..y1).take_while(|y| row_opaque(*y)).last()?;
+    Some(((first - y0) as u32, (last + 1 - y0) as u32))
+}
+
+/// Shapes and rasterizes `text` in `style` at the physical metrics; the
+/// layout's glyphs are positioned inside a line box `raster.cell_size.y` tall.
+#[allow(clippy::too_many_arguments)]
+fn shape_run(
+    text: &str,
+    style: &ResolvedStyle,
+    config: &TerminalRenderConfig,
+    raster: RasterMetrics,
+    viewport: Vec2,
+    fonts: &Assets<Font>,
+    images: &mut Assets<Image>,
+    text_pipeline: &mut TextPipeline,
+    font_atlas_set: &mut FontAtlasSet,
+    font_cx: &mut FontCx,
+    layout_cx: &mut LayoutCx,
+    scale_cx: &mut ScaleCx,
+) -> TextLayoutInfo {
+    let font = text_font(&config.font, raster.font_size, style);
+    let mut computed = ComputedTextBlock::default();
+    let mut layout = TextLayoutInfo::default();
+    let shape_result = text_pipeline.update_buffer(
+        fonts,
+        std::iter::once((
+            Entity::PLACEHOLDER,
+            0,
+            text,
+            &font,
+            Color::WHITE,
+            LineHeight::Px(raster.cell_size.y),
+            LetterSpacing::default(),
+        )),
+        LineBreak::NoWrap,
+        Justify::Left,
+        TextBounds::UNBOUNDED,
+        1.0,
+        &mut computed,
+        font_cx,
+        layout_cx,
+        viewport,
+        20.0,
+    );
+    if shape_result.is_ok() {
+        let _ = text_pipeline.update_text_layout_info(
+            &mut layout,
+            font_atlas_set,
+            images,
+            &mut computed,
+            scale_cx,
+            TextBounds::UNBOUNDED,
+            Justify::Left,
+            config.raster.hinting,
+        );
+    }
+    layout
 }
 
 #[derive(Clone)]
@@ -406,6 +796,39 @@ struct CachedGlyph {
     size: Vec2,
     uv: Vec4,
     alpha_mask: bool,
+    /// Horizontal extent `[left, right)` of the bitmap's inked columns,
+    /// relative to the bitmap.
+    ink: (f32, f32),
+    /// Coverage (sum of alpha) of every bitmap column; used to fit a run wider
+    /// than its cell so that clipping drops the faintest columns.
+    columns: Vec<u32>,
+}
+
+impl CachedGlyph {
+    fn new(
+        texture: AssetId<Image>,
+        offset: Vec2,
+        size: Vec2,
+        uv: Vec4,
+        alpha_mask: bool,
+        columns: Vec<u32>,
+    ) -> Self {
+        let left = columns.iter().position(|c| *c > 0);
+        let right = columns.iter().rposition(|c| *c > 0);
+        let ink = match (left, right) {
+            (Some(left), Some(right)) => (left as f32, right as f32 + 1.0),
+            _ => (0.0, size.x),
+        };
+        Self {
+            texture,
+            offset,
+            size,
+            uv,
+            alpha_mask,
+            ink,
+            columns,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -573,10 +996,6 @@ impl ShapeCaches {
         index
     }
 
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
-
     fn clear(&mut self) {
         self.entries.clear();
         self.normal.clear();
@@ -593,12 +1012,14 @@ struct BatchMainState {
     font_ids: Vec<AssetId<Font>>,
     /// Whether every handle font above is registered with the font context.
     fonts_ready: bool,
+    /// Whether [`TerminalReady`] has been triggered for this terminal.
+    ready_sent: bool,
     raster_scale: f32,
     raster_config: RasterMetrics,
     /// Advance of the regular font at the probe size; `None` until measured.
     measured_advance: Option<f32>,
     /// Logical font size in use.
-    font_size: Option<f32>,
+    metrics: Option<super::LogicalMetrics>,
     last_snapshot: Option<TerminalSnapshot>,
     pending: Option<BatchScene>,
     shapes: ShapeCaches,
@@ -619,10 +1040,11 @@ impl BatchMainState {
             output,
             font_ids: Vec::new(),
             fonts_ready: false,
+            ready_sent: false,
             raster_scale,
             raster_config,
             measured_advance: None,
-            font_size: None,
+            metrics: None,
             last_snapshot: None,
             pending: None,
             shapes: ShapeCaches::default(),
@@ -639,6 +1061,10 @@ struct DrawBatch {
     texture: AssetId<Image>,
     start: u32,
     count: u32,
+    /// Replace the destination instead of alpha-blending over it. Used for
+    /// cell backgrounds so a translucent theme background does not accumulate
+    /// over stale texels when only some rows are repainted.
+    replace: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -684,13 +1110,13 @@ struct PendingBatchScenes(Vec<BatchScene>);
 
 #[allow(clippy::too_many_arguments)]
 fn sync_batch_terminals(
+    mut commands: Commands,
     mut terminals: Query<TerminalQuery>,
     text: Option<TextResources>,
-    settings: Res<TerminalSettings>,
     mut images: ResMut<Assets<Image>>,
     font_events: Option<MessageReader<AssetEvent<Font>>>,
     primary_window: Query<&Window, With<PrimaryWindow>>,
-    ui_scale: Option<Res<UiScale>>,
+    ui_scale: UiScaleRes,
     time: Option<Res<Time>>,
 ) {
     let Some((
@@ -706,9 +1132,16 @@ fn sync_batch_terminals(
             "bevy_terminal: Bevy's text resources are missing (add DefaultPlugins or TextPlugin); \
              terminals will not render"
         );
+        // Nothing will ever be measured; the allocated texture is as final as it gets.
+        for (entity, _, _, mut state, ..) in &mut terminals {
+            if !state.ready_sent {
+                state.ready_sent = true;
+                commands.trigger(TerminalReady { entity });
+            }
+        }
         return;
     };
-    let ui_scale = ui_scale.map_or(1.0, |scale| scale.0);
+    let ui_scale = ui_scale_value(&ui_scale);
     let window_scale = primary_window
         .iter()
         .next()
@@ -726,7 +1159,7 @@ fn sync_batch_terminals(
             | AssetEvent::LoadedWithDependencies { id } => id,
         })
         .collect();
-    for (terminal, config, mut state, mut output, mut stats, ui) in &mut terminals {
+    for (entity, terminal, config, mut state, mut output, mut stats, ui) in &mut terminals {
         let config_changed = config.is_changed();
         let face_ids = font_asset_ids(&config.font);
         // Handle fonts become usable only once Bevy registers them with the font
@@ -735,11 +1168,22 @@ fn sync_batch_terminals(
         let fonts_ready = face_ids
             .iter()
             .all(|id| fonts.get(*id).is_some_and(|font| !font.alias.is_empty()));
+        // Fonts that are not loaded at all (still loading, or Bevy's optional default
+        // font) do not hold `TerminalReady` back; registered fonts must be usable.
+        let fonts_settled = face_ids
+            .iter()
+            .all(|id| fonts.get(*id).is_none_or(|font| !font.alias.is_empty()));
         let fonts_changed = state.font_ids != face_ids
             || state.fonts_ready != fonts_ready
             || face_ids.iter().any(|id| changed_fonts.contains(id));
         state.font_ids = face_ids;
         state.fonts_ready = fonts_ready;
+        if fonts_settled && !state.ready_sent {
+            // The first sync with usable fonts settles the measured cell size, so the
+            // texture is now at its final size for this configuration.
+            state.ready_sent = true;
+            commands.trigger(TerminalReady { entity });
+        }
         sync_batch_terminal(
             terminal,
             &config,
@@ -747,7 +1191,6 @@ fn sync_batch_terminals(
             &mut state,
             &mut output,
             &mut stats,
-            settings.collect_timings,
             &fonts,
             fonts_changed,
             &mut images,
@@ -788,7 +1231,6 @@ fn sync_batch_terminal(
     state: &mut BatchMainState,
     output: &mut TerminalTexture,
     stats: &mut TerminalStats,
-    collect_timings: bool,
     fonts: &Assets<Font>,
     fonts_changed: bool,
     images: &mut Assets<Image>,
@@ -797,13 +1239,12 @@ fn sync_batch_terminal(
     font_cx: &mut FontCx,
     layout_cx: &mut LayoutCx,
     scale_cx: &mut ScaleCx,
-    ui: Option<(Mut<Node>, Mut<ImageNode>)>,
+    ui: UiNodeItem<'_>,
     window_scale: Option<f32>,
     elapsed: f32,
 ) {
     let surface = &terminal.surface;
-    let presented = ui.is_some();
-    stats.sync_frames = stats.sync_frames.wrapping_add(1);
+    let presented = ui_present(&ui);
     stats.changed_rows = 0;
     stats.snapshot_cells = 0;
     stats.solid_quads = 0;
@@ -812,9 +1253,8 @@ fn sync_batch_terminal(
     stats.shape_misses = 0;
     stats.snapshot_ns = 0;
     stats.scene_ns = 0;
-    stats.gpu_bytes_written = 0;
 
-    let raster_scale = resolve_raster_scale(config.render_scale, presented, window_scale);
+    let raster_scale = resolve_raster_scale(config.raster.scale, presented, window_scale);
     let scale_changed = state.raster_scale != raster_scale;
     if config.font_size == super::FontSizing::FitCellWidth
         && (state.measured_advance.is_none() || config_changed || fonts_changed)
@@ -822,16 +1262,27 @@ fn sync_batch_terminal(
         state.measured_advance =
             super::measure_advance(&config.font, fonts, text_pipeline, font_cx, layout_cx);
     }
-    let font_size = super::effective_font_size(config, state.measured_advance);
-    let font_size_changed = state.font_size != Some(font_size);
-    state.font_size = Some(font_size);
+    let metrics = super::resolve_metrics(config, state.measured_advance);
+    let font_size_changed = state.metrics != Some(metrics);
+    state.metrics = Some(metrics);
     let text_assets_changed = config_changed || fonts_changed || scale_changed || font_size_changed;
-    if config_changed || scale_changed || font_size_changed {
-        state.raster_config = physical_config(config, raster_scale, font_size);
+    if text_assets_changed {
+        state.raster_config = refine_metrics(
+            config,
+            state.measured_advance,
+            physical_config(metrics, raster_scale),
+            fonts,
+            images,
+            text_pipeline,
+            font_atlas_set,
+            font_cx,
+            layout_cx,
+            scale_cx,
+        );
         let logical_cell_size = state.raster_config.cell_size / raster_scale;
         surface.set_cell_size(logical_cell_size.x, logical_cell_size.y);
-        output.font_size = font_size;
-        output.cell_size = state.raster_config.cell_size;
+        output.font_size = state.raster_config.font_size / raster_scale;
+        output.cell_size = logical_cell_size;
     }
     if text_assets_changed {
         state.shapes.clear();
@@ -842,12 +1293,10 @@ fn sync_batch_terminal(
     if state.last_snapshot.as_ref().is_some_and(|snapshot| {
         snapshot.revision() == surface.revision() && !text_assets_changed && !blink_changed
     }) {
-        stats.unchanged_frames = stats.unchanged_frames.wrapping_add(1);
-        stats.cached_shapes = u32::try_from(state.shapes.len()).unwrap_or(u32::MAX);
         return;
     }
 
-    let snapshot_start = collect_timings.then(Instant::now);
+    let snapshot_start = Instant::now();
     let (snapshot, changed_rows, mut full) = if let Some(mut snapshot) = state.last_snapshot.take()
     {
         let old_cursor = snapshot.cursor_position();
@@ -875,12 +1324,12 @@ fn sync_batch_terminal(
         (snapshot, rows, true)
     };
 
-    stats.snapshot_ns = snapshot_start.map_or(0, |start| {
-        start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
-    });
+    stats.snapshot_ns = snapshot_start
+        .elapsed()
+        .as_nanos()
+        .min(u128::from(u64::MAX)) as u64;
     if changed_rows.is_empty() && !full && !blink_changed {
         state.last_snapshot = Some(snapshot);
-        stats.unchanged_frames = stats.unchanged_frames.wrapping_add(1);
         return;
     }
     // Extraction can be delayed while a newly created output or glyph atlas reaches the render
@@ -902,24 +1351,21 @@ fn sync_batch_terminal(
         }
         output.size = new_size;
     }
-    output.logical_size = new_size.as_vec2() / raster_scale;
-    output.raster_scale = raster_scale;
-    if let Some((mut node, mut image_node)) = ui {
-        apply_ui_node(
-            &mut node,
-            &mut image_node,
-            &state.output,
-            new_size,
-            raster_scale,
-        );
+    // Write the texture component only when something changed so `Changed<TerminalTexture>`
+    // observers are not woken on every synced frame.
+    let logical_size = new_size.as_vec2() / raster_scale;
+    if output.logical_size != logical_size || output.raster_scale != raster_scale {
+        output.logical_size = logical_size;
+        output.raster_scale = raster_scale;
     }
+    present(ui, &state.output, new_size, raster_scale);
 
     let rows: Vec<u16> = if full {
         (0..snapshot.size().height).collect()
     } else {
         changed_rows
     };
-    let scene_start = collect_timings.then(Instant::now);
+    let scene_start = Instant::now();
     let destination = state.output.id();
     let BatchMainState {
         raster_config,
@@ -952,17 +1398,13 @@ fn sync_batch_terminal(
     // resize or shape miss can create/modify an Image this frame, so those scenes use the later
     // submission point after RenderAsset preparation instead.
     scene.requires_prepared_assets = output_resized || stats.shape_misses != 0;
-    stats.scene_ns = scene_start.map_or(0, |start| {
-        start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
-    });
+    stats.scene_ns = scene_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
     stats.changed_rows = u32::try_from(rows.len()).unwrap_or(u32::MAX);
     stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
     let vertex_bytes = scene.instances.len() * 48;
-    stats.gpu_bytes_written = vertex_bytes as u64;
     if vertex_bytes > state.vertex_capacity {
         state.vertex_capacity = vertex_bytes.next_power_of_two();
     }
-    stats.cached_shapes = u32::try_from(state.shapes.len()).unwrap_or(u32::MAX);
     state.pending = Some(scene);
     state.last_snapshot = Some(snapshot);
     state.blink = blink;
@@ -1089,10 +1531,14 @@ fn build_scene(
                     width: width as f32 * raster.cell_size.x,
                     height: raster.cell_size.y,
                 };
+                let shift = Vec2::new(
+                    fit_horizontally(shaped, cell_bounds.width),
+                    raster.glyph_offset,
+                );
                 for glyph in shaped {
                     let geometry = PixelGeometry {
-                        x: anchor.x + glyph.offset.x,
-                        y: anchor.y + glyph.offset.y,
+                        x: anchor.x + glyph.offset.x + shift.x,
+                        y: anchor.y + glyph.offset.y + shift.y,
                         width: glyph.size.x,
                         height: glyph.size.y,
                     };
@@ -1179,7 +1625,13 @@ fn build_scene(
     let mut instances = Vec::with_capacity(stats.solid_quads as usize + stats.glyph_quads as usize);
     let mut batches = Vec::new();
     let primary_atlas = glyph_atlas.image.id();
-    append_batch(&mut instances, &mut batches, primary_atlas, backgrounds);
+    append_batch_with(
+        &mut instances,
+        &mut batches,
+        primary_atlas,
+        backgrounds,
+        true,
+    );
     append_batch(&mut instances, &mut batches, primary_atlas, foregrounds);
     append_glyph_batches(&mut instances, &mut batches, glyphs);
     append_batch(&mut instances, &mut batches, primary_atlas, decorations);
@@ -1217,42 +1669,20 @@ fn cached_shape<'a>(
         return &shapes.entries[index];
     }
     stats.shape_misses = stats.shape_misses.saturating_add(1);
-    let font = text_font(&config.font, raster.font_size, style);
-    let mut computed = ComputedTextBlock::default();
-    let mut layout = TextLayoutInfo::default();
-    let shape_result = text_pipeline.update_buffer(
+    let layout = shape_run(
+        text,
+        style,
+        config,
+        raster,
+        viewport,
         fonts,
-        std::iter::once((
-            Entity::PLACEHOLDER,
-            0,
-            text,
-            &font,
-            Color::WHITE,
-            LineHeight::Px(raster.cell_size.y),
-            LetterSpacing::default(),
-        )),
-        LineBreak::NoWrap,
-        Justify::Left,
-        TextBounds::UNBOUNDED,
-        1.0,
-        &mut computed,
+        images,
+        text_pipeline,
+        font_atlas_set,
         font_cx,
         layout_cx,
-        viewport,
-        20.0,
+        scale_cx,
     );
-    if shape_result.is_ok() {
-        let _ = text_pipeline.update_text_layout_info(
-            &mut layout,
-            font_atlas_set,
-            images,
-            &mut computed,
-            scale_cx,
-            TextBounds::UNBOUNDED,
-            Justify::Left,
-            config.font_hinting,
-        );
-    }
     let cached = layout
         .glyphs
         .into_iter()
@@ -1261,6 +1691,7 @@ fn cached_shape<'a>(
             let atlas_size = atlas.texture_descriptor.size;
             let rect = glyph.atlas_info.rect;
             let size = rect.size();
+            let columns = column_coverage(atlas, rect);
             let source = SourceGlyph {
                 texture: glyph.atlas_info.texture,
                 x: rect.min.x as u32,
@@ -1279,20 +1710,85 @@ fn cached_shape<'a>(
                 .map_or((source.texture, source_uv), |uv| {
                     (glyph_atlas.image.id(), uv)
                 });
-            Some(CachedGlyph {
+            Some(CachedGlyph::new(
                 texture,
                 // Atlas texels must land on physical pixel boundaries. Bevy's layout positions
                 // can retain fractional shaping offsets even though the glyph bitmap is an
                 // integer-sized raster image.
-                offset: (glyph.position - size * 0.5).round(),
+                (glyph.position - size * 0.5).map(super::snap),
                 size,
                 uv,
-                alpha_mask: glyph.atlas_info.is_alpha_mask,
-            })
+                glyph.atlas_info.is_alpha_mask,
+                columns,
+            ))
         })
         .collect::<Vec<_>>();
     let index = shapes.insert(style, text, cached);
     &shapes.entries[index]
+}
+
+/// Horizontal shift (whole pixels) that keeps a run's bitmaps inside the
+/// `span` it is drawn in: a run that fits but overhangs one side (an italic
+/// or a negative bearing) is pushed inside; a run inside the span keeps its
+/// bearings; a run wider than the span (a fallback family with a larger
+/// advance, a wide italic) is placed so the clipped columns carry the least
+/// coverage — centered when the sides are equally faint.
+fn fit_horizontally(glyphs: &[CachedGlyph], span: f32) -> f32 {
+    let mut left = f32::INFINITY;
+    let mut right = f32::NEG_INFINITY;
+    for glyph in glyphs {
+        left = left.min(glyph.offset.x + glyph.ink.0);
+        right = right.max(glyph.offset.x + glyph.ink.1);
+    }
+    if right <= left {
+        0.0
+    } else if right - left <= span {
+        if left < 0.0 {
+            super::snap(-left)
+        } else if right > span {
+            super::snap(span - right)
+        } else {
+            0.0
+        }
+    } else {
+        // Try every whole shift that keeps the run covering the span and keep the
+        // one retaining the most coverage; ties resolve toward the centered shift.
+        let centered = super::snap((span - (right - left)) / 2.0 - left);
+        let lowest = super::snap(span - right);
+        let highest = super::snap(-left);
+        let retained = |shift: f32| -> u64 {
+            glyphs
+                .iter()
+                .map(|glyph| {
+                    let start = glyph.offset.x + shift;
+                    glyph
+                        .columns
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| {
+                            let x = start + *index as f32;
+                            x >= 0.0 && x < span
+                        })
+                        .map(|(_, coverage)| u64::from(*coverage))
+                        .sum::<u64>()
+                })
+                .sum()
+        };
+        let mut best = centered;
+        let mut best_retained = retained(centered);
+        let mut shift = lowest;
+        while shift <= highest {
+            let value = retained(shift);
+            if value > best_retained
+                || (value == best_retained && (shift - centered).abs() < (best - centered).abs())
+            {
+                best = shift;
+                best_retained = value;
+            }
+            shift += 1.0;
+        }
+        best
+    }
 }
 
 fn solid_quad(geometry: PixelGeometry, color: Color, target: Vec2) -> QuadInstance {
@@ -1358,10 +1854,10 @@ fn clip_glyph_to_cell(
 }
 
 fn snap_geometry(geometry: PixelGeometry) -> PixelGeometry {
-    let left = geometry.x.round();
-    let top = geometry.y.round();
-    let right = (geometry.x + geometry.width).round().max(left);
-    let bottom = (geometry.y + geometry.height).round().max(top);
+    let left = super::snap(geometry.x);
+    let top = super::snap(geometry.y);
+    let right = super::snap(geometry.x + geometry.width).max(left);
+    let bottom = super::snap(geometry.y + geometry.height).max(top);
     PixelGeometry {
         x: left,
         y: top,
@@ -1384,6 +1880,16 @@ fn append_batch(
     texture: AssetId<Image>,
     quads: &[QuadInstance],
 ) {
+    append_batch_with(instances, batches, texture, quads, false);
+}
+
+fn append_batch_with(
+    instances: &mut Vec<QuadInstance>,
+    batches: &mut Vec<DrawBatch>,
+    texture: AssetId<Image>,
+    quads: &[QuadInstance],
+    replace: bool,
+) {
     if quads.is_empty() {
         return;
     }
@@ -1392,6 +1898,7 @@ fn append_batch(
     instances.extend_from_slice(quads);
     if let Some(previous) = batches.last_mut()
         && previous.texture == texture
+        && previous.replace == replace
         && previous.start + previous.count == start
     {
         previous.count += count;
@@ -1400,6 +1907,7 @@ fn append_batch(
             texture,
             start,
             count,
+            replace,
         });
     }
 }
@@ -1443,6 +1951,7 @@ struct BatchGpuState {
     vertex_capacity: u64,
     texture_layout: Option<BindGroupLayout>,
     pipeline: Option<RenderPipeline>,
+    replace_pipeline: Option<RenderPipeline>,
     texture_bind_groups: HashMap<AssetId<Image>, (TextureId, BindGroup)>,
 }
 
@@ -1478,8 +1987,11 @@ impl BatchGpuState {
             "fragment",
             BlendState::ALPHA_BLENDING,
         );
+        let replace_pipeline =
+            create_pipeline(device, &[&texture_layout], "fragment", BlendState::REPLACE);
         self.texture_layout = Some(texture_layout);
         self.pipeline = Some(pipeline);
+        self.replace_pipeline = Some(replace_pipeline);
     }
 }
 
@@ -1683,8 +2195,17 @@ fn render_batch_scenes(
         });
         if let Some(vertex_buffer) = &gpu.vertex_buffer {
             pass.set_vertex_buffer(0, *vertex_buffer.slice(..));
-            pass.set_pipeline(gpu.pipeline.as_ref().expect("pipeline was initialized"));
+            let mut current_replace = None;
             for batch in &scene.batches {
+                if current_replace != Some(batch.replace) {
+                    current_replace = Some(batch.replace);
+                    let pipeline = if batch.replace {
+                        &gpu.replace_pipeline
+                    } else {
+                        &gpu.pipeline
+                    };
+                    pass.set_pipeline(pipeline.as_ref().expect("pipeline was initialized"));
+                }
                 pass.set_bind_group(
                     0,
                     gpu.texture_bind_groups
@@ -1749,7 +2270,7 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::GridSize;
+    use crate::scene::{GridSize, TerminalCell};
 
     fn quad(value: f32) -> QuadInstance {
         QuadInstance {
@@ -1762,7 +2283,7 @@ mod tests {
     fn test_app() -> App {
         let mut app = App::new();
         app.init_resource::<Assets<Image>>()
-            .add_plugins(TerminalPlugin::default());
+            .add_plugins(TerminalPlugin);
         app
     }
 
@@ -1792,7 +2313,7 @@ mod tests {
             .spawn((
                 Terminal::new(second_surface.clone()),
                 TerminalRenderConfig {
-                    cell_size: Vec2::new(11.0, 20.0),
+                    cell_size: Vec2::new(11.0, 20.0).into(),
                     ..default()
                 },
             ))
@@ -1848,7 +2369,7 @@ mod tests {
             MinimalPlugins,
             bevy::asset::AssetPlugin::default(),
             bevy::text::TextPlugin,
-            TerminalPlugin::default(),
+            TerminalPlugin,
         ))
         .init_asset::<Image>();
         app
@@ -1857,7 +2378,7 @@ mod tests {
     fn write_text(surface: &TerminalSurface, text: &str) {
         surface.update(|update| {
             for (column, symbol) in text.chars().enumerate() {
-                update.set_cell((column as u16, 0), &crate::TerminalCell::from(symbol));
+                update.set_cell((column as u16, 0), &TerminalCell::from(symbol));
             }
         });
     }
@@ -1876,16 +2397,27 @@ mod tests {
         for _ in 0..4 {
             app.update();
         }
-        let before = *app.world().get::<TerminalStats>(entity).unwrap();
-        assert!(before.cached_shapes > 0, "{before}");
+        // Redrawing the same content re-uses the shape cache: no misses, no rows.
+        write_text(&surface, "hello!");
+        app.update();
+        let idle = *app.world().get::<TerminalStats>(entity).unwrap();
+        assert_eq!(idle.shape_misses, 0, "{idle}");
+        assert_eq!(idle.changed_rows, 0);
+        // Rewriting a cell with a new glyph shapes only that glyph.
+        surface.update(|u| {
+            u.set_cell((0, 0), &TerminalCell::new("Z"));
+        });
+        app.update();
+        let one = *app.world().get::<TerminalStats>(entity).unwrap();
+        assert_eq!(one.shape_misses, 1, "{one}");
+        assert_eq!(one.changed_rows, 1);
 
         // Touching an unrelated component and redrawing identical content: the
         // shape cache survives and nothing is rebuilt.
         app.world_mut().get_mut::<Unrelated>(entity).unwrap().0 += 1;
-        write_text(&surface, "hello!");
+        write_text(&surface, "Zello!");
         app.update();
         let after_unrelated = *app.world().get::<TerminalStats>(entity).unwrap();
-        assert_eq!(after_unrelated.cached_shapes, before.cached_shapes);
         assert_eq!(after_unrelated.shape_misses, 0);
         assert_eq!(after_unrelated.changed_rows, 0);
 
@@ -1893,18 +2425,16 @@ mod tests {
         app.world_mut()
             .get_mut::<TerminalRenderConfig>(entity)
             .unwrap()
-            .cell_size = Vec2::new(12.0, 22.0);
+            .cell_size = Vec2::new(12.0, 22.0).into();
         app.update();
         let after_config = *app.world().get::<TerminalStats>(entity).unwrap();
         assert!(after_config.shape_misses > 0, "{after_config}");
         assert_eq!(after_config.changed_rows, 1);
-        assert_eq!(
-            app.world()
-                .get::<TerminalTexture>(entity)
-                .unwrap()
-                .cell_size,
-            Vec2::new(12.0, 22.0)
-        );
+        // The font is sized to the 12 px width; the requested 22 px height is a
+        // minimum that grows to the (default) font's line box.
+        let size = app.world().get::<TerminalTexture>(entity).unwrap().size;
+        assert_eq!(size.x, 72);
+        assert!(size.y >= 22, "{size:?}");
     }
 
     #[test]
@@ -1917,7 +2447,7 @@ mod tests {
             .spawn((
                 Terminal::new(surface.clone()),
                 TerminalRenderConfig {
-                    cell_size: Vec2::new(10.0, 20.0),
+                    cell_size: Vec2::new(10.0, 20.0).into(),
                     ..default()
                 },
                 ImageNode::default(),
@@ -1974,16 +2504,179 @@ mod tests {
             app.update();
         }
         let baseline = *app.world().get::<TerminalStats>(entity).unwrap();
-        assert!(baseline.cached_shapes > 0);
-        // Adding a font this terminal does not use must not clear its caches.
+        assert_eq!(baseline.shape_misses, 0, "{baseline}");
+        // Adding a font this terminal does not use must not clear its caches:
+        // the next redraw of the same text shapes nothing.
         app.world_mut()
             .resource_mut::<Assets<Font>>()
             .add(Font::from_bytes(Vec::new()));
         app.update();
+        write_text(&surface, "abcd");
         app.update();
         let after = *app.world().get::<TerminalStats>(entity).unwrap();
-        assert_eq!(after.cached_shapes, baseline.cached_shapes);
-        assert_eq!(after.shape_misses, 0);
+        assert_eq!(after.shape_misses, 0, "{after}");
+        assert_eq!(after.changed_rows, 0);
+    }
+
+    #[test]
+    fn font_driven_cells_measure_the_embedded_font() {
+        let mut app = text_app();
+        let regular = app
+            .world_mut()
+            .resource_mut::<Assets<Font>>()
+            .add(Font::from_bytes(
+                include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")
+                    .to_vec(),
+            ));
+        let surface = TerminalSurface::new((4, 1));
+        write_text(&surface, "abcd");
+        let entity = app
+            .world_mut()
+            .spawn((
+                Terminal::new(surface.clone()),
+                TerminalRenderConfig {
+                    cell_size: super::super::CellSizing::FROM_FONT,
+                    font_size: super::super::FontSizing::Px(20.0),
+                    font: super::super::FontFaces::regular(regular),
+                    ..default()
+                },
+            ))
+            .id();
+        for _ in 0..4 {
+            app.update();
+        }
+        let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+        // JetBrains Mono's advance is 0.6 em: 12 px wide at 20 px. The 1.2 line
+        // height (24 px) is shorter than the font's line box (the full block's
+        // 26 fully covered rows), so the cell grows to show the whole box.
+        assert!(
+            (texture.cell_size.x - 12.0).abs() < 0.05,
+            "{:?}",
+            texture.cell_size
+        );
+        assert!(
+            (texture.cell_size.y - 26.0).abs() < 0.05,
+            "{:?}",
+            texture.cell_size
+        );
+        assert_eq!(texture.size, UVec2::new(48, 26));
+        assert_eq!(
+            texture.grid_for(Vec2::new(125.0, 60.0)),
+            GridSize::new(10, 2)
+        );
+
+        // Zoom: a larger font grows the cell and the texture (same handle).
+        let handle = texture.image.clone();
+        app.world_mut()
+            .get_mut::<TerminalRenderConfig>(entity)
+            .unwrap()
+            .font_size = super::super::FontSizing::Px(30.0);
+        app.update();
+        let zoomed = app.world().get::<TerminalTexture>(entity).unwrap();
+        assert!((zoomed.cell_size.x - 18.0).abs() < 0.05);
+        // 30 px: 18 px advance, block box 39 px (> 1.2 × 30 = 36).
+        assert_eq!(zoomed.size, UVec2::new(72, 39));
+        assert_eq!(zoomed.image, handle);
+    }
+
+    fn glyph(offset_x: f32, columns: &[u32]) -> CachedGlyph {
+        CachedGlyph::new(
+            AssetId::default(),
+            Vec2::new(offset_x, 0.0),
+            Vec2::new(columns.len() as f32, 10.0),
+            Vec4::ZERO,
+            true,
+            columns.to_vec(),
+        )
+    }
+
+    #[test]
+    fn horizontal_fit_pushes_overhang_inside_and_centers_overflow() {
+        // Inside the span: bearings are kept.
+        assert_eq!(fit_horizontally(&[glyph(2.0, &[9, 9, 9])], 11.0), 0.0);
+        // Overhanging left (an italic): pushed right by the overhang.
+        assert_eq!(fit_horizontally(&[glyph(-2.0, &[9; 8])], 11.0), 2.0);
+        // Overhanging right: pushed left.
+        assert_eq!(fit_horizontally(&[glyph(6.0, &[9; 8])], 11.0), -3.0);
+        // Leading transparent columns do not count as ink.
+        assert_eq!(fit_horizontally(&[glyph(-2.0, &[0, 0, 9, 9])], 11.0), 0.0);
+        // Wider than the span with symmetric coverage: centered.
+        assert_eq!(fit_horizontally(&[glyph(0.0, &[9; 15])], 11.0), -2.0);
+        // Wider than the span with a faint left column: the faint side is clipped.
+        let mut columns = vec![255; 12];
+        columns[0] = 3;
+        assert_eq!(fit_horizontally(&[glyph(0.0, &columns)], 11.0), -1.0);
+        columns.reverse();
+        assert_eq!(fit_horizontally(&[glyph(0.0, &columns)], 11.0), 0.0);
+        // Blank runs never shift.
+        assert_eq!(fit_horizontally(&[glyph(3.0, &[0, 0])], 11.0), 0.0);
+    }
+
+    #[test]
+    fn snapping_and_clipping_keep_glyphs_that_fit_inside_their_cell() {
+        let cell = PixelGeometry {
+            x: 22.0,
+            y: 40.0,
+            width: 11.0,
+            height: 20.0,
+        };
+        // A glyph that fits mathematically survives snapping intact.
+        let glyph = PixelGeometry {
+            x: 22.0,
+            y: 40.0,
+            width: 11.0,
+            height: 20.0,
+        };
+        let (clipped, _) = clip_glyph_to_cell(glyph, Vec4::new(0.0, 0.0, 1.0, 1.0), cell).unwrap();
+        let snapped = snap_geometry(clipped);
+        assert_eq!(
+            (snapped.x, snapped.y, snapped.width, snapped.height),
+            (22.0, 40.0, 11.0, 20.0)
+        );
+        // A glyph a pixel below the cell loses exactly that pixel row and its UVs.
+        let glyph = PixelGeometry {
+            x: 22.0,
+            y: 41.0,
+            width: 11.0,
+            height: 20.0,
+        };
+        let (clipped, uv) = clip_glyph_to_cell(glyph, Vec4::new(0.0, 0.0, 1.0, 1.0), cell).unwrap();
+        assert_eq!(clipped.height, 19.0);
+        assert!((uv.w - 0.95).abs() < 1e-6, "{uv:?}");
+        // Halves snap consistently: a rectangle at .5 keeps its size.
+        let snapped = snap_geometry(PixelGeometry {
+            x: 0.5,
+            y: -0.5,
+            width: 4.0,
+            height: 4.0,
+        });
+        assert_eq!(
+            (snapped.x, snapped.y, snapped.width, snapped.height),
+            (1.0, 0.0, 4.0, 4.0)
+        );
+    }
+
+    #[test]
+    fn grid_and_scale_helpers() {
+        assert_eq!(
+            grid_for(Vec2::new(805.0, 245.0), Vec2::new(10.0, 20.0)),
+            GridSize::new(80, 12)
+        );
+        assert_eq!(
+            grid_for(Vec2::ZERO, Vec2::new(10.0, 20.0)),
+            GridSize::new(1, 1)
+        );
+        let mut window = Window::default();
+        window.resolution.set_scale_factor(2.0);
+        window.resolution.set(1200.0, 800.0);
+        assert_eq!(window.resolution.size(), Vec2::new(1200.0, 800.0));
+        assert_eq!(
+            grid_for_window(&window, Vec2::new(10.0, 20.0)),
+            GridSize::new(120, 40)
+        );
+        assert!((raster_scale_for_window(&window) - 2.0).abs() < 1e-4);
+        window.resolution.set_scale_factor(0.5);
+        assert!((raster_scale_for_window(&window) - 1.0).abs() < 1e-4);
     }
 
     #[test]
@@ -1992,8 +2685,11 @@ mod tests {
         struct Ready(Vec<(Entity, UVec2)>);
         let mut app = test_app();
         app.init_resource::<Ready>().add_observer(
-            |ready: On<TerminalReady>, mut seen: ResMut<Ready>| {
-                seen.0.push((ready.entity, ready.size));
+            |ready: On<TerminalReady>,
+             mut seen: ResMut<Ready>,
+             textures: Query<&TerminalTexture>| {
+                let size = textures.get(ready.entity).map_or(UVec2::ZERO, |t| t.size);
+                seen.0.push((ready.entity, size));
             },
         );
         let entity = app
@@ -2040,8 +2736,8 @@ mod tests {
         assert_eq!(node.top, px(8.0));
         assert_eq!(image_node.image, handle);
         let stats = TerminalStats::default();
-        assert_eq!(stats.sync_frames, 0);
-        assert!(stats.to_string().contains("frames 0"));
+        assert_eq!(stats.changed_rows, 0);
+        assert!(stats.to_string().contains("rows 0"));
     }
 
     #[test]
@@ -2098,11 +2794,13 @@ mod tests {
 
     #[test]
     fn physical_metrics_and_geometry_are_pixel_aligned() {
-        let config = TerminalRenderConfig {
-            cell_size: Vec2::new(10.8, 19.6),
-            ..default()
-        };
-        let physical = physical_config(&config, 2.0, 17.6);
+        let physical = physical_config(
+            super::super::LogicalMetrics {
+                font_size: 17.6,
+                cell_size: Vec2::new(10.8, 19.6),
+            },
+            2.0,
+        );
         assert_eq!(physical.cell_size, Vec2::new(22.0, 39.0));
         assert!((physical.font_size - 35.2).abs() < 1e-4);
 

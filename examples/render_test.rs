@@ -10,6 +10,10 @@
 //! headlessly instead, and `--font <index|dir>` (or `RENDER_TEST_FONT`) to
 //! pick the initial font family.
 //!
+//! Pass `--transparent` to render the terminal with a 60 % translucent
+//! background over a colored window clear color (a check for straight-alpha
+//! compositing of the sRGB texture).
+//!
 //! Press `Space`/`Tab` (or `Shift+Tab` to go back) to cycle through the vendored
 //! font families under `assets/fonts/`, so glyph coverage and metrics can be
 //! compared per font; the current family is shown in the first line and the
@@ -18,12 +22,17 @@
 #[allow(dead_code)]
 mod common;
 
-use bevy::{prelude::*, render::RenderPlugin, window::WindowResolution};
-use bevy_image_export::ImageExportPlugin;
-use bevy_terminal_ratatui::{
-    CursorConfig, FontFaces, RatatuiBackend, TerminalPlugin, TerminalRenderConfig,
-    TerminalRenderScale, TerminalRenderer,
+use bevy::{
+    prelude::*,
+    render::RenderPlugin,
+    window::{PrimaryWindow, WindowResolution},
 };
+use bevy_image_export::ImageExportPlugin;
+use bevy_terminal_ratatui::prelude::{
+    CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalRenderConfig,
+    TerminalRenderScale, TerminalSystems, TerminalTexture, TerminalTheme,
+};
+use bevy_terminal_ratatui::{RatatuiBackend, TerminalRenderer};
 use ratatui::{
     Terminal,
     layout::Position,
@@ -181,6 +190,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let export = std::env::var_os("RENDER_TEST_EXPORT").is_some()
         || args.iter().any(|argument| argument == "--export");
+    let transparent = args.iter().any(|argument| argument == "--transparent");
     let font_argument = args
         .iter()
         .position(|argument| argument == "--font")
@@ -190,12 +200,24 @@ fn main() {
     let surface = backend.surface();
     let mut terminal = Terminal::new(backend).expect("the in-memory backend is infallible");
     draw_render_test(&mut terminal, FAMILIES[0].0);
-    let config = TerminalRenderConfig {
-        cell_size: CELL,
-        render_scale: if export {
-            TerminalRenderScale::Fixed(1.0)
+    let theme = TerminalTheme {
+        background: if transparent {
+            bevy::color::Color::srgba(0.05, 0.05, 0.1, 0.6)
         } else {
-            TerminalRenderScale::Automatic
+            TerminalTheme::default().background
+        },
+        ..default()
+    };
+    let config = TerminalRenderConfig {
+        theme,
+        cell_size: CELL.into(),
+        raster: RasterConfig {
+            scale: if export {
+                TerminalRenderScale::Fixed(1.0)
+            } else {
+                TerminalRenderScale::Automatic
+            },
+            ..default()
         },
         cursor: CursorConfig {
             blink_hz: if export { None } else { Some(1.0) },
@@ -230,7 +252,6 @@ fn main() {
             primary_window: Some(Window {
                 title: "bevy_terminal_ratatui · render test".into(),
                 resolution: WindowResolution::new(width, height),
-                resizable: false,
                 ..default()
             }),
             ..default()
@@ -252,12 +273,11 @@ fn main() {
     families[initial].apply(&mut config);
     draw_render_test(&mut terminal, families[initial].name);
     let output_dir = format!("target/render-test/{}", FAMILIES[initial].1);
-    app.add_plugins(TerminalPlugin::default())
-        .insert_resource(FontCycle {
-            families,
-            current: initial,
-            terminal,
-        });
+    app.add_plugins(TerminalPlugin).insert_resource(FontCycle {
+        families,
+        current: initial,
+        terminal,
+    });
     if export {
         common::export::export_terminals_on_ready(&mut app, output_dir);
         app.add_plugins(export_plugin)
@@ -271,6 +291,9 @@ fn main() {
             .run();
         export_threads.finish();
     } else {
+        if transparent {
+            app.insert_resource(ClearColor(bevy::color::Color::srgb(0.35, 0.1, 0.4)));
+        }
         app.add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(Camera2d);
             commands.spawn(common::app::ui_terminal(
@@ -279,8 +302,28 @@ fn main() {
                 Vec2::splat(MARGIN),
             ));
         })
-        .add_systems(Update, cycle_fonts)
+        .add_systems(
+            Update,
+            (cycle_fonts, fit_to_window).before(TerminalSystems::Sync),
+        )
         .run();
+    }
+}
+
+/// Refits the grid to the (resizable) window; the scene is laid out for
+/// 132×62 cells and is cropped in smaller windows.
+fn fit_to_window(
+    mut cycle: ResMut<FontCycle>,
+    textures: Query<&TerminalTexture>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+) {
+    let FontCycle {
+        families,
+        current,
+        terminal,
+    } = &mut *cycle;
+    if common::app::fit_grid_to_window(terminal, &textures, &windows, MARGIN) {
+        draw_render_test(terminal, families[*current].name);
     }
 }
 

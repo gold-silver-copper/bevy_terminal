@@ -12,7 +12,8 @@ mod interaction;
 mod state;
 mod support;
 
-use bevy_terminal_ratatui::{RatatuiBackend, TerminalSurface};
+use bevy_terminal_ratatui::RatatuiBackend;
+use bevy_terminal_ratatui::prelude::TerminalSurface;
 use ratatui::{Frame, Terminal};
 
 pub const COLUMNS: u16 = 100;
@@ -307,22 +308,19 @@ pub fn redraw_interactive_surface(
     // the surface from another system or thread between backend calls.
     let snapshot = rendered_surface.snapshot();
     let width = usize::from(snapshot.size().width);
-    let mut destination = surface.begin_update();
-    destination.resize((COLUMNS, ROWS));
-    destination.set_cells(
-        snapshot
-            .cells()
-            .iter()
-            .enumerate()
-            .map(|(index, cell)| ((index % width) as u16, (index / width) as u16, cell)),
-    );
+    surface.update(|destination| {
+        destination.resize((COLUMNS, ROWS));
+        for (index, cell) in snapshot.cells().iter().enumerate() {
+            destination.set_cell(((index % width) as u16, (index / width) as u16), cell);
+        }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
-    use bevy_terminal_ratatui::StyleFlags;
+    use bevy_terminal_ratatui::prelude::StyleFlags;
 
     use super::*;
 
@@ -514,7 +512,7 @@ mod tests {
                 .iter()
             .filter(|cell| {
                 cell.symbol() == "█"
-                    && matches!(cell.style.foreground, bevy_terminal_ratatui::TerminalColor::Rgb(red, 0, 0) if red > 0)
+                    && matches!(cell.style.foreground, bevy_terminal_ratatui::prelude::TerminalColor::Rgb(red, 0, 0) if red > 0)
             })
             .count();
 

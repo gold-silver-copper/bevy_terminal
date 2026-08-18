@@ -1,4 +1,6 @@
-//! Thread-safe retained terminal surface with transactional updates.
+//! The thread-safe retained surface producers write into and renderers read
+//! from. Every write goes through [`TerminalSurface::update`], which takes the
+//! lock once and publishes at most one new revision per call.
 
 use std::{
     ops::Range,
@@ -11,7 +13,7 @@ use crate::scene::{CellOccupancy, CellPosition, GridSize, TerminalCell, Terminal
 
 /// A cheap, thread-safe handle to a retained terminal surface.
 ///
-/// Producers write through [`TerminalSurface::begin_update`]. The renderer
+/// Producers write through [`TerminalSurface::update`]. The renderer
 /// plugin reads incremental snapshots from the same handle in a Bevy system, so
 /// producing a frame never requires access to the Bevy world.
 #[derive(Clone)]
@@ -29,7 +31,7 @@ impl TerminalSurface {
             shared: Arc::new(Mutex::new(SurfaceState {
                 size,
                 cells: vec![TerminalCell::EMPTY; size.area()],
-                cursor_position: CellPosition::ORIGIN,
+                cursor_position: CellPosition::new(0, 0),
                 cursor_visible: false,
                 cell_size: None,
                 pixel_size: UVec2::ZERO,
@@ -60,7 +62,7 @@ impl TerminalSurface {
 
     /// Returns whether both handles refer to the same terminal surface.
     ///
-    /// This is useful when associating a [`crate::Terminal`] query result with one of several
+    /// This is useful when associating a [`crate::render::Terminal`] query result with one of several
     /// surface handles owned by the application.
     #[must_use]
     pub fn shares_state_with(&self, other: &Self) -> bool {
@@ -70,13 +72,13 @@ impl TerminalSurface {
     /// Applies a batched update and returns whether a new revision was
     /// published.
     ///
-    /// This is the recommended way to write to a surface: the lock is taken
-    /// once, every change made through the [`SurfaceUpdate`] is published
-    /// together as at most one new revision, and nothing is published if no
-    /// cell, cursor or size actually changed.
+    /// This is the only way to write to a surface: the lock is taken once,
+    /// every change made through the [`SurfaceUpdate`] is published together
+    /// as at most one new revision, and nothing is published if no cell,
+    /// cursor or size actually changed.
     ///
     /// ```
-    /// # use bevy_terminal::{TerminalSurface, TerminalCell};
+    /// # use bevy_terminal::prelude::{TerminalSurface, TerminalCell};
     /// let surface = TerminalSurface::new((4, 1));
     /// let changed = surface.update(|update| {
     ///     update.set_cell((0, 0), &TerminalCell::new("A"));
@@ -86,24 +88,12 @@ impl TerminalSurface {
     /// assert!(changed);
     /// ```
     pub fn update(&self, f: impl FnOnce(&mut SurfaceUpdate<'_>)) -> bool {
-        let mut update = self.begin_update();
-        f(&mut update);
-        update.commit()
-    }
-
-    /// Starts a batched update and returns its guard.
-    ///
-    /// The surface lock is held for the lifetime of the guard, so all changes
-    /// made through it are published together as at most one new revision when
-    /// the guard is committed or dropped. Nothing is published if no cell,
-    /// cursor or size actually changed. Keep the guard short-lived: holding it
-    /// across frames blocks the renderer. Prefer [`TerminalSurface::update`]
-    /// unless a producer needs to interleave other work with the update.
-    pub fn begin_update(&self) -> SurfaceUpdate<'_> {
-        SurfaceUpdate {
+        let mut update = SurfaceUpdate {
             state: self.lock(),
             changed: false,
-        }
+        };
+        f(&mut update);
+        update.finish()
     }
 
     /// Brings `snapshot` up to date by copying only the cells changed since it
@@ -168,7 +158,7 @@ impl TerminalSurface {
     /// Sets the logical-pixel dimensions of one cell.
     ///
     /// The renderer calls this from its render configuration so producers can
-    /// report pixel metrics through [`TerminalSurface::metrics`].
+    /// report pixel metrics through [`TerminalSurface::pixel_size`].
     pub(crate) fn set_cell_size(&self, width: f32, height: f32) {
         let mut state = self.lock();
         let cell_size = Some(Vec2::new(width.max(0.0), height.max(0.0)));
@@ -180,15 +170,12 @@ impl TerminalSurface {
         }
     }
 
-    /// Returns the grid size together with the renderer-derived pixel metrics.
+    /// Returns the logical pixel size of the surface once a renderer has
+    /// configured the cell size, `None` before that.
     #[must_use]
-    pub fn metrics(&self) -> SurfaceMetrics {
+    pub fn pixel_size(&self) -> Option<UVec2> {
         let state = self.lock();
-        SurfaceMetrics {
-            size: state.size,
-            cell_size: state.cell_size,
-            pixel_size: state.pixel_size,
-        }
+        state.cell_size.map(|_| state.pixel_size)
     }
 
     fn lock(&self) -> MutexGuard<'_, SurfaceState> {
@@ -196,18 +183,6 @@ impl TerminalSurface {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-}
-
-/// Logical grid and pixel metrics of a surface.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct SurfaceMetrics {
-    /// Grid size in cells.
-    pub size: GridSize,
-    /// Logical pixel size of one cell, once a renderer has configured it.
-    pub cell_size: Option<Vec2>,
-    /// Logical pixel size of the whole surface, zero until a renderer has
-    /// configured the cell size.
-    pub pixel_size: UVec2,
 }
 
 /// The result of `TerminalSurface::update_snapshot`.
@@ -350,12 +325,11 @@ fn pixel_dimension(cells: u16, cell_size: f32) -> u32 {
     }
 }
 
-/// A batched surface update holding the surface lock.
+/// The batched update passed to [`TerminalSurface::update`].
 ///
-/// Every mutation returns whether it changed the retained state. Dropping or
-/// [committing](SurfaceUpdate::commit) the guard publishes one new revision if
-/// anything changed and none otherwise.
-#[must_use = "an update publishes its changes when it is committed or dropped"]
+/// Every mutation returns whether it changed the retained state; the update
+/// publishes one new revision when the closure returns if anything changed and
+/// none otherwise. Positions outside the grid are ignored.
 pub struct SurfaceUpdate<'a> {
     state: MutexGuard<'a, SurfaceState>,
     changed: bool,
@@ -366,20 +340,6 @@ impl SurfaceUpdate<'_> {
     #[must_use]
     pub fn size(&self) -> GridSize {
         self.state.size
-    }
-
-    /// Returns whether `position` lies inside the grid.
-    #[must_use]
-    pub fn contains(&self, position: impl Into<CellPosition>) -> bool {
-        self.state.size.contains(position.into())
-    }
-
-    /// Returns the retained cell at `position`, or `None` outside the grid.
-    #[must_use]
-    pub fn cell(&self, position: impl Into<CellPosition>) -> Option<&TerminalCell> {
-        let position = position.into();
-        self.contains(position)
-            .then(|| &self.state.cells[self.state.index(position.x, position.y)])
     }
 
     /// Returns the cursor position.
@@ -394,12 +354,6 @@ impl SurfaceUpdate<'_> {
         self.state.cursor_visible
     }
 
-    /// Returns whether this update has changed anything so far.
-    #[must_use]
-    pub const fn has_changes(&self) -> bool {
-        self.changed
-    }
-
     /// Writes `cell` at `position`; positions outside the grid are ignored.
     ///
     /// A [`CellOccupancy::Wide`] anchor also writes explicit continuation
@@ -408,7 +362,7 @@ impl SurfaceUpdate<'_> {
     /// longer belong to an anchor, so stale continuations cannot survive.
     pub fn set_cell(&mut self, position: impl Into<CellPosition>, cell: &TerminalCell) -> bool {
         let CellPosition { x, y } = position.into();
-        if !self.contains((x, y)) {
+        if !self.state.size.contains((x, y)) {
             return false;
         }
         let state = &mut *self.state;
@@ -437,18 +391,6 @@ impl SurfaceUpdate<'_> {
             }
         }
         self.changed |= changed;
-        changed
-    }
-
-    /// Writes an iterator of `(x, y, cell)` triples through [`Self::set_cell`].
-    pub fn set_cells<'c, I>(&mut self, cells: I) -> bool
-    where
-        I: IntoIterator<Item = (u16, u16, &'c TerminalCell)>,
-    {
-        let mut changed = false;
-        for (x, y, cell) in cells {
-            changed |= self.set_cell((x, y), cell);
-        }
         changed
     }
 
@@ -556,14 +498,6 @@ impl SurfaceUpdate<'_> {
         changed
     }
 
-    /// Publishes the update, returning whether a new revision was created.
-    ///
-    /// Dropping the guard publishes too; [`TerminalSurface::update`] returns
-    /// this same value for its closure.
-    pub fn commit(mut self) -> bool {
-        self.finish()
-    }
-
     fn finish(&mut self) -> bool {
         if self.changed {
             self.state.touch();
@@ -592,52 +526,47 @@ impl SurfaceUpdate<'_> {
     }
 }
 
-impl Drop for SurfaceUpdate<'_> {
-    fn drop(&mut self) {
-        self.finish();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::scene::{StyleFlags, TerminalColor, TerminalStyle};
 
     fn fill(surface: &TerminalSurface, text: &str, width: u16) {
-        let mut update = surface.begin_update();
-        for (index, symbol) in text.chars().enumerate() {
-            let cell = TerminalCell::new(&symbol.to_string());
-            update.set_cell(((index as u16) % width, (index as u16) / width), &cell);
-        }
-        update.commit();
+        surface.update(|update| {
+            for (index, symbol) in text.chars().enumerate() {
+                let cell = TerminalCell::new(&symbol.to_string());
+                update.set_cell(((index as u16) % width, (index as u16) / width), &cell);
+            }
+        });
     }
 
     #[test]
-    fn transactions_publish_at_most_one_revision_and_none_when_unchanged() {
+    fn updates_publish_at_most_one_revision_and_none_when_unchanged() {
         let surface = TerminalSurface::new((3, 2));
         let initial = surface.revision();
-        {
-            let mut update = surface.begin_update();
+        let published = surface.update(|update| {
             update.set_cell((0, 0), &TerminalCell::EMPTY);
             update.set_cursor_position((0, 0));
             update.set_cursor_visible(false);
             update.clear();
             update.resize((3, 2));
-            assert!(!update.has_changes());
-        }
+        });
+        assert!(!published);
         assert_eq!(surface.revision(), initial);
 
-        let mut update = surface.begin_update();
-        assert!(update.set_cell((0, 0), &TerminalCell::new("A")));
-        assert!(update.set_cell((1, 0), &TerminalCell::new("B")));
-        assert!(update.set_cursor_position((1, 1)));
-        assert!(update.set_cursor_visible(true));
-        assert!(update.commit());
+        let published = surface.update(|update| {
+            assert!(update.set_cell((0, 0), &TerminalCell::new("A")));
+            assert!(update.set_cell((1, 0), &TerminalCell::new("B")));
+            assert!(update.set_cursor_position((1, 1)));
+            assert!(update.set_cursor_visible(true));
+        });
+        assert!(published);
         assert_eq!(surface.revision(), initial + 1);
 
-        let mut update = surface.begin_update();
-        assert!(!update.set_cell((0, 0), &TerminalCell::new("A")));
-        assert!(!update.commit());
+        let published = surface.update(|update| {
+            assert!(!update.set_cell((0, 0), &TerminalCell::new("A")));
+        });
+        assert!(!published);
         assert_eq!(surface.revision(), initial + 1);
     }
 
@@ -649,10 +578,10 @@ mod tests {
                 .fg(TerminalColor::RED)
                 .with(StyleFlags::BOLD),
         );
-        let mut update = surface.begin_update();
-        update.set_cell((1, 0), &cell);
-        assert!(!update.set_cell((99, 99), &cell));
-        drop(update);
+        surface.update(|update| {
+            update.set_cell((1, 0), &cell);
+            assert!(!update.set_cell((99, 99), &cell));
+        });
 
         let snapshot = surface.snapshot();
         assert_eq!(snapshot[(1, 0)], cell);
@@ -664,7 +593,9 @@ mod tests {
         let surface = TerminalSurface::new((4, 3));
         let mut snapshot = surface.snapshot();
         let changed = TerminalCell::new("X");
-        surface.begin_update().set_cell((2, 1), &changed);
+        surface.update(|u| {
+            u.set_cell((2, 1), &changed);
+        });
 
         let delta = surface.update_snapshot(&mut snapshot);
         assert_eq!(delta.changed_cells, 1);
@@ -673,14 +604,18 @@ mod tests {
         assert_eq!(snapshot[(2, 1)], changed);
         assert_eq!(snapshot.revision(), surface.revision());
 
-        surface.begin_update().set_cursor_position((3, 2));
+        surface.update(|u| {
+            u.set_cursor_position((3, 2));
+        });
         let cursor_delta = surface.update_snapshot(&mut snapshot);
         assert_eq!(cursor_delta.changed_cells, 0);
         assert!(cursor_delta.changed_rows.is_empty());
         assert!(cursor_delta.cursor_position_changed);
         assert!(!cursor_delta.cursor_visibility_changed);
 
-        surface.begin_update().resize((2, 2));
+        surface.update(|u| {
+            u.resize((2, 2));
+        });
         let resized = surface.update_snapshot(&mut snapshot);
         assert!(resized.resized);
         assert_eq!(resized.changed_cells, 4);
@@ -693,7 +628,9 @@ mod tests {
         let surface = TerminalSurface::new((4, 1));
         let wide =
             TerminalCell::wide("界", 2).with_style(TerminalStyle::new().bg(TerminalColor::BLUE));
-        surface.begin_update().set_cell((1, 0), &wide);
+        surface.update(|u| {
+            u.set_cell((1, 0), &wide);
+        });
         let snapshot = surface.snapshot();
         assert_eq!(snapshot[(1, 0)].symbol(), "界");
         assert_eq!(snapshot[(1, 0)].columns(), 2);
@@ -701,15 +638,17 @@ mod tests {
         assert_eq!(snapshot[(2, 0)].style, wide.style);
         assert_eq!(snapshot[(3, 0)], TerminalCell::EMPTY);
 
-        surface
-            .begin_update()
-            .set_cell((1, 0), &TerminalCell::new("a"));
+        surface.update(|u| {
+            u.set_cell((1, 0), &TerminalCell::new("a"));
+        });
         let snapshot = surface.snapshot();
         assert_eq!(snapshot[(1, 0)].symbol(), "a");
         assert_eq!(snapshot[(2, 0)], TerminalCell::EMPTY);
 
         // A wide glyph at the last column is clipped to the row.
-        surface.begin_update().set_cell((3, 0), &wide);
+        surface.update(|u| {
+            u.set_cell((3, 0), &wide);
+        });
         assert_eq!(surface.snapshot()[(3, 0)].columns(), 2);
     }
 
@@ -717,8 +656,12 @@ mod tests {
     fn clear_range_clamps_and_rejects_reversed_ranges() {
         let surface = TerminalSurface::new((4, 2));
         fill(&surface, "ABCDEFGH", 4);
-        assert!(!surface.begin_update().clear_range((2, 0), (1, 0)));
-        assert!(surface.begin_update().clear_range((3, 1), (99, 99)));
+        assert!(!surface.update(|u| {
+            u.clear_range((2, 0), (1, 0));
+        }));
+        assert!(surface.update(|u| {
+            u.clear_range((3, 1), (99, 99));
+        }));
         assert_eq!(surface.snapshot()[(3, 1)], TerminalCell::EMPTY);
         assert_eq!(surface.snapshot()[(2, 1)].symbol(), "G");
         assert!(surface.update(|update| {
@@ -734,7 +677,9 @@ mod tests {
     fn clear_operations_follow_row_major_semantics() {
         let surface = TerminalSurface::new((4, 2));
         fill(&surface, "ABCDEFGH", 4);
-        surface.begin_update().clear_range((1, 0), (3, 0));
+        surface.update(|u| {
+            u.clear_range((1, 0), (3, 0));
+        });
         let snapshot = surface.snapshot();
         assert_eq!(snapshot[(0, 0)].symbol(), "A");
         assert_eq!(snapshot[(1, 0)], TerminalCell::EMPTY);
@@ -742,23 +687,33 @@ mod tests {
         assert_eq!(snapshot[(0, 1)].symbol(), "E");
 
         fill(&surface, "ABCDEFGH", 4);
-        surface
-            .begin_update()
-            .clear_range((1, 0), (u16::MAX, u16::MAX));
+        surface.update(|u| {
+            u.clear_range((1, 0), (u16::MAX, u16::MAX));
+        });
         assert_eq!(surface.snapshot()[(0, 0)].symbol(), "A");
         assert_eq!(surface.snapshot()[(0, 1)], TerminalCell::EMPTY);
 
         fill(&surface, "ABCDEFGH", 4);
-        surface.begin_update().clear_range((0, 0), (1, 1));
+        surface.update(|u| {
+            u.clear_range((0, 0), (1, 1));
+        });
         assert_eq!(surface.snapshot()[(1, 1)], TerminalCell::EMPTY);
         assert_eq!(surface.snapshot()[(2, 1)].symbol(), "G");
 
-        surface.begin_update().clear_row(1);
+        surface.update(|u| {
+            u.clear_row(1);
+        });
         assert_eq!(surface.snapshot()[(2, 1)], TerminalCell::EMPTY);
-        assert!(!surface.begin_update().clear_row(5));
-        assert!(!surface.begin_update().clear());
+        assert!(!surface.update(|u| {
+            u.clear_row(5);
+        }));
+        assert!(!surface.update(|u| {
+            u.clear();
+        }));
         fill(&surface, "ABCDEFGH", 4);
-        assert!(surface.begin_update().clear());
+        assert!(surface.update(|u| {
+            u.clear();
+        }));
         assert_eq!(surface.snapshot().cells(), vec![TerminalCell::EMPTY; 8]);
     }
 
@@ -766,20 +721,28 @@ mod tests {
     fn scroll_regions_move_and_clear_rows() {
         let surface = TerminalSurface::new((2, 3));
         fill(&surface, "AABBCC", 2);
-        surface.begin_update().scroll_up(0..3, 1);
+        surface.update(|u| {
+            u.scroll_up(0..3, 1);
+        });
         let up = surface.snapshot();
         assert_eq!(up[(0, 0)].symbol(), "B");
         assert_eq!(up[(0, 1)].symbol(), "C");
         assert_eq!(up[(0, 2)], TerminalCell::EMPTY);
 
-        surface.begin_update().scroll_down(0..3, 1);
+        surface.update(|u| {
+            u.scroll_down(0..3, 1);
+        });
         let down = surface.snapshot();
         assert_eq!(down[(0, 0)], TerminalCell::EMPTY);
         assert_eq!(down[(0, 1)].symbol(), "B");
         assert_eq!(down[(0, 2)].symbol(), "C");
 
-        assert!(!surface.begin_update().scroll_up(0..3, 0));
-        assert!(surface.begin_update().scroll_up(1..3, 5));
+        assert!(!surface.update(|u| {
+            u.scroll_up(0..3, 0);
+        }));
+        assert!(surface.update(|u| {
+            u.scroll_up(1..3, 5);
+        }));
         assert_eq!(surface.snapshot()[(0, 1)], TerminalCell::EMPTY);
     }
 
@@ -787,8 +750,12 @@ mod tests {
     fn resize_preserves_the_two_dimensional_overlap_and_reports_metrics() {
         let surface = TerminalSurface::new((4, 3));
         fill(&surface, "AAAABBBBCCCC", 4);
-        surface.begin_update().set_cursor_position((3, 2));
-        surface.begin_update().resize((2, 3));
+        surface.update(|u| {
+            u.set_cursor_position((3, 2));
+        });
+        surface.update(|u| {
+            u.resize((2, 3));
+        });
         let snapshot = surface.snapshot();
         assert_eq!(snapshot.size(), GridSize::new(2, 3));
         assert_eq!(snapshot[(0, 0)].symbol(), "A");
@@ -796,11 +763,10 @@ mod tests {
         assert_eq!(snapshot[(0, 2)].symbol(), "C");
         assert_eq!(snapshot.cursor_position(), CellPosition::new(1, 2));
 
+        assert_eq!(surface.pixel_size(), None);
         surface.set_cell_size(10.8, 20.0);
-        let metrics = surface.metrics();
-        assert_eq!(metrics.size, GridSize::new(2, 3));
-        assert_eq!(metrics.pixel_size, UVec2::new(22, 60));
-        assert_eq!(metrics.cell_size, Some(Vec2::new(10.8, 20.0)));
+        assert_eq!(surface.size(), GridSize::new(2, 3));
+        assert_eq!(surface.pixel_size(), Some(UVec2::new(22, 60)));
     }
 
     #[test]

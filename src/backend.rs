@@ -1,7 +1,9 @@
 use std::{convert::Infallible, ops::Range};
 
-use bevy_terminal::{
-    GridSize, StyleFlags, TerminalCell, TerminalColor, TerminalStyle, TerminalSurface,
+use bevy_terminal::bevy::math::Vec2;
+use bevy_terminal::prelude::{
+    GridSize, StyleFlags, Terminal, TerminalCell, TerminalColor, TerminalStyle, TerminalSurface,
+    TerminalTexture,
 };
 use ratatui::{
     backend::{Backend, ClearType, WindowSize},
@@ -10,11 +12,11 @@ use ratatui::{
     style::{Color, Modifier},
 };
 
-/// A Ratatui [`Backend`] that writes into a [`bevy_terminal::TerminalSurface`].
+/// A Ratatui [`Backend`] that writes into a [`TerminalSurface`].
 ///
 /// Clone [`Self::surface`] before moving the backend into a
-/// [`ratatui::Terminal`], then spawn a [`bevy_terminal::Terminal`] entity for
-/// that handle (after adding [`bevy_terminal::TerminalPlugin`]).
+/// [`ratatui::Terminal`], then spawn a [`Terminal`] entity for
+/// that handle (after adding [`bevy_terminal::prelude::TerminalPlugin`]).
 pub struct RatatuiBackend {
     surface: TerminalSurface,
 }
@@ -34,8 +36,8 @@ impl RatatuiBackend {
         Self { surface }
     }
 
-    /// Creates a backend together with the [`bevy_terminal::Terminal`]
-    /// component that renders it — the common one-call setup:
+    /// Creates a backend together with the [`Terminal`] component that renders
+    /// it — the common one-call setup:
     ///
     /// ```
     /// # use bevy_terminal_ratatui::RatatuiBackend;
@@ -45,16 +47,10 @@ impl RatatuiBackend {
     /// # let _ = (terminal, renderer);
     /// ```
     #[must_use]
-    pub fn with_terminal(columns: u16, rows: u16) -> (Self, bevy_terminal::Terminal) {
+    pub fn with_terminal(columns: u16, rows: u16) -> (Self, Terminal) {
         let backend = Self::new(columns, rows);
-        let renderer = bevy_terminal::Terminal::new(backend.surface());
+        let renderer = Terminal::new(backend.surface());
         (backend, renderer)
-    }
-
-    /// Returns a [`bevy_terminal::Terminal`] component rendering this backend's surface.
-    #[must_use]
-    pub fn terminal(&self) -> bevy_terminal::Terminal {
-        bevy_terminal::Terminal::new(self.surface())
     }
 
     /// Returns a handle that can be passed to the Bevy renderer plugin.
@@ -64,12 +60,12 @@ impl RatatuiBackend {
     }
 
     /// Resizes the terminal grid, preserving cells in the overlapping area.
-    ///
-    /// When this backend is owned by a [`ratatui::Terminal`], prefer
-    /// [`RatatuiTerminalExt::resize_grid`], which also makes Ratatui's own
+    /// Use [`RatatuiTerminalExt::resize_grid`], which also makes Ratatui's own
     /// double buffers adopt the new size.
-    pub fn resize(&mut self, columns: u16, rows: u16) {
-        self.surface.begin_update().resize((columns, rows));
+    pub(crate) fn resize(&mut self, columns: u16, rows: u16) {
+        self.surface.update(|update| {
+            update.resize((columns, rows));
+        });
     }
 }
 
@@ -79,8 +75,9 @@ pub trait RatatuiTerminalExt {
     /// the next `draw` renders at the new size.
     fn resize_grid(&mut self, columns: u16, rows: u16);
 
-    /// Returns the surface this terminal draws into.
-    fn surface(&self) -> TerminalSurface;
+    /// Resizes the grid to fill `logical_size` (e.g. the window size) at the
+    /// terminal's current cell size; returns whether the grid changed.
+    fn fit_to(&mut self, texture: &TerminalTexture, logical_size: Vec2) -> bool;
 }
 
 impl RatatuiTerminalExt for ratatui::Terminal<RatatuiBackend> {
@@ -89,8 +86,13 @@ impl RatatuiTerminalExt for ratatui::Terminal<RatatuiBackend> {
         let Ok(()) = self.autoresize();
     }
 
-    fn surface(&self) -> TerminalSurface {
-        self.backend().surface()
+    fn fit_to(&mut self, texture: &TerminalTexture, logical_size: Vec2) -> bool {
+        let grid = texture.grid_for(logical_size);
+        if self.backend().surface().size() == grid {
+            return false;
+        }
+        self.resize_grid(grid.width, grid.height);
+        true
     }
 }
 
@@ -166,26 +168,31 @@ impl Backend for RatatuiBackend {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
-        let mut update = self.surface.begin_update();
-        for (x, y, cell) in content {
-            // Positions outside the grid are ignored by the surface.
-            update.set_cell((x, y), &translate_cell(cell));
-        }
+        self.surface.update(|update| {
+            for (x, y, cell) in content {
+                // Positions outside the grid are ignored by the surface.
+                update.set_cell((x, y), &translate_cell(cell));
+            }
+        });
         Ok(())
     }
 
     fn hide_cursor(&mut self) -> Result<(), Self::Error> {
-        self.surface.begin_update().set_cursor_visible(false);
+        self.surface.update(|update| {
+            update.set_cursor_visible(false);
+        });
         Ok(())
     }
 
     fn show_cursor(&mut self) -> Result<(), Self::Error> {
-        self.surface.begin_update().set_cursor_visible(true);
+        self.surface.update(|update| {
+            update.set_cursor_visible(true);
+        });
         Ok(())
     }
 
     fn get_cursor_position(&mut self) -> Result<Position, Self::Error> {
-        let position = self.surface.begin_update().cursor_position();
+        let position = self.surface.snapshot().cursor_position();
         Ok(Position::new(position.x, position.y))
     }
 
@@ -194,33 +201,36 @@ impl Backend for RatatuiBackend {
         P: Into<Position>,
     {
         let position = position.into();
-        self.surface
-            .begin_update()
-            .set_cursor_position((position.x, position.y));
+        self.surface.update(|update| {
+            update.set_cursor_position((position.x, position.y));
+        });
         Ok(())
     }
 
     fn clear(&mut self) -> Result<(), Self::Error> {
-        self.surface.begin_update().clear();
+        self.surface.update(|update| {
+            update.clear();
+        });
         Ok(())
     }
 
     fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Self::Error> {
-        let mut update = self.surface.begin_update();
-        let size = update.size();
-        if size.width == 0 || size.height == 0 {
-            return Ok(());
-        }
-        let cursor = update.cursor_position();
-        let cursor = (cursor.x.min(size.width - 1), cursor.y.min(size.height - 1));
-        let last = (size.width - 1, size.height - 1);
-        match clear_type {
-            ClearType::All => update.clear(),
-            ClearType::AfterCursor => update.clear_range(cursor, last),
-            ClearType::BeforeCursor => update.clear_range((0, 0), cursor),
-            ClearType::CurrentLine => update.clear_row(cursor.1),
-            ClearType::UntilNewLine => update.clear_range(cursor, (size.width - 1, cursor.1)),
-        };
+        self.surface.update(|update| {
+            let size = update.size();
+            if size.width == 0 || size.height == 0 {
+                return;
+            }
+            let cursor = update.cursor_position();
+            let cursor = (cursor.x.min(size.width - 1), cursor.y.min(size.height - 1));
+            let last = (size.width - 1, size.height - 1);
+            match clear_type {
+                ClearType::All => update.clear(),
+                ClearType::AfterCursor => update.clear_range(cursor, last),
+                ClearType::BeforeCursor => update.clear_range((0, 0), cursor),
+                ClearType::CurrentLine => update.clear_row(cursor.1),
+                ClearType::UntilNewLine => update.clear_range(cursor, (size.width - 1, cursor.1)),
+            };
+        });
         Ok(())
     }
 
@@ -229,12 +239,12 @@ impl Backend for RatatuiBackend {
     }
 
     fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
-        let metrics = self.surface.metrics();
+        let pixels = self.surface.pixel_size().unwrap_or_default();
         Ok(WindowSize {
-            columns_rows: size_from_grid(metrics.size),
+            columns_rows: size_from_grid(self.surface.size()),
             pixels: Size::new(
-                u16::try_from(metrics.pixel_size.x).unwrap_or(u16::MAX),
-                u16::try_from(metrics.pixel_size.y).unwrap_or(u16::MAX),
+                u16::try_from(pixels.x).unwrap_or(u16::MAX),
+                u16::try_from(pixels.y).unwrap_or(u16::MAX),
             ),
         })
     }
@@ -244,28 +254,30 @@ impl Backend for RatatuiBackend {
     }
 
     fn append_lines(&mut self, line_count: u16) -> Result<(), Self::Error> {
-        let mut update = self.surface.begin_update();
-        let size = update.size();
-        if size.width == 0 || size.height == 0 {
-            return Ok(());
-        }
-
-        let cursor = update.cursor_position();
-        let x = cursor.x.saturating_add(1).min(size.width - 1);
-        let y = cursor.y.min(size.height - 1);
-        let rows_below = size.height - 1 - y;
-        let y = if line_count <= rows_below {
-            y.saturating_add(line_count).min(size.height - 1)
-        } else {
-            update.scroll_up(0..size.height, line_count - rows_below);
-            size.height - 1
-        };
-        update.set_cursor_position((x, y));
+        self.surface.update(|update| {
+            let size = update.size();
+            if size.width == 0 || size.height == 0 {
+                return;
+            }
+            let cursor = update.cursor_position();
+            let x = cursor.x.saturating_add(1).min(size.width - 1);
+            let y = cursor.y.min(size.height - 1);
+            let rows_below = size.height - 1 - y;
+            let y = if line_count <= rows_below {
+                y.saturating_add(line_count).min(size.height - 1)
+            } else {
+                update.scroll_up(0..size.height, line_count - rows_below);
+                size.height - 1
+            };
+            update.set_cursor_position((x, y));
+        });
         Ok(())
     }
 
     fn scroll_region_up(&mut self, region: Range<u16>, line_count: u16) -> Result<(), Self::Error> {
-        self.surface.begin_update().scroll_up(region, line_count);
+        self.surface.update(|update| {
+            update.scroll_up(region, line_count);
+        });
         Ok(())
     }
 
@@ -274,7 +286,9 @@ impl Backend for RatatuiBackend {
         region: Range<u16>,
         line_count: u16,
     ) -> Result<(), Self::Error> {
-        self.surface.begin_update().scroll_down(region, line_count);
+        self.surface.update(|update| {
+            update.scroll_down(region, line_count);
+        });
         Ok(())
     }
 }
@@ -311,7 +325,10 @@ mod tests {
         assert_eq!(translated.style.foreground, TerminalColor::Indexed(12));
         assert_eq!(translated.style.background, TerminalColor::Rgb(1, 2, 3));
         assert_eq!(translated.style.underline, TerminalColor::Indexed(200));
-        assert_eq!(translated.occupancy(), bevy_terminal::CellOccupancy::Single);
+        assert_eq!(
+            translated.occupancy(),
+            bevy_terminal::prelude::CellOccupancy::Single
+        );
         for (modifier, flag) in MODIFIER_FLAGS {
             assert!(translated.style.flags.contains(flag));
             assert_eq!(translate_modifier(modifier), flag);
@@ -520,13 +537,14 @@ mod tests {
         assert_eq!(window_size.columns_rows, Size::new(2, 3));
         assert_eq!(window_size.pixels, Size::new(0, 0));
 
-        let mut app = bevy::app::App::new();
-        app.init_resource::<bevy::asset::Assets<bevy::image::Image>>()
-            .add_plugins(bevy_terminal::TerminalPlugin::default());
+        let mut app = bevy_terminal::bevy::app::App::new();
+        app.init_resource::<bevy_terminal::bevy::asset::Assets<bevy_terminal::bevy::image::Image>>(
+        )
+        .add_plugins(bevy_terminal::prelude::TerminalPlugin);
         app.world_mut().spawn((
-            backend.terminal(),
-            bevy_terminal::TerminalRenderConfig {
-                cell_size: bevy::math::Vec2::new(10.8, 20.0),
+            Terminal::new(backend.surface()),
+            bevy_terminal::prelude::TerminalRenderConfig {
+                cell_size: Vec2::new(10.8, 20.0).into(),
                 ..Default::default()
             },
         ));
@@ -576,8 +594,41 @@ mod tests {
         let (backend, renderer) = RatatuiBackend::with_terminal(5, 2);
         assert!(renderer.surface().shares_state_with(&backend.surface()));
         let terminal = ratatui::Terminal::new(backend).unwrap();
-        assert!(terminal.surface().shares_state_with(renderer.surface()));
-        assert_eq!(terminal.surface().size(), GridSize::new(5, 2));
+        assert!(
+            terminal
+                .backend()
+                .surface()
+                .shares_state_with(renderer.surface())
+        );
+        assert_eq!(terminal.backend().surface().size(), GridSize::new(5, 2));
+    }
+
+    #[test]
+    fn fit_to_resizes_the_grid_exactly_when_the_fit_changes() {
+        let (backend, renderer) = RatatuiBackend::with_terminal(4, 2);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut app = bevy_terminal::bevy::app::App::new();
+        app.init_resource::<bevy_terminal::bevy::asset::Assets<bevy_terminal::bevy::image::Image>>(
+        )
+        .add_plugins(bevy_terminal::prelude::TerminalPlugin);
+        let entity = app
+            .world_mut()
+            .spawn((
+                renderer,
+                bevy_terminal::prelude::TerminalRenderConfig {
+                    cell_size: Vec2::new(10.0, 20.0).into(),
+                    ..Default::default()
+                },
+            ))
+            .id();
+        app.update();
+        let texture = app.world().get::<TerminalTexture>(entity).unwrap().clone();
+        assert_eq!(texture.cell_size, Vec2::new(10.0, 20.0));
+        assert!(terminal.fit_to(&texture, Vec2::new(805.0, 245.0)));
+        assert_eq!(terminal.size().unwrap(), Size::new(80, 12));
+        assert!(!terminal.fit_to(&texture, Vec2::new(809.0, 259.0)));
+        assert!(terminal.fit_to(&texture, Vec2::new(5.0, 5.0)));
+        assert_eq!(terminal.size().unwrap(), Size::new(1, 1));
     }
 
     #[test]

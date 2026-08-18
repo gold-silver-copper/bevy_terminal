@@ -8,7 +8,7 @@
 //! embedded in the package are used instead.
 
 use bevy::prelude::*;
-use bevy_terminal_ratatui::{FontFaces, TerminalRenderConfig};
+use bevy_terminal_ratatui::prelude::{FontFaces, TerminalRenderConfig};
 
 const IOSEVKA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/iosevka-fixed");
 const IOSEVKA_FACES: [&str; 4] = [

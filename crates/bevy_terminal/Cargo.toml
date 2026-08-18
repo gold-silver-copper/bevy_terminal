@@ -1,6 +1,6 @@
 [package]
 name = "bevy_terminal"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.95"
 description = "A terminal scene model and renderer built on Bevy text, UI, and the render world"
@@ -10,10 +10,29 @@ documentation = "https://docs.rs/bevy_terminal"
 keywords = ["bevy", "terminal", "tui", "rendering"]
 categories = ["game-development", "gui", "rendering"]
 
+[features]
+default = ["ui", "system_fonts"]
+# Present terminals through Bevy UI `ImageNode`s and follow the UI scale.
+ui = ["bevy/bevy_ui", "bevy/bevy_ui_render"]
+# Discover system fonts so generic families such as `FontSource::Monospace` resolve.
+system_fonts = ["bevy/system_font_discovery"]
+
 [dependencies]
-bevy = { version = "0.19.1", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
+bevy = { version = "0.19.1", default-features = false, features = [
+    "std",
+    "async_executor",
+    "multi_threaded",
+    "bevy_asset",
+    "bevy_log",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_image",
+    "bevy_text",
+    "bevy_window",
+] }
 
 [dev-dependencies]
+bevy = { version = "0.19.1", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
 bevy_image_export = { git = "https://github.com/paulkre/bevy_image_export", tag = "v0.17.0" }
 
 [lints.rust]

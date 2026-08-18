@@ -4,10 +4,7 @@ mod common;
 
 use bevy::{prelude::*, render::RenderPlugin, window::WindowResolution};
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
-use bevy_terminal::{
-    CursorConfig, Terminal, TerminalPlugin, TerminalReady, TerminalRenderConfig,
-    TerminalRenderScale, TerminalSurface,
-};
+use bevy_terminal::prelude::*;
 
 const EXPORT_FRAMES: u32 = 8;
 
@@ -42,8 +39,11 @@ fn main() {
     let config = common::configure_fonts(
         &mut app,
         TerminalRenderConfig {
-            cell_size: common::CELL_SIZE,
-            render_scale: TerminalRenderScale::Fixed(1.0),
+            cell_size: common::CELL_SIZE.into(),
+            raster: RasterConfig {
+                scale: TerminalRenderScale::Fixed(1.0),
+                ..default()
+            },
             cursor: CursorConfig {
                 blink_hz: None,
                 ..default()
@@ -51,7 +51,7 @@ fn main() {
             ..default()
         },
     );
-    app.add_plugins((export_plugin, TerminalPlugin::default()))
+    app.add_plugins((export_plugin, TerminalPlugin))
         .insert_resource(Surfaces {
             main: main.clone(),
             status: status.clone(),
@@ -61,22 +61,23 @@ fn main() {
                 commands.spawn((Terminal::new(surface.clone()), config.clone()));
             }
         })
+        .init_resource::<PendingExports>()
         .add_observer(export_when_ready)
-        .add_systems(Update, stop_after_export)
+        .add_systems(Update, (spawn_pending_exports, stop_after_export))
         .run();
 
     export_threads.finish();
 }
 
-/// Registers an exporter for a terminal texture as soon as it exists.
+/// Queues an exporter for a terminal texture as soon as it is ready; it is
+/// spawned one frame later so `bevy_image_export` sees the settled GPU texture.
 fn export_when_ready(
     ready: On<TerminalReady>,
-    mut commands: Commands,
     surfaces: Res<Surfaces>,
-    terminals: Query<&Terminal>,
-    mut export_sources: ResMut<Assets<ImageExportSource>>,
+    terminals: Query<(&Terminal, &TerminalTexture)>,
+    mut pending: ResMut<PendingExports>,
 ) {
-    let Ok(terminal) = terminals.get(ready.entity) else {
+    let Ok((terminal, texture)) = terminals.get(ready.entity) else {
         return;
     };
     let name = if terminal.surface().shares_state_with(&surfaces.main) {
@@ -86,13 +87,32 @@ fn export_when_ready(
     } else {
         return;
     };
-    commands.spawn((
-        ImageExport(export_sources.add(ready.image.clone())),
-        ImageExportSettings {
-            output_dir: format!("target/bevy-terminal-qa/{name}"),
-            extension: "png".into(),
-        },
-    ));
+    pending.0.push((texture.image.clone(), name, 1));
+}
+
+/// Textures waiting for their exporter and the frames left to wait.
+#[derive(Resource, Default)]
+struct PendingExports(Vec<(Handle<Image>, &'static str, u32)>);
+
+fn spawn_pending_exports(
+    mut commands: Commands,
+    mut pending: ResMut<PendingExports>,
+    mut export_sources: ResMut<Assets<ImageExportSource>>,
+) {
+    pending.0.retain_mut(|(handle, name, frames)| {
+        if *frames > 0 {
+            *frames -= 1;
+            return true;
+        }
+        commands.spawn((
+            ImageExport(export_sources.add(handle.clone())),
+            ImageExportSettings {
+                output_dir: format!("target/bevy-terminal-qa/{name}"),
+                extension: "png".into(),
+            },
+        ));
+        false
+    });
 }
 
 fn stop_after_export(mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {

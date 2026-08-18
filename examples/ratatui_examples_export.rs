@@ -19,13 +19,17 @@ use bevy::{
     window::WindowResolution,
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
-use bevy_terminal_ratatui::{
-    BlinkConfig, CursorConfig, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale,
-    TerminalRenderer, TerminalSystems,
+use bevy_terminal_ratatui::TerminalRenderer;
+use bevy_terminal_ratatui::prelude::{
+    BlinkConfig, CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig,
+    TerminalRenderScale, TerminalSystems,
 };
 
 const CELL_WIDTH: f32 = 10.0;
 const CELL_HEIGHT: f32 = 18.0;
+/// The measured Iosevka cell for 10 px columns is 10×24 (the requested 18 px
+/// height grows to the font's line box); the canvas is sized for that.
+const CANVAS_CELL_HEIGHT: f32 = 24.0;
 const MARGIN: f32 = 20.0;
 const FRAMES_PER_EXAMPLE: u8 = 4;
 
@@ -45,8 +49,11 @@ fn main() {
 
     let surface = catalog::draw_surface(&catalog::EXAMPLES[0]);
     let config = TerminalRenderConfig {
-        cell_size: Vec2::new(CELL_WIDTH, CELL_HEIGHT),
-        render_scale: TerminalRenderScale::Fixed(1.0),
+        cell_size: Vec2::new(CELL_WIDTH, CELL_HEIGHT).into(),
+        raster: RasterConfig {
+            scale: TerminalRenderScale::Fixed(1.0),
+            ..default()
+        },
         cursor: CursorConfig {
             blink_hz: None,
             ..default()
@@ -79,7 +86,7 @@ fn main() {
         example_index: 0,
         frames_on_example: 0,
     })
-    .add_plugins((export_plugin, TerminalPlugin::default()))
+    .add_plugins((export_plugin, TerminalPlugin))
     .add_systems(Startup, {
         let config = fonts.configure(config);
         move |mut commands: Commands| {
@@ -105,7 +112,7 @@ fn image_width() -> u32 {
 
 fn image_height() -> u32 {
     f32::from(catalog::ROWS)
-        .mul_add(CELL_HEIGHT, MARGIN * 2.0)
+        .mul_add(CANVAS_CELL_HEIGHT, MARGIN * 2.0)
         .round() as u32
 }
 

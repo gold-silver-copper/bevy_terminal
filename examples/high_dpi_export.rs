@@ -4,16 +4,20 @@ mod common;
 
 use bevy::{prelude::*, render::RenderPlugin, window::WindowResolution};
 use bevy_image_export::ImageExportPlugin;
-use bevy_terminal_ratatui::{
-    CursorConfig, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale, TerminalRenderer,
+use bevy_terminal_ratatui::TerminalRenderer;
+use bevy_terminal_ratatui::prelude::{
+    CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale,
 };
 
 const EXPORT_FRAMES: u32 = 8;
 
 fn main() {
     let config = TerminalRenderConfig {
-        cell_size: Vec2::new(11.0, 20.0),
-        render_scale: TerminalRenderScale::Fixed(2.0),
+        cell_size: Vec2::new(11.0, 20.0).into(),
+        raster: RasterConfig {
+            scale: TerminalRenderScale::Fixed(2.0),
+            ..default()
+        },
         cursor: CursorConfig {
             blink_hz: None,
             ..default()
@@ -42,7 +46,7 @@ fn main() {
     let fonts = common::fonts::load(&mut app);
     let config = fonts.configure(config);
     common::export::export_terminals_on_ready(&mut app, "target/render-qa-2x");
-    app.add_plugins((export_plugin, TerminalPlugin::default()))
+    app.add_plugins((export_plugin, TerminalPlugin))
         .add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(common::app::headless_terminal(
                 TerminalRenderer::new(common::demo_surface()),

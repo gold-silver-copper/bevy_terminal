@@ -14,20 +14,26 @@ use bevy::{
     window::WindowResolution,
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
-use bevy_terminal_ratatui::{
-    CursorConfig, RatatuiBackend, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale,
-    TerminalRenderer, TerminalSystems,
+use bevy_terminal_ratatui::TerminalRenderer;
+use bevy_terminal_ratatui::prelude::{
+    CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale,
+    TerminalSystems,
 };
 
+/// Canvas large enough for the 72×22 scene at the measured Iosevka cell
+/// (11 px columns → 22 px font → 27 px line box), plus margins.
 const WIDTH: u32 = 832;
-const HEIGHT: u32 = 480;
+const HEIGHT: u32 = 640;
 const EXPORT_FRAMES: u32 = 12;
 
 fn main() {
     let surface = common::demo_surface();
     let config = TerminalRenderConfig {
-        cell_size: Vec2::new(11.0, 20.0),
-        render_scale: TerminalRenderScale::Fixed(1.0),
+        cell_size: Vec2::new(11.0, 20.0).into(),
+        raster: RasterConfig {
+            scale: TerminalRenderScale::Fixed(1.0),
+            ..default()
+        },
         cursor: CursorConfig {
             blink_hz: None,
             ..default()
@@ -56,7 +62,7 @@ fn main() {
     );
     let fonts = common::fonts::load(&mut app);
     let config = fonts.configure(config);
-    app.add_plugins((export_plugin, TerminalPlugin::default()))
+    app.add_plugins((export_plugin, TerminalPlugin))
         .add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(common::app::ui_terminal(
                 TerminalRenderer::new(surface.clone()),
@@ -124,7 +130,9 @@ fn resize_for_qa(terminals: Query<&TerminalRenderer>, mut frame: Local<u32>) {
         let terminal = terminals
             .single()
             .expect("the example creates exactly one terminal");
-        RatatuiBackend::from_surface(terminal.surface().clone()).resize(60, 18);
+        terminal.surface().update(|update| {
+            update.resize((60, 18));
+        });
     }
 }
 

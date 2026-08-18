@@ -22,8 +22,9 @@ bevy_terminal_ratatui ──> bevy_terminal
 | cell | `TerminalCell` (`CellSymbol` + `TerminalStyle` + occupancy) | one grid cell |
 | snapshot | `TerminalSnapshot` | owned copy of the grid the renderer reads incrementally |
 | terminal entity | `Terminal` + `TerminalRenderConfig` (+ your `ImageNode`) | one rendered terminal |
-| texture | `TerminalTexture` | the renderer-owned image (stable handle) and its metrics |
-| config | `TerminalRenderConfig` | cell size, fonts, theme, cursor, blink, raster scale |
+| texture | `TerminalTexture` | the renderer-owned `Rgba8UnormSrgb` image (stable handle), its size, cell size and font size |
+| config | `TerminalRenderConfig` | cell sizing (`CellSizing::Logical`/`FromFont`), fonts, theme, cursor, blink, raster |
+| features | `ui`, `system_fonts` (both default) | UI `ImageNode` presentation; system font discovery |
 
 ## Scene model
 
@@ -66,7 +67,7 @@ surface.update(|update| {
 });
 
 App::new()
-    .add_plugins((DefaultPlugins, TerminalPlugin::default()))
+    .add_plugins((DefaultPlugins, TerminalPlugin))
     .add_systems(Startup, move |mut commands: Commands| {
         commands.spawn(Camera2d);
         commands.spawn((
@@ -78,12 +79,11 @@ App::new()
     .run();
 ```
 
-`TerminalSurface::update` takes the lock once, applies the closure and
-publishes at most one revision (none if nothing changed);
-`TerminalSurface::begin_update` returns the same guard for producers that
-need to interleave other work, and must not be held across frames. Positions
-are anything `Into<CellPosition>` — `(x, y)` tuples or `CellPosition`.
-`SurfaceUpdate` offers `set_cell`, `set_cells`, `set_cursor_position`,
+`TerminalSurface::update` is the only way to write: it takes the lock once,
+applies the closure and publishes at most one revision (none if nothing
+changed), returning whether it did. Positions are anything
+`Into<CellPosition>` — `(x, y)` tuples or `CellPosition`; sizes anything
+`Into<GridSize>`. `SurfaceUpdate` offers `set_cell`, `set_cursor_position`,
 `set_cursor_visible`, `clear`, `clear_row`, `clear_range` (row-major,
 inclusive), `resize`, `scroll_up` and `scroll_down`. Every mutation compares
 against the retained cell and marks only real changes dirty, so redrawing
@@ -101,11 +101,11 @@ omit it) and, to show it, an `ImageNode`:
 # use bevy_terminal::prelude::*;
 # let surface = TerminalSurface::new((80, 24));
 # let mut app = App::new();
-app.add_plugins(TerminalPlugin::default());
+app.add_plugins(TerminalPlugin);
 app.world_mut().spawn((
     Terminal::new(surface),
     TerminalRenderConfig {
-        cell_size: Vec2::new(11.0, 20.0),
+        cell_size: Vec2::new(11.0, 20.0).into(),
         font: FontFaces::regular(bevy::text::FontSource::Monospace),
         font_size: FontSizing::FitCellWidth,
         ..default()
@@ -119,12 +119,12 @@ The plugin attaches to every `Terminal` entity:
 
 - `TerminalTexture` — the renderer-owned `Handle<Image>` (stable for the
   terminal's lifetime; resizes reallocate the image in place), its physical
-  `size`, `logical_size`, `raster_scale`, physical `cell_size` and the
-  effective `font_size`. `TerminalReady` is triggered on the entity once the
-  texture exists.
+  `size`, `logical_size`, `raster_scale` and the effective `font_size`.
+  `TerminalReady { entity }` is triggered on the entity once the texture
+  exists.
 - `TerminalStats` — per-frame counters (changed rows, snapshot cells, quads,
-  draw batches, shape-cache hits/misses, timings; `Display` prints a one-line
-  summary; `TerminalPlugin { collect_timings: false }` skips the timers).
+  draw batches, shape-cache misses, timings; `Display` prints a one-line
+  summary).
 
 If the entity has an `ImageNode`, the plugin keeps its image and its `Node`
 width/height in sync with the texture; where the node goes (absolute position,
@@ -144,11 +144,12 @@ bold-italic → bold → italic → regular, and `synthesize` decides whether th
 fallback face is asked for the bold weight / italic style), the `FontSizing` (`FitCellWidth` by
 default: the regular font's advance is measured and the font sized so one
 advance equals the cell width; `Px(size)` uses an explicit size),
-`font_hinting` (unhinted by default so measured metrics stay exact), the
-`TerminalTheme`, `CursorConfig { style, color, blink_hz }`, `BlinkConfig {
-slow_hz, rapid_hz }` and `TerminalRenderScale` (`Automatic` follows the
-primary window in UI mode and resolves to 1.0 headless; `Fixed(scale)`
-rasterizes at a known scale).
+the `TerminalTheme`, `CursorConfig { style, color, blink_hz }`, `BlinkConfig {
+slow_hz, rapid_hz }` and `RasterConfig { scale, hinting }` (`scale`:
+`TerminalRenderScale::Automatic` follows the primary window when presented and
+resolves to 1.0 headless, `Fixed(scale)` rasterizes at a known scale;
+`hinting` is `FontHinting::Disabled` by default so measured metrics stay
+exact).
 
 The renderer reads the surface once per changed frame, copies only dirty cells
 into its retained snapshot, and rebuilds only changed rows. Every glyph,
@@ -157,9 +158,41 @@ rasterized from the configured font by Bevy text, cached in one renderer-owned
 atlas and clipped to its cell; nothing is drawn procedurally.
 
 Resizing a surface (`SurfaceUpdate::resize`) preserves the overlapping cells.
-`TerminalSurface::metrics` reports the logical pixel size the renderer derived
-from its configuration, so producers can expose window metrics without knowing
-the renderer's internals.
+`TerminalSurface::pixel_size` reports the logical pixel size the renderer
+derived from its configuration (once one exists), so producers can expose
+window metrics without knowing the renderer's internals.
+
+## Cell sizing, texture format, features
+
+- `CellSizing::Logical(Vec2)` (default) fixes the cell and, with
+  `FontSizing::FitCellWidth`, sizes the font to it. `CellSizing::FromFont {
+  line_height }` (`CellSizing::FROM_FONT` = 1.2) derives the cell from a
+  `FontSizing::Px` size: width = the regular font's measured advance, height =
+  the larger of size × line height and the font's measured line box (the rows
+  a full block covers). `TerminalTexture::cell_size` reports the
+  logical cell in use, `TerminalTexture::grid_for` / `render::grid_for` /
+  `render::grid_for_window` compute the grid that fits a size, and
+  `render::raster_scale_for_window` the physical/logical ratio for
+  `TerminalRenderScale::Fixed`.
+- Vertical fit: the renderer measures the primary font's line box (its full
+  block's fully covered rows) and the ink of ASCII and accented-capital probes
+  in every face, then shifts all glyphs by one whole-pixel offset so blocks
+  keep covering the cell, ASCII (descenders included) is never clipped and
+  accents fit when there is room. With `FitCellWidth`/`FromFont` the cell
+  height grows to the line box; with `FontSizing::Px` in a `Logical` cell the
+  configured sizes are exact and glyphs beyond the cell are clipped. Runs
+  wider than their cell (fallback families, wide italics) drop their faintest
+  columns; overhanging runs are pushed inside. The font is sized to the
+  physical cell width so fractional raster scales do not open seams.
+- The texture is `Rgba8UnormSrgb` with straight alpha; `TerminalTheme::background`
+  alpha is honored (backgrounds replace, glyphs blend), so translucent
+  terminals composite correctly.
+- Cargo features: `ui` (default) enables `ImageNode` presentation and following
+  the UI scale — without it terminals are headless and `Automatic` scale is
+  1.0; `system_fonts` (default) enables system font discovery — without it
+  supply font assets (or `FontSource::Handle(Handle::default())` with
+  `bevy/default_font`). Font fallback for missing glyphs is Bevy's system-wide
+  fallback; there is no per-terminal fallback list in Bevy 0.19.
 
 ## Examples
 

@@ -1,10 +1,7 @@
-//! Renderer-neutral terminal scene model.
-//!
-//! These types describe everything the renderer needs to know about a terminal
-//! grid: cell symbols, styles, colors, wide-glyph occupancy, cursor state and
-//! grid dimensions. Producers such as a terminal UI backend translate their own
-//! representation into these types once, at the point where cells are
-//! submitted to a [`crate::TerminalSurface`].
+//! The renderer-neutral scene model: grid coordinates, cells, symbols, styles,
+//! colors, wide-glyph occupancy and owned snapshots. Producers translate their
+//! own representation into these types once, when submitting cells to a
+//! [`crate::surface::TerminalSurface`].
 
 use std::fmt;
 
@@ -18,12 +15,6 @@ pub struct GridSize {
 }
 
 impl GridSize {
-    /// An empty grid.
-    pub const ZERO: Self = Self {
-        width: 0,
-        height: 0,
-    };
-
     /// Creates a grid size.
     #[must_use]
     pub const fn new(width: u16, height: u16) -> Self {
@@ -31,8 +22,7 @@ impl GridSize {
     }
 
     /// Returns the number of cells in the grid.
-    #[must_use]
-    pub const fn area(self) -> usize {
+    pub(crate) const fn area(self) -> usize {
         self.width as usize * self.height as usize
     }
 
@@ -60,9 +50,6 @@ pub struct CellPosition {
 }
 
 impl CellPosition {
-    /// The top-left cell.
-    pub const ORIGIN: Self = Self { x: 0, y: 0 };
-
     /// Creates a cell position.
     #[must_use]
     pub const fn new(x: u16, y: u16) -> Self {
@@ -199,12 +186,6 @@ impl StyleFlags {
         Self(self.0 | other.0)
     }
 
-    /// Returns `self` without the flags in `other`.
-    #[must_use]
-    pub const fn difference(self, other: Self) -> Self {
-        Self(self.0 & !other.0)
-    }
-
     /// Adds `other` to the set.
     pub const fn insert(&mut self, other: Self) {
         self.0 |= other.0;
@@ -213,15 +194,6 @@ impl StyleFlags {
     /// Removes `other` from the set.
     pub const fn remove(&mut self, other: Self) {
         self.0 &= !other.0;
-    }
-
-    /// Adds or removes `other` depending on `enabled`.
-    pub const fn set(&mut self, other: Self, enabled: bool) {
-        if enabled {
-            self.insert(other);
-        } else {
-            self.remove(other);
-        }
     }
 }
 
@@ -344,8 +316,7 @@ impl CellOccupancy {
     /// Creates the occupancy for a glyph declared to span `columns` columns.
     ///
     /// Zero and one produce [`CellOccupancy::Single`].
-    #[must_use]
-    pub const fn spanning(columns: u16) -> Self {
+    pub(crate) const fn spanning(columns: u16) -> Self {
         if columns <= 1 {
             Self::Single
         } else {
@@ -570,18 +541,6 @@ pub struct TerminalSnapshot {
 }
 
 impl TerminalSnapshot {
-    /// Creates an empty snapshot of the given size with revision zero.
-    #[must_use]
-    pub fn empty(size: GridSize) -> Self {
-        Self {
-            size,
-            cells: vec![TerminalCell::EMPTY; size.area()],
-            cursor_position: CellPosition::ORIGIN,
-            cursor_visible: false,
-            revision: 0,
-        }
-    }
-
     /// Returns the grid size.
     #[must_use]
     pub const fn size(&self) -> GridSize {
@@ -702,7 +661,7 @@ mod tests {
         assert!(!flags.contains(StyleFlags::DIM));
         flags.remove(StyleFlags::BOLD);
         assert_eq!(flags, StyleFlags::ITALIC);
-        flags.set(StyleFlags::HIDDEN, true);
+        flags.insert(StyleFlags::HIDDEN);
         assert_eq!(format!("{flags:?}"), "StyleFlags(ITALIC | HIDDEN)");
         assert_eq!(StyleFlags::from_bits(0xffff).bits(), 0x1ff);
     }
@@ -723,7 +682,14 @@ mod tests {
 
     #[test]
     fn snapshot_indexing_follows_row_major_order() {
-        let mut snapshot = TerminalSnapshot::empty(GridSize::new(3, 2));
+        let size = GridSize::new(3, 2);
+        let mut snapshot = TerminalSnapshot {
+            size,
+            cells: vec![TerminalCell::EMPTY; size.area()],
+            cursor_position: CellPosition::new(0, 0),
+            cursor_visible: false,
+            revision: 0,
+        };
         snapshot.cells[4] = TerminalCell::new("X");
         assert_eq!(snapshot[(1, 1)].symbol(), "X");
         assert_eq!(snapshot.row(1)[1].symbol(), "X");

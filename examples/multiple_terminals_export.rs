@@ -17,10 +17,11 @@ use bevy::{
     window::WindowResolution,
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
-use bevy_terminal_ratatui::{
-    CursorConfig, RatatuiBackend, RatatuiTerminalExt, TerminalPlugin, TerminalRenderConfig,
-    TerminalRenderScale, TerminalRenderer, TerminalSystems,
+use bevy_terminal_ratatui::prelude::{
+    CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale,
+    TerminalSystems,
 };
+use bevy_terminal_ratatui::{RatatuiBackend, RatatuiTerminalExt, TerminalRenderer};
 use ratatui::{
     Terminal,
     style::{Color, Modifier, Style},
@@ -68,8 +69,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let fonts = fonts::load(&mut app);
     let config = fonts.configure(TerminalRenderConfig {
-        cell_size: Vec2::new(10.0, 18.0),
-        render_scale: TerminalRenderScale::Fixed(1.0),
+        cell_size: Vec2::new(10.0, 18.0).into(),
+        raster: RasterConfig {
+            scale: TerminalRenderScale::Fixed(1.0),
+            ..default()
+        },
         cursor: CursorConfig {
             blink_hz: None,
             ..default()
@@ -77,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..default()
     });
     app.insert_resource(fonts)
-        .add_plugins((export_plugin, TerminalPlugin::default()))
+        .add_plugins((export_plugin, TerminalPlugin))
         .insert_resource(terminals)
         .add_systems(Startup, move |mut commands: Commands| {
             for (surface, origin) in [

@@ -19,10 +19,10 @@ use bevy::{
     prelude::*,
     window::{CursorMoved, PrimaryWindow, WindowResizeConstraints, WindowResolution},
 };
-use bevy_terminal_ratatui::{
-    RatatuiBackend, RatatuiTerminalExt, TerminalPlugin, TerminalRenderConfig, TerminalRenderer,
-    TerminalSurface, TerminalSystems,
+use bevy_terminal_ratatui::prelude::{
+    TerminalPlugin, TerminalRenderConfig, TerminalSurface, TerminalSystems, TerminalTexture,
 };
+use bevy_terminal_ratatui::{RatatuiBackend, RatatuiTerminalExt, TerminalRenderer};
 use ratatui::{Terminal, layout::Size};
 
 const CELL_WIDTH: f32 = 10.0;
@@ -38,7 +38,7 @@ fn main() {
     let gallery = Gallery::new(start_index);
     let surface = gallery.surface();
     let config = TerminalRenderConfig {
-        cell_size: Vec2::new(CELL_WIDTH, CELL_HEIGHT),
+        cell_size: Vec2::new(CELL_WIDTH, CELL_HEIGHT).into(),
         ..default()
     };
     let width = f32::from(catalog::COLUMNS).mul_add(CELL_WIDTH, MARGIN * 2.0);
@@ -61,7 +61,7 @@ fn main() {
     }));
     let fonts = fonts::load(&mut app);
     let config = fonts.configure(config);
-    app.add_plugins(TerminalPlugin::default())
+    app.add_plugins(TerminalPlugin)
         .insert_resource(gallery)
         .insert_resource(AnimationClock(Timer::from_seconds(
             0.1,
@@ -158,17 +158,28 @@ impl Gallery {
 #[derive(Resource)]
 struct AnimationClock(Timer);
 
+/// The measured logical cell size (the renderer may grow the requested cell
+/// height to the font's line box), or the requested one before measurement.
+fn measured_cell(textures: &Query<&TerminalTexture>) -> Vec2 {
+    textures
+        .single()
+        .map_or(Vec2::new(CELL_WIDTH, CELL_HEIGHT), |texture| {
+            texture.cell_size
+        })
+}
+
 fn resize_gallery_to_window(
     windows: Query<&Window, With<PrimaryWindow>>,
+    textures: Query<&TerminalTexture>,
     mut gallery: ResMut<Gallery>,
 ) {
     let Ok(window) = windows.single() else {
         return;
     };
-    gallery.resize(terminal_grid_size(Vec2::new(
-        window.width(),
-        window.height(),
-    )));
+    gallery.resize(terminal_grid_size(
+        Vec2::new(window.width(), window.height()),
+        measured_cell(&textures),
+    ));
 }
 
 fn keyboard_input(
@@ -264,22 +275,24 @@ fn pointer_input(
     mut wheel_messages: MessageReader<MouseWheel>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    textures: Query<&TerminalTexture>,
     mut gallery: ResMut<Gallery>,
 ) {
     let pressed = mouse_buttons.pressed(MouseButton::Left);
     let terminal_size = gallery.size();
+    let cell = measured_cell(&textures);
     let mut redraw = false;
     if mouse_buttons.just_pressed(MouseButton::Left)
         && let Ok(window) = windows.single()
         && let Some(position) = window.cursor_position()
-        && let Some((column, row)) = terminal_position(position, terminal_size)
+        && let Some((column, row)) = terminal_position(position, terminal_size, cell)
     {
         redraw |= gallery
             .state_mut()
             .pointer(column, row, terminal_size, true, true);
     }
     for message in cursor_messages.read() {
-        if let Some((column, row)) = terminal_position(message.position, terminal_size) {
+        if let Some((column, row)) = terminal_position(message.position, terminal_size, cell) {
             redraw |= gallery
                 .state_mut()
                 .pointer(column, row, terminal_size, pressed, false);
@@ -307,25 +320,23 @@ fn animate_current(
     }
 }
 
-fn terminal_position(position: Vec2, terminal_size: Size) -> Option<(u16, u16)> {
+fn terminal_position(position: Vec2, terminal_size: Size, cell: Vec2) -> Option<(u16, u16)> {
     let x = position.x - MARGIN;
     let y = position.y - MARGIN;
     if x < 0.0 || y < 0.0 {
         return None;
     }
-    let column = (x / CELL_WIDTH).floor() as u16;
-    let row = (y / CELL_HEIGHT).floor() as u16;
+    let column = (x / cell.x).floor() as u16;
+    let row = (y / cell.y).floor() as u16;
     (column < terminal_size.width && row < terminal_size.height).then_some((column, row))
 }
 
-fn terminal_grid_size(window_size: Vec2) -> Size {
-    let columns = ((window_size.x - MARGIN * 2.0) / CELL_WIDTH)
-        .floor()
-        .clamp(f32::from(MIN_COLUMNS), f32::from(u16::MAX)) as u16;
-    let rows = ((window_size.y - MARGIN * 2.0) / CELL_HEIGHT)
-        .floor()
-        .clamp(f32::from(MIN_ROWS), f32::from(u16::MAX)) as u16;
-    Size::new(columns, rows)
+/// The grid that fits the window minus its margin, clamped to the minimum
+/// gallery size; uses the renderer's `grid_for` helper for the fit itself.
+fn terminal_grid_size(window_size: Vec2, cell: Vec2) -> Size {
+    let grid =
+        bevy_terminal_ratatui::render::grid_for(window_size - Vec2::splat(MARGIN * 2.0), cell);
+    Size::new(grid.width.max(MIN_COLUMNS), grid.height.max(MIN_ROWS))
 }
 
 fn window_width(columns: u16) -> f32 {
@@ -418,34 +429,57 @@ mod tests {
     #[test]
     fn window_coordinates_map_to_terminal_cells() {
         let size = Size::new(catalog::COLUMNS, catalog::ROWS);
-        assert_eq!(terminal_position(Vec2::splat(MARGIN), size), Some((0, 0)));
+        let cell = Vec2::new(CELL_WIDTH, CELL_HEIGHT);
+        assert_eq!(
+            terminal_position(Vec2::splat(MARGIN), size, cell),
+            Some((0, 0))
+        );
         assert_eq!(
             terminal_position(
                 Vec2::new(MARGIN + CELL_WIDTH * 99.5, MARGIN + CELL_HEIGHT * 61.5),
-                size
+                size,
+                cell
             ),
             Some((99, 61))
         );
-        assert_eq!(terminal_position(Vec2::ZERO, size), None);
+        assert_eq!(terminal_position(Vec2::ZERO, size, cell), None);
         assert_eq!(
-            terminal_position(Vec2::new(MARGIN + CELL_WIDTH * 100.5, MARGIN), size),
+            terminal_position(Vec2::new(MARGIN + CELL_WIDTH * 100.5, MARGIN), size, cell),
             None
+        );
+        // A grown cell (the font's line box) maps rows accordingly.
+        assert_eq!(
+            terminal_position(
+                Vec2::new(MARGIN, MARGIN + 24.0 * 3.5),
+                size,
+                Vec2::new(CELL_WIDTH, 24.0)
+            ),
+            Some((0, 3))
         );
     }
 
     #[test]
     fn window_dimensions_map_to_a_bounded_terminal_grid() {
+        let cell = Vec2::new(CELL_WIDTH, CELL_HEIGHT);
         assert_eq!(
-            terminal_grid_size(Vec2::new(
-                window_width(catalog::COLUMNS),
-                window_height(catalog::ROWS),
-            )),
+            terminal_grid_size(
+                Vec2::new(window_width(catalog::COLUMNS), window_height(catalog::ROWS)),
+                cell
+            ),
             Size::new(catalog::COLUMNS, catalog::ROWS)
         );
-        assert_eq!(terminal_grid_size(Vec2::ZERO), Size::new(64, 24));
+        assert_eq!(terminal_grid_size(Vec2::ZERO, cell), Size::new(64, 24));
         assert_eq!(
-            terminal_grid_size(Vec2::new(window_width(123), window_height(71))),
+            terminal_grid_size(Vec2::new(window_width(123), window_height(71)), cell),
             Size::new(123, 71)
+        );
+        // Taller measured cells fit fewer rows into the same window.
+        assert_eq!(
+            terminal_grid_size(
+                Vec2::new(window_width(123), window_height(71)),
+                Vec2::new(CELL_WIDTH, 24.0)
+            ),
+            Size::new(123, 53)
         );
     }
 

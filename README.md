@@ -12,8 +12,9 @@ compact Bevy renderer:
 | cell | `TerminalCell` (`CellSymbol` + `TerminalStyle` + occupancy) | one grid cell |
 | snapshot | `TerminalSnapshot` | owned copy of the grid the renderer reads incrementally |
 | terminal entity | `TerminalRenderer` (`bevy_terminal::Terminal`) + `TerminalRenderConfig` | one rendered terminal; add an `ImageNode` to show it |
-| texture | `TerminalTexture` | the renderer-owned image (stable handle) and its metrics |
-| config | `TerminalRenderConfig` | cell size, fonts, theme, cursor, blink, raster scale |
+| texture | `TerminalTexture` | the renderer-owned `Rgba8UnormSrgb` image (stable handle), its size, cell size and font size |
+| config | `TerminalRenderConfig` | cell sizing (`CellSizing::Logical`/`FromFont`), fonts, theme, cursor, blink, raster |
+| features | `ui`, `system_fonts` (both default) | UI `ImageNode` presentation; system font discovery |
 
 ```text
 bevy_terminal ──> bevy
@@ -57,7 +58,7 @@ terminal.draw(|frame| {
 })?;
 
 App::new()
-    .add_plugins((DefaultPlugins, TerminalPlugin::default()))
+    .add_plugins((DefaultPlugins, TerminalPlugin))
     .add_systems(Startup, move |mut commands: Commands| {
         commands.spawn(Camera2d);
         commands.spawn((
@@ -102,7 +103,7 @@ let (_left_backend, left) = RatatuiBackend::with_terminal(42, 16);
 let (_right_backend, right) = RatatuiBackend::with_terminal(34, 12);
 
 App::new()
-    .add_plugins((DefaultPlugins, TerminalPlugin::default()))
+    .add_plugins((DefaultPlugins, TerminalPlugin))
     .add_systems(Startup, move |mut commands: Commands| {
         commands.spawn(Camera2d);
         commands
@@ -131,19 +132,120 @@ image in place), so custom presentation code can bind it once — from the
 Run `cargo run --example multiple_terminals` for a complete scene where both
 terminals update independently and one resizes while the other remains unchanged.
 
+## Terminal emulator setup
+
+Terminal emulators work "font size in → cell size out": pick a family and a
+size, derive the cell from the font, and fit as many cells as the window holds.
+
+```no_run
+# use bevy::prelude::*;
+# use bevy_terminal_ratatui::prelude::*;
+# use bevy_terminal_ratatui::render::raster_scale_for_window;
+# #[derive(Resource)] struct Tui(ratatui::Terminal<RatatuiBackend>);
+fn setup(mut commands: Commands, window: Query<&Window>) {
+    let (backend, renderer) = RatatuiBackend::with_terminal(80, 24);
+    commands.insert_resource(Tui(ratatui::Terminal::new(backend).unwrap()));
+    let window = window.single().unwrap();
+    commands.spawn((
+        renderer,
+        TerminalRenderConfig {
+            cell_size: CellSizing::FROM_FONT,     // width = measured advance, height = 1.2 × size
+            font_size: FontSizing::Px(16.0),      // zoom by mutating this
+            font: FontFaces::regular(FontSource::Family("JetBrains Mono".into())),
+            raster: RasterConfig {
+                scale: TerminalRenderScale::Fixed(raster_scale_for_window(window)),
+                ..default()
+            },
+            ..default()
+        },
+        ImageNode::default(),
+        Node::default(),
+    ));
+}
+
+// Each frame (or on WindowResized): fit the grid to the window at the current
+// cell size (`TerminalTexture::cell_size` is the logical cell the renderer
+// settled on), then draw as usual.
+fn fit(mut tui: ResMut<Tui>, textures: Query<&TerminalTexture>, window: Query<&Window>) {
+    if let (Ok(texture), Ok(window)) = (textures.single(), window.single()) {
+        tui.0.fit_to(texture, window.resolution.size());
+    }
+}
+```
+
+`fit_to` (from `RatatuiTerminalExt`) resizes both the surface and Ratatui's
+buffers and returns whether the grid changed; `TerminalTexture::grid_for` and
+`render::grid_for_window` give the same computation without resizing.
+
+## Windowed TUI setup
+
+For a `bevy_ratatui`-style windowed app (fixed cell size, grid follows the
+window): create the backend anywhere (no `App` needed), spawn the terminal on
+startup, and resize on `WindowResized`:
+
+```no_run
+# use bevy::{prelude::*, window::WindowResized};
+# use bevy_terminal_ratatui::prelude::*;
+# #[derive(Resource)] struct Tui(ratatui::Terminal<RatatuiBackend>);
+fn on_resize(
+    mut resized: MessageReader<WindowResized>,
+    mut tui: ResMut<Tui>,
+    textures: Query<&TerminalTexture>,
+) {
+    for event in resized.read() {
+        if let Ok(texture) = textures.single() {
+            tui.0.fit_to(texture, Vec2::new(event.width, event.height));
+        }
+    }
+}
+```
+
+The default `TerminalRenderConfig` (11×20 cells, `FontSizing::FitCellWidth`,
+`FontSource::Monospace`) needs the `system_fonts` feature; without it supply
+a font asset (`FontFaces::regular(handle)`), or use
+`FontSource::Handle(Handle::default())` for Bevy's built-in FiraMono subset
+when `bevy/default_font` is enabled (monospace, but limited box-drawing
+coverage).
+
 ## Cell geometry and Unicode
 
-`TerminalRenderConfig::cell_size` is explicit because a shaped text run can use
-several fallback fonts and there is no single metric valid for every Unicode
-glyph. Pick a primary monospace font and a cell width matching its unit advance.
-The default uses Bevy's generic system monospace family with a cell size suited
-to an 18 px font. Integer logical cell dimensions are recommended. The compact
-renderer snaps the corresponding physical cell and font dimensions to whole
-pixels so cell edges cannot accumulate subpixel drift. For deterministic
-production rendering, supply a font family or loaded font asset and configure
-its measured cell dimensions.
+`CellSizing::Logical(Vec2)` is the default: a shaped text run can use several
+fallback fonts and there is no single metric valid for every Unicode glyph, so
+an explicit cell keeps every glyph anchored to its column. Pick a primary
+monospace font; with `FontSizing::FitCellWidth` (default) the font is measured
+and sized so its advance fills the cell. `CellSizing::FromFont` derives the cell
+from a `FontSizing::Px` size instead (see above). Integer logical cell
+dimensions are recommended. The compact renderer snaps the physical cell to
+whole pixels so cell edges cannot accumulate subpixel drift.
 
-`TerminalRenderConfig::render_scale` defaults to
+### Vertical fit: primary glyphs are never clipped, fallback glyphs are fitted
+
+After the font size is chosen the renderer measures the primary font (once per
+font/config change, never per frame): the rows its full block `█` covers
+completely are the *line box*; the ink of an ASCII probe (`gjpqy|[]{}()_`) in
+all four faces and of an accented-capital probe are measured as well. Every
+glyph is then shifted by one uniform whole-pixel offset per terminal so that,
+in priority order, the block keeps covering the cell (block/box tiles have no
+seams), the ASCII probe is fully inside the cell (descenders included), and
+accented capitals fit when the font leaves room.
+
+- With `FitCellWidth` (or `CellSizing::FromFont`) the configured cell height
+  is a minimum: it grows to the line box, so a primary-font glyph inside the
+  line box is never clipped. Iosevka Fixed sized to an 11 px column is a 22 px
+  font whose line box is 27 px, so a requested 11×20 cell becomes 11×27; read
+  the effective size from `TerminalTexture::cell_size`. To keep an exact grid,
+  choose `FontSizing::Px` (the cell is then honored and glyphs beyond it are
+  clipped after the same fitting).
+- The font size is fitted to the *physical* cell width, so fractional raster
+  scales (1.5×) do not open seams between advances.
+- Horizontally, a run wider than its cell (a fallback family with a larger
+  advance, a wide italic) is placed so the faintest columns are clipped;
+  a run that fits but overhangs (italic, negative bearing) is pushed inside.
+- Everything else — accents a font draws above its own line box (Iosevka's
+  `Ẫ`, Cascadia's `À`), emoji/CJK from a taller fallback family — is centered
+  and clipped to its cell as a last resort.
+
+`TerminalRenderConfig::raster.scale` defaults to
 `TerminalRenderScale::Automatic`. An on-screen batch renderer then shapes text
 and builds its terminal texture at the primary window's physical-to-logical
 scale factor. For example, an 18 logical-pixel font is rasterized at 36 physical
@@ -157,8 +259,8 @@ Headless mode deliberately resolves `Automatic` to `1.0`, keeping benchmarks
 and image exports deterministic. Use `TerminalRenderScale::Fixed(value)` when a
 custom camera or output target has a known scale; that target should present the
 texture at the same scale. `TerminalTexture` reports `size` in physical pixels,
-`logical_size` in Bevy UI pixels, the active `raster_scale`, the physical
-`cell_size` and the effective `font_size`.
+`logical_size` in Bevy UI pixels, the active `raster_scale` and the effective
+`font_size`.
 
 Wide Ratatui cells are anchored to their declared columns regardless of the fallback
 glyph's natural advance. This prevents column drift, but a poorly matched font
@@ -170,7 +272,7 @@ regular font's advance by shaping it and picks the font size at which one
 advance equals `cell_size.x`, so glyphs designed to fill their advance tile the
 grid without seams regardless of which font is used. Set `FontSizing::Px(size)`
 to use an explicit size. Glyphs are rasterized unhinted by default
-(`font_hinting`), because hinting snaps the font to whole-pixel sizes and would
+(`raster.hinting`), because hinting snaps the font to whole-pixel sizes and would
 reintroduce fractional seams on displays whose scale factor makes the physical
 font size fractional.
 
@@ -188,6 +290,22 @@ braille, arrows and geometric shapes so terminal symbols rarely need a system
 fallback font; the faces are read from the checkout at runtime and the
 embedded JetBrains Mono faces are used if they are absent. See
 `assets/fonts/README.md` for every vendored family and its coverage.
+
+## Texture format and transparency
+
+`TerminalTexture::image` is `Rgba8UnormSrgb` with straight (non-premultiplied)
+alpha: display-ready for `ImageNode`, sprites and `StandardMaterial`
+textures. `TerminalTheme::background` alpha is honored end to end (the clear
+color, default-background cells and partial-row repaints all *replace* rather
+than accumulate), so a translucent terminal composites correctly over a
+`ClearColor` or a 3D scene: `cargo run --example render_test -- --transparent`.
+
+## Font fallback
+
+Glyphs the configured faces lack (CJK, emoji, scripts) come from Bevy's
+system-wide font fallback; Bevy 0.19 does not expose a per-text fallback family
+list, so there is no per-terminal fallback setting. Choose a primary family
+with the symbol coverage you need (see `assets/fonts/README.md`).
 
 ## Resizing
 
@@ -213,6 +331,31 @@ cargo run --example high_dpi_export
 cargo run --example multiple_terminals_export
 ```
 
+`glyph_fidelity` is the clipping/seam harness: full printable ASCII in four
+faces, Latin-1/Extended-A, Greek, Cyrillic, combining-mark stacks, all box
+drawing (U+2500–257F), block elements, braille, shapes, arrows, a wide
+CJK/emoji row and block/line tile panels on a per-cell checkerboard with `│`
+guard columns:
+
+```text
+cargo run --example glyph_fidelity                                   # window; Space/Tab cycle fonts
+cargo run --example glyph_fidelity -- --export --font all --scale all # target/glyph-fidelity/<family>/<scale>x/
+cargo run --example glyph_fidelity -- --check --font all --scale all  # GPU readback assertions, exit 1 on failure
+cargo test --test glyph_fidelity -- --ignored                         # the same check as an integration test
+```
+
+`--check` renders each terminal twice — once at the real cell and once in a
+6 px wider, 10 px taller reference cell at the same font size — and asserts
+that every ASCII/Latin/Greek/Cyrillic glyph inside the font's line box keeps
+exactly the same ink pixels (nothing clipped), that the solid-block tile has
+no pixel off the fill color and the line tiles are continuous, at 1×, 1.5×,
+2× and 3×.
+
+Every windowed example is resizable: the grid follows the window at the
+renderer's measured cell size (`RatatuiTerminalExt::fit_to`, see
+`examples/common/app.rs::fit_grid_to_window`) instead of the window being sized
+from a fixed column × row count.
+
 `render_test` is the single all-in-one check (press `Space`/`Tab` to cycle
 through the vendored font families under `assets/fonts/`, `Shift+Tab` for the
 previous one; `--font <index|dir>` or `RENDER_TEST_FONT` picks the initial
@@ -227,13 +370,14 @@ Early frames contain the complete 72×22 scene. Later frames shrink the backend
 to 60×18 so the exported sequence also catches row-stride errors and stale
 texture pixels after a resize.
 
-`high_dpi_export` writes the renderer-owned 1584×880 terminal texture under
+`high_dpi_export` writes the renderer-owned 1584×1188 terminal texture under
 `target/render-qa-2x/`, exercising native 2× font rasterization without a
 camera resampling stage.
 
 `multiple_terminals_export` writes a before/after sequence under
-`target/multiple-terminals-qa/`; the second texture grows from 320×180 to
-360×216 while the first stays at 370×216.
+`target/multiple-terminals-qa/`; the second texture grows from 320×240 to
+360×288 while the first stays at 370×288 (10 px Iosevka columns measure a
+10×24 cell).
 
 The normal dependency list is deliberately limited to `bevy_terminal` and
 `ratatui`; `bevy_terminal` itself depends only on `bevy`.
@@ -312,7 +456,7 @@ are discarded rather than retained as host-side scrollback.
 | `Presentation::Headless` | spawn without an `ImageNode` |
 | `Presentation`, `TerminalNode`, `TerminalResized` | removed; texture handle is now stable; `TerminalReady` fires once when the texture exists |
 | `terminal.config()` / `config_mut()` | `TerminalRenderConfig` is its own (required) component; query/mutate it directly |
-| `TerminalPlugin` (unit) | `TerminalPlugin::default()` (`collect_timings` field) |
+| `TerminalPlugin` (unit) | `TerminalPlugin` (`collect_timings` field) |
 | `bevy_terminal::Terminal` in the Ratatui prelude | `TerminalRenderer` (alias; the lower crate still calls it `Terminal`) |
 | `RatatuiBackend::new(c, r)` + `Terminal::new(backend.surface())` | `RatatuiBackend::with_terminal(c, r)` → `(backend, renderer)`; also `backend.terminal()`, `terminal.surface()` |
 | `TerminalSurface::new(c, r)`, `update.resize(c, r)` | `new((c, r))`, `resize((c, r))` (any `Into<GridSize>`) |
@@ -320,6 +464,37 @@ are discarded rather than retained as host-side scrollback.
 | `TerminalTheme::cursor` | removed (use `CursorConfig::color`) |
 | `TerminalTheme::{foreground, background, resolve}` | crate-private |
 | `FontFaces { .. }` | new field `synthesize: bool` (default `true`; `FontFaces::regular(..)`/`From` set it) |
+
+## Migrating from 0.4
+
+| 0.4 | 0.5 |
+|---|---|
+| `cell_size: Vec2` | `cell_size: CellSizing` (`Vec2::into()` / `CellSizing::Logical`, or `CellSizing::FROM_FONT` with `FontSizing::Px`) |
+| — | `TerminalTexture::cell_size` (logical), `TerminalTexture::grid_for`, `render::{grid_for, grid_for_window, raster_scale_for_window}`, `RatatuiTerminalExt::fit_to` |
+| `Rgba8Unorm` texture (linear bytes) | `Rgba8UnormSrgb` (display-ready) |
+| always-on `bevy/2d`, `bevy/ui`, `bevy/system_font_discovery` | minimal Bevy features; crate features `ui` and `system_fonts` (both default) |
+| — | `bevy_terminal::bevy` re-export |
+| `FitCellWidth` clipped glyphs taller than the cell | the cell height grows to the font's line box (`TerminalTexture::cell_size`); use `FontSizing::Px` for an exact grid |
+| `TerminalReady` on allocation (before fonts were measured) | `TerminalReady` once fonts are registered and the texture has its measured size |
+
+## Migrating from 0.3
+
+0.4 removes redundant ways of doing things:
+
+| 0.3 | 0.4 |
+|---|---|
+| `bevy_terminal::{Terminal, TerminalSurface, ..}` (flat root) | `bevy_terminal::prelude::*` or the public modules `bevy_terminal::{render, scene, surface}` |
+| `surface.begin_update()` / `SurfaceUpdate::commit` / `has_changes` | `surface.update(\|u\| { .. }) -> bool` only |
+| `SurfaceUpdate::set_cells`, `cell`, `contains` | loop with `set_cell`; out-of-range positions are ignored |
+| `TerminalSurface::metrics()` / `SurfaceMetrics` | `surface.size()` and `surface.pixel_size() -> Option<UVec2>` |
+| `TerminalRenderConfig { render_scale, font_hinting, .. }` | `raster: RasterConfig { scale, hinting }` |
+| `TerminalPlugin { collect_timings }` | `TerminalPlugin` (unit; timings always collected) |
+| `TerminalSystems::{Setup, Sync}` | `TerminalSystems::Sync` |
+| `TerminalStats::{sync_frames, unchanged_frames, cached_shapes, gpu_bytes_written}` | removed (unchanged frames report zeros) |
+| `TerminalTexture::cell_size` | removed (`size` ÷ grid) |
+| `TerminalReady { entity, image, size }` | `TerminalReady { entity }`; read `TerminalTexture` |
+| `GridSize::ZERO`, `GridSize::area`, `CellPosition::ORIGIN`, `StyleFlags::{difference, set}`, `CellOccupancy::spanning`, `TerminalSnapshot::empty` | removed |
+| `RatatuiBackend::terminal()`, `RatatuiBackend::resize` (public), `RatatuiTerminalExt::surface` | `with_terminal`, `resize_grid`, `terminal.backend().surface()` |
 
 ## License
 

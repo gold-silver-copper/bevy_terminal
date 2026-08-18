@@ -1,29 +1,27 @@
 #![doc = include_str!("../README.md")]
 
-mod color;
-mod renderer;
-mod scene;
-mod surface;
+pub mod render;
+pub mod scene;
+pub mod surface;
 
-pub use bevy::text::{FontHinting, FontSource};
-pub use color::TerminalTheme;
-pub use renderer::{
-    BlinkConfig, CursorConfig, CursorStyle, FontFaces, FontSizing, Terminal, TerminalPlugin,
-    TerminalReady, TerminalRenderConfig, TerminalRenderScale, TerminalStats, TerminalSystems,
-    TerminalTexture,
-};
-pub use scene::{
-    CellOccupancy, CellPosition, CellSymbol, GridSize, StyleFlags, TerminalCell, TerminalColor,
-    TerminalSnapshot, TerminalStyle,
-};
-pub use surface::{SurfaceMetrics, SurfaceUpdate, TerminalSurface};
+/// The Bevy version this crate is built against, re-exported so dependents that
+/// do not depend on `bevy` directly can name its types.
+pub use bevy;
 
-/// Convenient imports for applications using `bevy_terminal`.
+/// Everything an application needs, for glob import.
 pub mod prelude {
+    pub use bevy::text::{FontHinting, FontSource};
+
     pub use crate::{
-        BlinkConfig, CellOccupancy, CellPosition, CursorConfig, CursorStyle, FontFaces, FontSizing,
-        GridSize, StyleFlags, Terminal, TerminalCell, TerminalColor, TerminalPlugin, TerminalReady,
-        TerminalRenderConfig, TerminalRenderScale, TerminalSnapshot, TerminalStats, TerminalStyle,
-        TerminalSurface, TerminalTexture, TerminalTheme,
+        render::{
+            BlinkConfig, CellSizing, CursorConfig, CursorStyle, FontFaces, FontSizing,
+            RasterConfig, Terminal, TerminalPlugin, TerminalReady, TerminalRenderConfig,
+            TerminalRenderScale, TerminalStats, TerminalSystems, TerminalTexture, TerminalTheme,
+        },
+        scene::{
+            CellOccupancy, CellPosition, CellSymbol, GridSize, StyleFlags, TerminalCell,
+            TerminalColor, TerminalSnapshot, TerminalStyle,
+        },
+        surface::{SurfaceUpdate, TerminalSurface},
     };
 }
