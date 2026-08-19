@@ -35,6 +35,9 @@ ratatui = { version = "0.30.2", default-features = false, features = ["all-widge
 [dev-dependencies]
 bevy = { version = "0.19.1", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
 bevy_image_export = { git = "https://github.com/paulkre/bevy_image_export", tag = "v0.17.0" }
+# Okhsv -> sRGB gamut math for the `colors_rgb` example port; upstream Ratatui
+# uses the same crate for that example.
+palette = "0.7"
 
 [lints.rust]
 missing_docs = "warn"
