@@ -323,6 +323,7 @@ The `image_export` example uses the Git development dependency
 `bevy_image_export` to write frames under `target/render-qa/`:
 
 ```text
+cargo run --example colors_rgb                      # live full-grid true-color stress test, vsync off
 cargo run --example render_test                     # one window with every style/color/glyph check
 cargo run --example render_test -- --export         # same scene to target/render-test/<family>/
 cargo run --example render_test -- --font iosevka-fixed
@@ -330,6 +331,10 @@ cargo run --example image_export
 cargo run --example high_dpi_export
 cargo run --example multiple_terminals_export
 ```
+
+`colors_rgb` ports Ratatui's animated RGB example and redraws every cell on
+every frame, making it a live renderer-throughput stress test. Its title bar
+reports the fitted grid size and per-frame renderer statistics.
 
 `glyph_fidelity` is the clipping/seam harness: full printable ASCII in four
 faces, Latin-1/Extended-A, Greek, Cyrillic, combining-mark stacks, all box
