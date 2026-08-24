@@ -53,6 +53,37 @@ impl RatatuiBackend {
         (backend, renderer)
     }
 
+    /// Like [`with_terminal`](Self::with_terminal), but also builds the
+    /// [`ratatui::Terminal`] and draws one frame with `draw` before returning,
+    /// so the very first presented frame already shows content instead of the
+    /// empty theme background:
+    ///
+    /// ```
+    /// # use bevy_terminal_ratatui::RatatuiBackend;
+    /// # use ratatui::widgets::Paragraph;
+    /// let (terminal, renderer) = RatatuiBackend::with_terminal_drawn(80, 24, |frame| {
+    ///     frame.render_widget(Paragraph::new("Loading..."), frame.area());
+    /// });
+    /// // commands.spawn(renderer);
+    /// # let _ = (terminal, renderer);
+    /// ```
+    ///
+    /// Applications that construct the terminal elsewhere can get the same
+    /// effect by drawing from a system with an `Added<T>` filter on the
+    /// component that holds the terminal.
+    #[must_use]
+    pub fn with_terminal_drawn(
+        columns: u16,
+        rows: u16,
+        draw: impl FnOnce(&mut ratatui::Frame<'_>),
+    ) -> (ratatui::Terminal<Self>, Terminal) {
+        let (backend, renderer) = Self::with_terminal(columns, rows);
+        let mut terminal =
+            ratatui::Terminal::new(backend).expect("the in-memory backend is infallible");
+        let Ok(_) = terminal.draw(draw);
+        (terminal, renderer)
+    }
+
     /// Returns a handle that can be passed to the Bevy renderer plugin.
     #[must_use]
     pub fn surface(&self) -> TerminalSurface {

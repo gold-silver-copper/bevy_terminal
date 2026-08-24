@@ -14,7 +14,15 @@ compact Bevy renderer:
 | terminal entity | `TerminalRenderer` (`bevy_terminal::Terminal`) + `TerminalRenderConfig` | one rendered terminal; add an `ImageNode` to show it |
 | texture | `TerminalTexture` | the renderer-owned `Rgba8UnormSrgb` image (stable handle), its size, cell size and font size |
 | config | `TerminalRenderConfig` | cell sizing (`CellSizing::Logical`/`FromFont`), fonts, theme, cursor, blink, raster |
-| features | `ui`, `system_fonts` (both default) | UI `ImageNode` presentation; system font discovery |
+| features | `ui`, `system_fonts` (both default), `3d` | UI `ImageNode` presentation; system font discovery; `TerminalWorldQuad` 3D presentation |
+
+## Compatibility
+
+| `bevy_terminal_ratatui` | `bevy_terminal` | `bevy` | `ratatui` |
+|---|---|---|---|
+| 0.6 | 0.6 | 0.19 (any patch) | 0.30 |
+| 0.5 | 0.5 | 0.19.1 | 0.30 |
+| 0.3 | 0.3 | 0.19 | 0.30 |
 
 ```text
 bevy_terminal ──> bevy
@@ -85,6 +93,33 @@ physical/logical size, raster scale, cell size and effective font size) and
 `TerminalStats`, and triggers `TerminalReady` on the entity when the texture
 exists. Terminals can be spawned and despawned at any time.
 
+`TerminalReady` fires exactly once. If the texture changes size later — a grid
+resize, a configuration or raster-scale change, or a font that finished
+loading and re-measured the cell — the entity gets a `TerminalRemeasured`
+event (`previous_size`, `size`, `cell_size`). The image handle never changes,
+so UI presentation and `TerminalWorldQuad` follow along automatically;
+custom presentation only needs to observe the event when something it built
+depends on the size.
+
+### Drawing the first frame
+
+The first presented frame shows whatever the surface holds when the renderer
+first syncs it — the empty theme background if nothing has been drawn yet.
+`RatatuiBackend::with_terminal_drawn` builds the Ratatui terminal and draws
+one frame before handing it back, so the terminal has content from frame one:
+
+```no_run
+# use bevy_terminal_ratatui::prelude::*;
+# use ratatui::widgets::Paragraph;
+let (terminal, renderer) = RatatuiBackend::with_terminal_drawn(60, 20, |frame| {
+    frame.render_widget(Paragraph::new("Loading..."), frame.area());
+});
+# let _ = (terminal, renderer);
+```
+
+If the terminal lives in a component, a system with an `Added<MyTerminal>`
+filter that draws once achieves the same a frame later.
+
 Applications that do not use Ratatui can write the same surface directly; see
 the [`bevy_terminal` README](crates/bevy_terminal/README.md) for the scene API,
 texture-only use, multiple surfaces and font-face configuration.
@@ -132,6 +167,33 @@ image in place), so custom presentation code can bind it once — from the
 Run `cargo run --example multiple_terminals` for a complete scene where both
 terminals update independently and one resizes while the other remains unchanged.
 
+## World-space presentation (3D)
+
+With the `3d` feature, `TerminalWorldQuad` presents a terminal on an unlit,
+alpha-blended rectangle in a 3D scene. Its width follows the measured texture
+aspect and is rebuilt on every re-measure, so a terminal on a wall stays in
+proportion when its grid or font changes:
+
+```no_run
+# use bevy::prelude::*;
+# use bevy_terminal_ratatui::prelude::*;
+# let (_backend, renderer) = RatatuiBackend::with_terminal(80, 24);
+# let mut app = App::new();
+app.add_systems(Startup, move |mut commands: Commands| {
+    commands.spawn(Camera3d::default());
+    commands.spawn((
+        renderer.clone(),
+        TerminalWorldQuad::new(3.0), // 3 world units tall, width from the aspect
+        Transform::from_xyz(0.0, 1.5, -2.0),
+    ));
+});
+```
+
+For your own mesh (an imported screen model), skip the component: bind
+`TerminalTexture::image` to your material once — the handle is stable — and
+observe `TerminalRemeasured` if your UV mapping depends on the size. See
+`cargo run --example world_quad --features 3d`.
+
 ## Terminal emulator setup
 
 Terminal emulators work "font size in → cell size out": pick a family and a
@@ -151,7 +213,7 @@ fn setup(mut commands: Commands, window: Query<&Window>) {
         TerminalRenderConfig {
             cell_size: CellSizing::FROM_FONT,     // width = measured advance, height = 1.2 × size
             font_size: FontSizing::Px(16.0),      // zoom by mutating this
-            font: FontFaces::regular(FontSource::Family("JetBrains Mono".into())),
+            font: FontFaces::regular(font_family("JetBrains Mono")),
             raster: RasterConfig {
                 scale: TerminalRenderScale::Fixed(raster_scale_for_window(window)),
                 ..default()
@@ -300,7 +362,25 @@ color, default-background cells and partial-row repaints all *replace* rather
 than accumulate), so a translucent terminal composites correctly over a
 `ClearColor` or a 3D scene: `cargo run --example render_test -- --transparent`.
 
-## Font fallback
+## Font families
+
+`FontSource` is Bevy's type; its `Family` variant holds a `SmolStr`. Use
+`font_family("JetBrains Mono")` (any string type) instead of spelling the
+conversion out, or the re-exported `SmolStr`. To choose between installed
+families — or warn when a preferred one is missing — query `TerminalFonts`, a
+system parameter over Bevy's font collection (registered font assets plus,
+with `system_fonts`, the installed system fonts):
+
+```no_run
+# use bevy::prelude::*;
+# use bevy_terminal_ratatui::prelude::*;
+fn choose_font(mut fonts: TerminalFonts, mut config: Single<&mut TerminalRenderConfig>) {
+    match fonts.resolve_family(&["JetBrainsMono Nerd Font Mono", "JetBrains Mono"]) {
+        Some(family) => config.font = FontFaces::regular(family),
+        None => warn!("JetBrains Mono is not installed: {:?}", fonts.families()),
+    }
+}
+```
 
 Glyphs the configured faces lack (CJK, emoji, scripts) come from Bevy's
 system-wide font fallback; Bevy 0.19 does not expose a per-text fallback family

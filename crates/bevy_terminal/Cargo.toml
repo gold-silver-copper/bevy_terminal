@@ -14,11 +14,13 @@ categories = ["game-development", "gui", "rendering"]
 default = ["ui", "system_fonts"]
 # Present terminals through Bevy UI `ImageNode`s and follow the UI scale.
 ui = ["bevy/bevy_ui", "bevy/bevy_ui_render"]
+# Present terminals on world-space quads (`TerminalWorldQuad`) through `bevy_pbr`.
+3d = ["bevy/bevy_pbr", "bevy/bevy_mesh"]
 # Discover system fonts so generic families such as `FontSource::Monospace` resolve.
 system_fonts = ["bevy/system_font_discovery"]
 
 [dependencies]
-bevy = { version = "0.19.1", default-features = false, features = [
+bevy = { version = "0.19", default-features = false, features = [
     "std",
     "async_executor",
     "multi_threaded",
@@ -31,8 +33,11 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "bevy_window",
 ] }
 
+# The string type of `FontSource::Family`, re-exported so it needs no extra dependency.
+smol_str = "0.2"
+
 [dev-dependencies]
-bevy = { version = "0.19.1", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
+bevy = { version = "0.19", default-features = false, features = ["2d", "3d", "ui", "system_font_discovery"] }
 bevy_image_export = { git = "https://github.com/paulkre/bevy_image_export", tag = "v0.17.0" }
 
 [lints.rust]

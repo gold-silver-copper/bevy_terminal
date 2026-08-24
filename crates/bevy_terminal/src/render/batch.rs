@@ -168,6 +168,27 @@ pub struct TerminalReady {
     pub entity: Entity,
 }
 
+/// Triggered on a [`Terminal`] entity whenever its [`TerminalTexture`] changes
+/// physical size *after* [`TerminalReady`] has fired: a surface resize, a
+/// configuration change, a raster-scale change, or a font that arrived late and
+/// re-measured the cell. The image handle is unchanged; only its dimensions
+/// (and possibly `cell_size`) differ. Custom presentation code (a world-space
+/// quad, an export pipeline) should rebuild anything derived from the size.
+///
+/// Sizes reported here are physical pixels; [`TerminalTexture`] on the entity
+/// already holds the new values when the event is delivered.
+#[derive(Clone, Debug, EntityEvent)]
+pub struct TerminalRemeasured {
+    /// The terminal entity.
+    pub entity: Entity,
+    /// Texture size before the re-measure.
+    pub previous_size: UVec2,
+    /// Texture size after the re-measure.
+    pub size: UVec2,
+    /// Logical cell size after the re-measure.
+    pub cell_size: Vec2,
+}
+
 /// Counters for the most recent scene update of one [`Terminal`]; all zero on
 /// frames that produced no terminal work.
 #[derive(Clone, Copy, Debug, Default, Component)]
@@ -219,6 +240,8 @@ pub struct TerminalPlugin;
 
 impl Plugin for TerminalPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(feature = "3d")]
+        app.add_plugins(super::world_quad::plugin);
         app.add_systems(
             Update,
             (
@@ -1178,13 +1201,16 @@ fn sync_batch_terminals(
             || face_ids.iter().any(|id| changed_fonts.contains(id));
         state.font_ids = face_ids;
         state.fonts_ready = fonts_ready;
+        // A resize during the sync that first reports readiness is part of settling,
+        // not a re-measure; only terminals that were already ready get the event.
+        let was_ready = state.ready_sent;
         if fonts_settled && !state.ready_sent {
             // The first sync with usable fonts settles the measured cell size, so the
             // texture is now at its final size for this configuration.
             state.ready_sent = true;
             commands.trigger(TerminalReady { entity });
         }
-        sync_batch_terminal(
+        let previous_size = sync_batch_terminal(
             terminal,
             &config,
             config_changed,
@@ -1203,6 +1229,16 @@ fn sync_batch_terminals(
             window_scale,
             elapsed,
         );
+        if let Some(previous_size) = previous_size
+            && was_ready
+        {
+            commands.trigger(TerminalRemeasured {
+                entity,
+                previous_size,
+                size: output.size,
+                cell_size: output.cell_size,
+            });
+        }
     }
 }
 
@@ -1242,7 +1278,7 @@ fn sync_batch_terminal(
     ui: UiNodeItem<'_>,
     window_scale: Option<f32>,
     elapsed: f32,
-) {
+) -> Option<UVec2> {
     let surface = &terminal.surface;
     let presented = ui_present(&ui);
     stats.changed_rows = 0;
@@ -1293,7 +1329,7 @@ fn sync_batch_terminal(
     if state.last_snapshot.as_ref().is_some_and(|snapshot| {
         snapshot.revision() == surface.revision() && !text_assets_changed && !blink_changed
     }) {
-        return;
+        return None;
     }
 
     let snapshot_start = Instant::now();
@@ -1330,7 +1366,7 @@ fn sync_batch_terminal(
         .min(u128::from(u64::MAX)) as u64;
     if changed_rows.is_empty() && !full && !blink_changed {
         state.last_snapshot = Some(snapshot);
-        return;
+        return None;
     }
     // Extraction can be delayed while a newly created output or glyph atlas reaches the render
     // world. If a newer payload is already waiting in the main world, make its replacement a
@@ -1340,6 +1376,7 @@ fn sync_batch_terminal(
 
     let new_size = terminal_pixel_size(snapshot.size(), &state.raster_config);
     let output_resized = output.size != new_size;
+    let previous_size = output_resized.then_some(output.size);
     if output_resized {
         // Reallocate the image in place so the handle stays stable; the render world
         // recreates the GPU texture for the modified asset.
@@ -1409,6 +1446,7 @@ fn sync_batch_terminal(
     state.last_snapshot = Some(snapshot);
     state.blink = blink;
     state.raster_scale = raster_scale;
+    previous_size
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2703,6 +2741,43 @@ mod tests {
         assert_eq!(seen, &[(entity, UVec2::new(44, 40))]);
         let texture = app.world().get::<TerminalTexture>(entity).unwrap();
         assert_eq!(texture.size, UVec2::new(44, 40));
+    }
+
+    #[test]
+    fn terminal_remeasured_fires_on_resizes_after_ready() {
+        #[derive(Resource, Default)]
+        struct Seen(Vec<(UVec2, UVec2)>);
+        let mut app = text_app();
+        app.init_resource::<Seen>().add_observer(
+            |event: On<TerminalRemeasured>, mut seen: ResMut<Seen>| {
+                seen.0.push((event.previous_size, event.size));
+            },
+        );
+        let surface = TerminalSurface::new((4, 2));
+        let entity = app.world_mut().spawn(Terminal::new(surface.clone())).id();
+        app.update();
+        app.update();
+        assert!(
+            app.world().resource::<Seen>().0.is_empty(),
+            "settling is not a re-measure"
+        );
+        let initial = app.world().get::<TerminalTexture>(entity).unwrap().size;
+        surface.update(|update| {
+            update.resize((8, 3));
+        });
+        app.update();
+        let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+        assert_ne!(texture.size, initial);
+        assert_eq!(
+            app.world().resource::<Seen>().0,
+            vec![(initial, texture.size)]
+        );
+        app.update();
+        assert_eq!(
+            app.world().resource::<Seen>().0.len(),
+            1,
+            "no event without a resize"
+        );
     }
 
     #[test]

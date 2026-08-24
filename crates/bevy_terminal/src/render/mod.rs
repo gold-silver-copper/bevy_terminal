@@ -16,13 +16,19 @@ use crate::scene::{StyleFlags, TerminalCell, TerminalSnapshot};
 
 mod batch;
 mod color;
+mod fonts;
+#[cfg(feature = "3d")]
+mod world_quad;
 
 pub use batch::{
-    Terminal, TerminalPlugin, TerminalReady, TerminalStats, TerminalTexture, grid_for,
-    grid_for_window, raster_scale_for_window,
+    Terminal, TerminalPlugin, TerminalReady, TerminalRemeasured, TerminalStats, TerminalTexture,
+    grid_for, grid_for_window, raster_scale_for_window,
 };
 pub use color::TerminalTheme;
 use color::dim;
+pub use fonts::{SmolStr, TerminalFonts, font_family};
+#[cfg(feature = "3d")]
+pub use world_quad::TerminalWorldQuad;
 
 /// Visual shape used for the terminal cursor.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

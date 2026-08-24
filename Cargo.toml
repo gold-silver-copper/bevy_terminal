@@ -25,6 +25,8 @@ exclude = [
 default = ["ui", "system_fonts"]
 # Present terminals through Bevy UI `ImageNode`s (forwards `bevy_terminal/ui`).
 ui = ["bevy_terminal/ui"]
+# Present terminals on world-space quads (forwards `bevy_terminal/3d`).
+3d = ["bevy_terminal/3d"]
 # Discover system fonts (forwards `bevy_terminal/system_fonts`).
 system_fonts = ["bevy_terminal/system_fonts"]
 
@@ -32,8 +34,12 @@ system_fonts = ["bevy_terminal/system_fonts"]
 bevy_terminal = { version = "0.5.0", path = "crates/bevy_terminal", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets", "scrolling-regions", "std", "underline-color"] }
 
+[[example]]
+name = "world_quad"
+required-features = ["3d"]
+
 [dev-dependencies]
-bevy = { version = "0.19.1", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
+bevy = { version = "0.19", default-features = false, features = ["2d", "3d", "ui", "system_font_discovery"] }
 bevy_image_export = { git = "https://github.com/paulkre/bevy_image_export", tag = "v0.17.0" }
 # Okhsv -> sRGB gamut math for the `colors_rgb` example port; upstream Ratatui
 # uses the same crate for that example.

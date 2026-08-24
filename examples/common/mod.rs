@@ -31,8 +31,14 @@ pub fn demo_terminal() -> Terminal<RatatuiBackend> {
 
 /// Draws the representative scene into `terminal` at its current size.
 pub fn draw_demo(terminal: &mut Terminal<RatatuiBackend>) {
-    terminal
-        .draw(|frame| {
+    let Ok(_) = terminal.draw(draw_demo_frame);
+}
+
+/// Draws the representative scene into one Ratatui frame.
+#[allow(dead_code)]
+pub fn draw_demo_frame(frame: &mut ratatui::Frame<'_>) {
+    {
+        {
             let [header, body, footer] = Layout::vertical([
                 Constraint::Length(3),
                 Constraint::Min(10),
@@ -166,6 +172,6 @@ pub fn draw_demo(terminal: &mut Terminal<RatatuiBackend>) {
                 footer,
             );
             frame.set_cursor_position((11, footer.y + 1));
-        })
-        .expect("the in-memory backend is infallible");
+        }
+    }
 }

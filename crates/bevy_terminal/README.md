@@ -191,8 +191,19 @@ window metrics without knowing the renderer's internals.
   the UI scale — without it terminals are headless and `Automatic` scale is
   1.0; `system_fonts` (default) enables system font discovery — without it
   supply font assets (or `FontSource::Handle(Handle::default())` with
-  `bevy/default_font`). Font fallback for missing glyphs is Bevy's system-wide
-  fallback; there is no per-terminal fallback list in Bevy 0.19.
+  `bevy/default_font`); `3d` enables `TerminalWorldQuad`, an unlit world-space
+  rectangle whose width follows the texture aspect. Font fallback for missing
+  glyphs is Bevy's system-wide fallback; there is no per-terminal fallback
+  list in Bevy 0.19.
+- Events: `TerminalReady` fires once per terminal when its texture has been
+  measured; `TerminalRemeasured` fires on every later size change (resize,
+  config change, late font) with the previous and new size, for presentation
+  the plugin does not manage itself.
+- Font families: `font_family("Name")` builds a `FontSource::Family` from any
+  string (`SmolStr` is re-exported); the `TerminalFonts` system parameter
+  answers `has_family`, `resolve_family(&[preferred...])` and `families()`
+  from Bevy's font collection.
+- Bevy: any `0.19.x` (see the compatibility table in the workspace README).
 
 ## Examples
 

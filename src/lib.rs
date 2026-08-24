@@ -27,12 +27,15 @@ pub use bevy_terminal::*;
 /// # let _ = (terminal, bundle);
 /// ```
 pub mod prelude {
+    #[cfg(feature = "3d")]
+    pub use bevy_terminal::prelude::TerminalWorldQuad;
     pub use bevy_terminal::prelude::{
         BlinkConfig, CellOccupancy, CellPosition, CellSizing, CellSymbol, CursorConfig,
         CursorStyle, FontFaces, FontHinting, FontSizing, FontSource, GridSize, RasterConfig,
-        StyleFlags, SurfaceUpdate, TerminalCell, TerminalColor, TerminalPlugin, TerminalReady,
-        TerminalRenderConfig, TerminalRenderScale, TerminalSnapshot, TerminalStats, TerminalStyle,
-        TerminalSurface, TerminalSystems, TerminalTexture, TerminalTheme,
+        SmolStr, StyleFlags, SurfaceUpdate, TerminalCell, TerminalColor, TerminalFonts,
+        TerminalPlugin, TerminalReady, TerminalRemeasured, TerminalRenderConfig,
+        TerminalRenderScale, TerminalSnapshot, TerminalStats, TerminalStyle, TerminalSurface,
+        TerminalSystems, TerminalTexture, TerminalTheme, font_family,
     };
 
     pub use crate::{RatatuiBackend, RatatuiTerminalExt, TerminalRenderer};
