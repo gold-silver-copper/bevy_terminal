@@ -1,7 +1,6 @@
-use bevy_terminal_ratatui::RatatuiBackend;
+use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::prelude::TerminalSurface;
 use ratatui::{
-    Terminal,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -18,20 +17,18 @@ pub const ROWS: u16 = 22;
 
 #[allow(dead_code)]
 pub fn demo_surface() -> TerminalSurface {
-    demo_terminal().backend().surface()
+    demo_terminal().surface()
 }
 
 /// A Ratatui terminal showing the representative scene at the default grid.
-pub fn demo_terminal() -> Terminal<RatatuiBackend> {
-    let backend = RatatuiBackend::new(COLUMNS, ROWS);
-    let mut terminal = Terminal::new(backend).expect("the in-memory backend is infallible");
-    draw_demo(&mut terminal);
-    terminal
+pub fn demo_terminal() -> RatatuiTerminal {
+    RatatuiTerminal::drawn(COLUMNS, ROWS, draw_demo_frame).0
 }
 
 /// Draws the representative scene into `terminal` at its current size.
-pub fn draw_demo(terminal: &mut Terminal<RatatuiBackend>) {
-    let Ok(_) = terminal.draw(draw_demo_frame);
+#[allow(dead_code)]
+pub fn draw_demo(terminal: &mut RatatuiTerminal) {
+    terminal.draw(draw_demo_frame);
 }
 
 /// Draws the representative scene into one Ratatui frame.

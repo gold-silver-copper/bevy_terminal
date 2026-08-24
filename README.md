@@ -20,6 +20,7 @@ compact Bevy renderer:
 
 | `bevy_terminal_ratatui` | `bevy_terminal` | `bevy` | `ratatui` |
 |---|---|---|---|
+| 0.7 | 0.7 | 0.19 (any patch) | 0.30 |
 | 0.6 | 0.6 | 0.19 (any patch) | 0.30 |
 | 0.5 | 0.5 | 0.19.1 | 0.30 |
 | 0.3 | 0.3 | 0.19 | 0.30 |
@@ -54,8 +55,7 @@ use bevy::prelude::*;
 use bevy_terminal_ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-let (backend, renderer) = RatatuiBackend::with_terminal(60, 20);
-let mut terminal = ratatui::Terminal::new(backend)?;
+let (mut terminal, renderer) = RatatuiTerminal::new(60, 20);
 
 terminal.draw(|frame| {
     frame.render_widget(
@@ -63,7 +63,7 @@ terminal.draw(|frame| {
             .block(Block::new().borders(Borders::ALL)),
         frame.area(),
     );
-})?;
+});
 
 App::new()
     .add_plugins((DefaultPlugins, TerminalPlugin))
@@ -105,20 +105,29 @@ depends on the size.
 
 The first presented frame shows whatever the surface holds when the renderer
 first syncs it — the empty theme background if nothing has been drawn yet.
-`RatatuiBackend::with_terminal_drawn` builds the Ratatui terminal and draws
-one frame before handing it back, so the terminal has content from frame one:
+`RatatuiTerminal::drawn` draws one frame before handing the pair back, so the
+terminal has content from frame one:
 
 ```no_run
+# use bevy::prelude::*;
 # use bevy_terminal_ratatui::prelude::*;
 # use ratatui::widgets::Paragraph;
-let (terminal, renderer) = RatatuiBackend::with_terminal_drawn(60, 20, |frame| {
-    frame.render_widget(Paragraph::new("Loading..."), frame.area());
-});
-# let _ = (terminal, renderer);
+# fn setup(mut commands: Commands) {
+commands.spawn((
+    RatatuiTerminal::drawn(60, 20, |frame| {
+        frame.render_widget(Paragraph::new("Loading..."), frame.area());
+    }),
+    ImageNode::default(),
+    Node::default(),
+));
+# }
 ```
 
-If the terminal lives in a component, a system with an `Added<MyTerminal>`
-filter that draws once achieves the same a frame later.
+`RatatuiTerminal` is a component wrapping `ratatui::Terminal<RatatuiBackend>`
+(`Deref` to the inner terminal); `new`/`drawn` return it paired with the
+renderer as a bundle, so the pair spawns as-is or destructures for a
+resource-based setup. Its `draw` returns `()` — the backend is infallible —
+and `resize_grid`/`fit_to`/`surface`/`snapshot` are inherent methods.
 
 Applications that do not use Ratatui can write the same surface directly; see
 the [`bevy_terminal` README](crates/bevy_terminal/README.md) for the scene API,
@@ -134,12 +143,9 @@ ordinary `ImageNode` they take part in Bevy UI layout — here a flex row:
 ```no_run
 # use bevy::prelude::*;
 # use bevy_terminal_ratatui::prelude::*;
-let (_left_backend, left) = RatatuiBackend::with_terminal(42, 16);
-let (_right_backend, right) = RatatuiBackend::with_terminal(34, 12);
-
 App::new()
     .add_plugins((DefaultPlugins, TerminalPlugin))
-    .add_systems(Startup, move |mut commands: Commands| {
+    .add_systems(Startup, |mut commands: Commands| {
         commands.spawn(Camera2d);
         commands
             .spawn(Node {
@@ -150,8 +156,8 @@ App::new()
                 ..default()
             })
             .with_children(|row| {
-                row.spawn((left.clone(), ImageNode::default(), Node::default()));
-                row.spawn((right.clone(), ImageNode::default(), Node::default()));
+                row.spawn((RatatuiTerminal::new(42, 16), ImageNode::default(), Node::default()));
+                row.spawn((RatatuiTerminal::new(34, 12), ImageNode::default(), Node::default()));
             });
     });
 ```
@@ -177,22 +183,30 @@ proportion when its grid or font changes:
 ```no_run
 # use bevy::prelude::*;
 # use bevy_terminal_ratatui::prelude::*;
-# let (_backend, renderer) = RatatuiBackend::with_terminal(80, 24);
 # let mut app = App::new();
-app.add_systems(Startup, move |mut commands: Commands| {
+app.add_systems(Startup, |mut commands: Commands| {
     commands.spawn(Camera3d::default());
     commands.spawn((
-        renderer.clone(),
+        RatatuiTerminal::new(80, 24),
         TerminalWorldQuad::new(3.0), // 3 world units tall, width from the aspect
         Transform::from_xyz(0.0, 1.5, -2.0),
     ));
 });
 ```
 
-For your own mesh (an imported screen model), skip the component: bind
-`TerminalTexture::image` to your material once — the handle is stable — and
-observe `TerminalRemeasured` if your UV mapping depends on the size. See
+The material contract: the plugin writes only `base_color_texture`, `unlit`,
+`alpha_mode`, `double_sided` and `cull_mode` (the fields the component
+mirrors; `TerminalWorldQuad::two_sided()` makes a screen readable from
+behind). Every other `StandardMaterial` field — emissive texture and tint,
+roughness, base color — is yours and survives re-syncs, so a "power state"
+system can dim the plugin-created material safely. See
 `cargo run --example world_quad --features 3d`.
+
+For your own mesh (an imported screen model), skip the component: bind
+`TerminalTexture::image` in your material once on `TerminalReady` — the
+handle is stable — and observe `TerminalRemeasured` if your UV mapping depends
+on the size. `cargo run --example imported_screen --features 3d` walks
+through it with a curved screen mesh, an emissive material and a power toggle.
 
 ## Terminal emulator setup
 
@@ -203,13 +217,10 @@ size, derive the cell from the font, and fit as many cells as the window holds.
 # use bevy::prelude::*;
 # use bevy_terminal_ratatui::prelude::*;
 # use bevy_terminal_ratatui::render::raster_scale_for_window;
-# #[derive(Resource)] struct Tui(ratatui::Terminal<RatatuiBackend>);
 fn setup(mut commands: Commands, window: Query<&Window>) {
-    let (backend, renderer) = RatatuiBackend::with_terminal(80, 24);
-    commands.insert_resource(Tui(ratatui::Terminal::new(backend).unwrap()));
     let window = window.single().unwrap();
     commands.spawn((
-        renderer,
+        RatatuiTerminal::new(80, 24),
         TerminalRenderConfig {
             cell_size: CellSizing::FROM_FONT,     // width = measured advance, height = 1.2 × size
             font_size: FontSizing::Px(16.0),      // zoom by mutating this
@@ -228,14 +239,15 @@ fn setup(mut commands: Commands, window: Query<&Window>) {
 // Each frame (or on WindowResized): fit the grid to the window at the current
 // cell size (`TerminalTexture::cell_size` is the logical cell the renderer
 // settled on), then draw as usual.
-fn fit(mut tui: ResMut<Tui>, textures: Query<&TerminalTexture>, window: Query<&Window>) {
-    if let (Ok(texture), Ok(window)) = (textures.single(), window.single()) {
-        tui.0.fit_to(texture, window.resolution.size());
+fn fit(mut tui: Single<(&mut RatatuiTerminal, &TerminalTexture)>, window: Query<&Window>) {
+    let (terminal, texture) = &mut *tui;
+    if let Ok(window) = window.single() {
+        terminal.fit_to(texture, window.resolution.size());
     }
 }
 ```
 
-`fit_to` (from `RatatuiTerminalExt`) resizes both the surface and Ratatui's
+`RatatuiTerminal::fit_to` resizes both the surface and Ratatui's
 buffers and returns whether the grid changed; `TerminalTexture::grid_for` and
 `render::grid_for_window` give the same computation without resizing.
 
@@ -248,16 +260,13 @@ startup, and resize on `WindowResized`:
 ```no_run
 # use bevy::{prelude::*, window::WindowResized};
 # use bevy_terminal_ratatui::prelude::*;
-# #[derive(Resource)] struct Tui(ratatui::Terminal<RatatuiBackend>);
 fn on_resize(
     mut resized: MessageReader<WindowResized>,
-    mut tui: ResMut<Tui>,
-    textures: Query<&TerminalTexture>,
+    mut tui: Single<(&mut RatatuiTerminal, &TerminalTexture)>,
 ) {
+    let (terminal, texture) = &mut *tui;
     for event in resized.read() {
-        if let Ok(texture) = textures.single() {
-            tui.0.fit_to(texture, Vec2::new(event.width, event.height));
-        }
+        terminal.fit_to(texture, Vec2::new(event.width, event.height));
     }
 }
 ```
@@ -389,12 +398,31 @@ with the symbol coverage you need (see `assets/fonts/README.md`).
 
 ## Resizing
 
-`RatatuiTerminalExt::resize_grid` resizes the backend grid and Ratatui's own
+`RatatuiTerminal::resize_grid` resizes the backend grid and Ratatui's own
 double buffers together:
 
 ```ignore
-use bevy_terminal_ratatui::RatatuiTerminalExt;
 terminal.resize_grid(columns, rows);
+```
+
+## Testing drawn content
+
+`RatatuiTerminal::snapshot()` (or `surface().snapshot()`) returns the
+`TerminalSnapshot` the renderer would draw, so tests assert against the real
+backend instead of a parallel `TestBackend` draw path. `to_text()` /
+`Display` give the screen as plain rows (wide glyphs once, styles dropped);
+`iter()` yields `(CellPosition, &TerminalCell)` for style assertions:
+
+```
+# use bevy_terminal_ratatui::prelude::*;
+# use ratatui::widgets::Paragraph;
+let (terminal, _renderer) = RatatuiTerminal::drawn(12, 2, |frame| {
+    frame.render_widget(Paragraph::new("Loading..."), frame.area());
+});
+let snapshot = terminal.snapshot();
+assert!(snapshot.to_text().contains("Loading..."));
+assert_eq!(snapshot.row_text(1).trim(), "");
+assert!(snapshot.iter().all(|(_, cell)| cell.style.background == TerminalColor::Default));
 ```
 
 ## Render QA
@@ -437,7 +465,7 @@ no pixel off the fill color and the line tiles are continuous, at 1×, 1.5×,
 2× and 3×.
 
 Every windowed example is resizable: the grid follows the window at the
-renderer's measured cell size (`RatatuiTerminalExt::fit_to`, see
+renderer's measured cell size (`RatatuiTerminal::fit_to`, see
 `examples/common/app.rs::fit_grid_to_window`) instead of the window being sized
 from a fixed column × row count.
 
@@ -523,7 +551,7 @@ are discarded rather than retained as host-side scrollback.
 | `slow_blink_hz`, `rapid_blink_hz` (0 = off) | `blink: BlinkConfig { slow_hz: Option, rapid_hz: Option }` |
 | `RetainedBevyTerminalPlugin`, `TerminalRenderStats`, `TerminalRoot` | removed |
 | `RatatuiBackend::snapshot()` | `backend.surface().snapshot()` |
-| `backend.resize(c, r); terminal.autoresize()?` | `terminal.resize_grid(c, r)` (`RatatuiTerminalExt`) |
+| `backend.resize(c, r); terminal.autoresize()?` | `terminal.resize_grid(c, r)` |
 | `update.set_cell(x, y, &cell)`, `set_cursor_position(x, y)` | `set_cell((x, y), &cell)`, `set_cursor_position((x, y))` (any `Into<CellPosition>`) |
 | `clear_from` / `clear_through` / `clear_row_from` | `clear_range(start, end)` |
 | `TerminalCell::occupancy` field, `with_occupancy` | `occupancy()`; construct with `new`/`wide`/`continuation_of` |
@@ -543,7 +571,7 @@ are discarded rather than retained as host-side scrollback.
 | `terminal.config()` / `config_mut()` | `TerminalRenderConfig` is its own (required) component; query/mutate it directly |
 | `TerminalPlugin` (unit) | `TerminalPlugin` (`collect_timings` field) |
 | `bevy_terminal::Terminal` in the Ratatui prelude | `TerminalRenderer` (alias; the lower crate still calls it `Terminal`) |
-| `RatatuiBackend::new(c, r)` + `Terminal::new(backend.surface())` | `RatatuiBackend::with_terminal(c, r)` → `(backend, renderer)`; also `backend.terminal()`, `terminal.surface()` |
+| `RatatuiBackend::new(c, r)` + `Terminal::new(backend.surface())` | `RatatuiTerminal::new(c, r)` → `(terminal, renderer)` |
 | `TerminalSurface::new(c, r)`, `update.resize(c, r)` | `new((c, r))`, `resize((c, r))` (any `Into<GridSize>`) |
 | `snapshot.cell(x, y)`, `GridSize::contains(pos)` | `cell((x, y))`, `contains((x, y))` (any `Into<CellPosition>`) |
 | `TerminalTheme::cursor` | removed (use `CursorConfig::color`) |
@@ -579,7 +607,19 @@ are discarded rather than retained as host-side scrollback.
 | `TerminalTexture::cell_size` | removed (`size` ÷ grid) |
 | `TerminalReady { entity, image, size }` | `TerminalReady { entity }`; read `TerminalTexture` |
 | `GridSize::ZERO`, `GridSize::area`, `CellPosition::ORIGIN`, `StyleFlags::{difference, set}`, `CellOccupancy::spanning`, `TerminalSnapshot::empty` | removed |
-| `RatatuiBackend::terminal()`, `RatatuiBackend::resize` (public), `RatatuiTerminalExt::surface` | `with_terminal`, `resize_grid`, `terminal.backend().surface()` |
+| `RatatuiBackend::terminal()`, `RatatuiBackend::resize` (public), `RatatuiTerminalExt::surface` | `RatatuiTerminal::{new, resize_grid, surface}` |
+
+## Migrating from 0.6
+
+| 0.6 | 0.7 |
+|---|---|
+| `RatatuiBackend::with_terminal(c, r)` → `(backend, renderer)` + `ratatui::Terminal::new(backend)?` | `RatatuiTerminal::new(c, r)` → `(RatatuiTerminal, renderer)`, a spawnable bundle |
+| `RatatuiBackend::with_terminal_drawn(c, r, f)` | `RatatuiTerminal::drawn(c, r, f)` |
+| `RatatuiTerminalExt::{resize_grid, fit_to}` on `ratatui::Terminal<RatatuiBackend>` | inherent methods on `RatatuiTerminal` (which derefs to the inner terminal) |
+| `terminal.draw(f)?` / `let Ok(_) = terminal.draw(f)` | `terminal.draw(f)` returns `()` |
+| `terminal.backend().surface()` | `terminal.surface()`; `terminal.snapshot()` for assertions |
+| — | `TerminalSnapshot::{iter, row_text, to_text}` + `Display` |
+| `TerminalWorldQuad { height, unlit, alpha_mode }` | + `double_sided`, `cull_mode`, `two_sided()`, and a documented material write-set contract |
 
 ## License
 

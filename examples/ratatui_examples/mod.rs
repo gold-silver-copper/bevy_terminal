@@ -12,9 +12,9 @@ mod interaction;
 mod state;
 mod support;
 
-use bevy_terminal_ratatui::RatatuiBackend;
+use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::prelude::TerminalSurface;
-use ratatui::{Frame, Terminal};
+use ratatui::Frame;
 
 pub const COLUMNS: u16 = 100;
 pub const ROWS: u16 = 62;
@@ -267,13 +267,11 @@ pub fn find(slug: &str) -> Option<&'static ExampleSpec> {
 }
 
 pub fn draw_surface(spec: &ExampleSpec) -> TerminalSurface {
-    let backend = RatatuiBackend::new(COLUMNS, ROWS);
-    let surface = backend.surface();
-    let mut terminal = Terminal::new(backend).expect("the in-memory backend is infallible");
-    terminal
-        .draw(|frame| (spec.render)(frame, &ExampleState::canonical(spec.slug)))
-        .expect("the in-memory backend is infallible");
-    surface
+    RatatuiTerminal::drawn(COLUMNS, ROWS, |frame| {
+        (spec.render)(frame, &ExampleState::canonical(spec.slug));
+    })
+    .0
+    .surface()
 }
 
 pub fn redraw_surface(surface: &TerminalSurface, spec: &ExampleSpec) {
@@ -281,16 +279,14 @@ pub fn redraw_surface(surface: &TerminalSurface, spec: &ExampleSpec) {
 }
 
 pub fn redraw_interactive_terminal(
-    terminal: &mut Terminal<RatatuiBackend>,
+    terminal: &mut RatatuiTerminal,
     spec: &ExampleSpec,
     state: &ExampleState,
 ) {
-    terminal
-        .draw(|frame| {
-            (spec.render)(frame, state);
-            interaction::render_help(frame, spec, state);
-        })
-        .expect("the in-memory backend is infallible");
+    terminal.draw(|frame| {
+        (spec.render)(frame, state);
+        interaction::render_help(frame, spec, state);
+    });
 }
 
 pub fn redraw_interactive_surface(
@@ -298,9 +294,8 @@ pub fn redraw_interactive_surface(
     spec: &ExampleSpec,
     state: &ExampleState,
 ) {
-    let backend = RatatuiBackend::new(COLUMNS, ROWS);
-    let rendered_surface = backend.surface();
-    let mut terminal = Terminal::new(backend).expect("the in-memory backend is infallible");
+    let (mut terminal, _renderer) = RatatuiTerminal::new(COLUMNS, ROWS);
+    let rendered_surface = terminal.surface();
     redraw_interactive_terminal(&mut terminal, spec, state);
 
     // Publish every cell in one surface transaction. In particular, do not

@@ -46,9 +46,8 @@ use bevy_terminal_ratatui::prelude::{
     CellSizing, CursorConfig, FontFaces, FontSizing, RasterConfig, TerminalPlugin, TerminalReady,
     TerminalRenderConfig, TerminalRenderScale, TerminalSnapshot, TerminalSystems, TerminalTexture,
 };
-use bevy_terminal_ratatui::{RatatuiBackend, TerminalRenderer};
+use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 use ratatui::{
-    Terminal,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -400,9 +399,7 @@ fn main() {
     let windowed_family = families[0].name;
     app.add_systems(Startup, move |mut commands: Commands| {
         for (index, (family, scale)) in cases.iter().enumerate() {
-            let backend = RatatuiBackend::new(COLUMNS, ROWS);
-            let surface = backend.surface();
-            let mut terminal = Terminal::new(backend).expect("in-memory backend");
+            let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS);
             draw_harness(&mut terminal, family.name, scale.unwrap_or(1.0), None);
             let config = TerminalRenderConfig {
                 cell_size: CELL.into(),
@@ -426,7 +423,7 @@ fn main() {
             };
             if headless {
                 commands.spawn((
-                    common::app::headless_terminal(TerminalRenderer::new(surface), config),
+                    common::app::headless_terminal(renderer, config),
                     case,
                     Drawn(terminal),
                     TitledWith::default(),
@@ -434,11 +431,7 @@ fn main() {
             } else if index == 0 {
                 commands.spawn(Camera2d);
                 commands.spawn((
-                    common::app::ui_terminal(
-                        TerminalRenderer::new(surface),
-                        config,
-                        Vec2::splat(MARGIN),
-                    ),
+                    common::app::ui_terminal(renderer, config, Vec2::splat(MARGIN)),
                     case,
                     Drawn(terminal),
                     TitledWith::default(),
@@ -470,7 +463,7 @@ static RESULT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(
 
 /// The Ratatui terminal that draws a case (kept to redraw the title once metrics are known).
 #[derive(Component)]
-struct Drawn(Terminal<RatatuiBackend>);
+struct Drawn(RatatuiTerminal);
 
 /// The metrics the title was last drawn with, so it is redrawn only when they
 /// actually change (the texture component is written on every sync).
@@ -507,15 +500,13 @@ fn on_ready(
         if !case.is_reference && case.reference.is_none() {
             // Same font size and content in a cell 6 px wider and 10 px taller: the
             // oracle for "was anything clipped".
-            let backend = RatatuiBackend::new(COLUMNS, ROWS);
-            let surface = backend.surface();
-            let mut terminal = Terminal::new(backend).expect("in-memory backend");
+            let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS);
             draw_harness(&mut terminal, case.family, scale, None);
             let faces = config.font.clone();
             let reference = commands
                 .spawn((
                     common::app::headless_terminal(
-                        TerminalRenderer::new(surface),
+                        renderer,
                         TerminalRenderConfig {
                             cell_size: CellSizing::Logical(
                                 texture.cell_size + Vec2::new(6.0, 10.0),
@@ -690,87 +681,85 @@ fn checker(column: u16, row: u16) -> Color {
 
 /// Draws the whole harness into `terminal`.
 fn draw_harness(
-    terminal: &mut Terminal<RatatuiBackend>,
+    terminal: &mut RatatuiTerminal,
     family: &str,
     scale: f32,
     metrics: Option<(Vec2, f32)>,
 ) {
-    terminal
-        .draw(|frame| {
-            let mut lines: Vec<Line> = vec![Line::raw(""); usize::from(ROWS)];
-            let title = match metrics {
-                Some((cell, font)) => format!(
-                    "glyph fidelity · {family} · {scale}x · cell {}×{} · font {font:.2} px",
-                    cell.x, cell.y
-                ),
-                None => format!("glyph fidelity · {family} · {scale}x · measuring…"),
-            };
-            lines[usize::from(ROW_TITLE)] = Line::raw(title);
-            let ascii: String = (0x20u8..=0x7e).map(char::from).collect();
-            for (row, modifier) in ROWS_ASCII.into_iter().zip([
-                Modifier::empty(),
-                Modifier::BOLD,
-                Modifier::ITALIC,
-                Modifier::BOLD | Modifier::ITALIC,
-            ]) {
-                lines[usize::from(row)] = Line::from(Span::styled(
-                    ascii.clone(),
-                    Style::new().add_modifier(modifier),
-                ));
-            }
-            lines[usize::from(ROWS_LATIN[0])] = Line::raw(LATIN_1);
-            lines[usize::from(ROWS_LATIN[1])] = Line::raw(LATIN_EXT);
-            lines[usize::from(ROW_GREEK)] = Line::raw(GREEK);
-            lines[usize::from(ROW_CYRILLIC)] = Line::raw(CYRILLIC);
-            let marks: Vec<Span> = MARKS
-                .iter()
-                .flat_map(|mark| [Span::raw(*mark), Span::raw(" ")])
-                .collect();
-            lines[usize::from(ROW_MARKS)] = Line::from(marks);
-            let boxes: String = (0x2500u32..=0x257f).filter_map(char::from_u32).collect();
-            let (first, second) = boxes.split_at(boxes.chars().take(64).map(char::len_utf8).sum());
-            lines[usize::from(ROWS_BOX[0])] = Line::raw(first.to_owned());
-            lines[usize::from(ROWS_BOX[1])] = Line::raw(second.to_owned());
-            let blocks: String = (0x2580u32..=0x259f).filter_map(char::from_u32).collect();
-            lines[usize::from(ROW_BLOCKS)] = Line::raw(format!("{blocks} {BRAILLE} {SHAPES}"));
-            lines[usize::from(ROW_ARROWS)] = Line::raw(ARROWS);
-            lines[usize::from(ROW_WIDE)] = Line::raw(WIDE);
-            for (top, tiles) in [(TILE_ROWS_A, TILES_A), (TILE_ROWS_B, TILES_B)] {
-                for row in 0..TILE_HEIGHT {
-                    let mut text = String::new();
-                    for (index, tile) in tiles.iter().enumerate() {
-                        for column in 0..TILE_WIDTH {
-                            text.push(tile.symbol(column, row));
-                        }
-                        if index + 1 < tiles.len() {
-                            text.push(' ');
-                        }
+    terminal.draw(|frame| {
+        let mut lines: Vec<Line> = vec![Line::raw(""); usize::from(ROWS)];
+        let title = match metrics {
+            Some((cell, font)) => format!(
+                "glyph fidelity · {family} · {scale}x · cell {}×{} · font {font:.2} px",
+                cell.x, cell.y
+            ),
+            None => format!("glyph fidelity · {family} · {scale}x · measuring…"),
+        };
+        lines[usize::from(ROW_TITLE)] = Line::raw(title);
+        let ascii: String = (0x20u8..=0x7e).map(char::from).collect();
+        for (row, modifier) in ROWS_ASCII.into_iter().zip([
+            Modifier::empty(),
+            Modifier::BOLD,
+            Modifier::ITALIC,
+            Modifier::BOLD | Modifier::ITALIC,
+        ]) {
+            lines[usize::from(row)] = Line::from(Span::styled(
+                ascii.clone(),
+                Style::new().add_modifier(modifier),
+            ));
+        }
+        lines[usize::from(ROWS_LATIN[0])] = Line::raw(LATIN_1);
+        lines[usize::from(ROWS_LATIN[1])] = Line::raw(LATIN_EXT);
+        lines[usize::from(ROW_GREEK)] = Line::raw(GREEK);
+        lines[usize::from(ROW_CYRILLIC)] = Line::raw(CYRILLIC);
+        let marks: Vec<Span> = MARKS
+            .iter()
+            .flat_map(|mark| [Span::raw(*mark), Span::raw(" ")])
+            .collect();
+        lines[usize::from(ROW_MARKS)] = Line::from(marks);
+        let boxes: String = (0x2500u32..=0x257f).filter_map(char::from_u32).collect();
+        let (first, second) = boxes.split_at(boxes.chars().take(64).map(char::len_utf8).sum());
+        lines[usize::from(ROWS_BOX[0])] = Line::raw(first.to_owned());
+        lines[usize::from(ROWS_BOX[1])] = Line::raw(second.to_owned());
+        let blocks: String = (0x2580u32..=0x259f).filter_map(char::from_u32).collect();
+        lines[usize::from(ROW_BLOCKS)] = Line::raw(format!("{blocks} {BRAILLE} {SHAPES}"));
+        lines[usize::from(ROW_ARROWS)] = Line::raw(ARROWS);
+        lines[usize::from(ROW_WIDE)] = Line::raw(WIDE);
+        for (top, tiles) in [(TILE_ROWS_A, TILES_A), (TILE_ROWS_B, TILES_B)] {
+            for row in 0..TILE_HEIGHT {
+                let mut text = String::new();
+                for (index, tile) in tiles.iter().enumerate() {
+                    for column in 0..TILE_WIDTH {
+                        text.push(tile.symbol(column, row));
                     }
-                    lines[usize::from(top + row)] = Line::raw(text);
-                }
-            }
-            // Content starts at column 1 (guard column at 0); a smaller grid (a
-            // resized window) crops it.
-            let area = frame.area();
-            let content = ratatui::layout::Rect::new(
-                1,
-                0,
-                CONTENT.min(area.width.saturating_sub(2)),
-                ROWS.min(area.height),
-            );
-            frame.render_widget(Paragraph::new(lines), content);
-            let buffer = frame.buffer_mut();
-            for row in 0..area.height {
-                for column in 0..area.width {
-                    let cell = &mut buffer[(column, row)];
-                    if column == 0 || column == area.width - 1 {
-                        cell.set_symbol("│");
+                    if index + 1 < tiles.len() {
+                        text.push(' ');
                     }
-                    cell.set_fg(INK).set_bg(checker(column, row));
                 }
+                lines[usize::from(top + row)] = Line::raw(text);
             }
-        })
-        .expect("in-memory backend");
+        }
+        // Content starts at column 1 (guard column at 0); a smaller grid (a
+        // resized window) crops it.
+        let area = frame.area();
+        let content = ratatui::layout::Rect::new(
+            1,
+            0,
+            CONTENT.min(area.width.saturating_sub(2)),
+            ROWS.min(area.height),
+        );
+        frame.render_widget(Paragraph::new(lines), content);
+        let buffer = frame.buffer_mut();
+        for row in 0..area.height {
+            for column in 0..area.width {
+                let cell = &mut buffer[(column, row)];
+                if column == 0 || column == area.width - 1 {
+                    cell.set_symbol("│");
+                }
+                cell.set_fg(INK).set_bg(checker(column, row));
+            }
+        }
+    });
 }
 
 /// Reads one texel of a padded readback.

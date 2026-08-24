@@ -1574,15 +1574,17 @@ dependencies = [
 
 [[package]]
 name = "bevy_terminal"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bevy",
+ "smol_str",
 ]
 
 [[package]]
 name = "bevy_terminal_ratatui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
+ "bevy",
  "bevy_terminal",
  "ratatui",
 ]

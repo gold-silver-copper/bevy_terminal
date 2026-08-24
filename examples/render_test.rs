@@ -28,13 +28,12 @@ use bevy::{
     window::{PrimaryWindow, WindowResolution},
 };
 use bevy_image_export::ImageExportPlugin;
+use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::prelude::{
     CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalRenderConfig,
     TerminalRenderScale, TerminalSystems, TerminalTexture, TerminalTheme,
 };
-use bevy_terminal_ratatui::{RatatuiBackend, TerminalRenderer};
 use ratatui::{
-    Terminal,
     layout::Position,
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -156,7 +155,7 @@ impl LoadedFamily {
 struct FontCycle {
     families: Vec<LoadedFamily>,
     current: usize,
-    terminal: Terminal<RatatuiBackend>,
+    terminal: RatatuiTerminal,
 }
 
 /// Loads every vendored family that is present on disk; missing files are skipped.
@@ -196,9 +195,7 @@ fn main() {
         .position(|argument| argument == "--font")
         .and_then(|index| args.get(index + 1).cloned())
         .or_else(|| std::env::var("RENDER_TEST_FONT").ok());
-    let backend = RatatuiBackend::new(COLUMNS, ROWS);
-    let surface = backend.surface();
-    let mut terminal = Terminal::new(backend).expect("the in-memory backend is infallible");
+    let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS);
     draw_render_test(&mut terminal, FAMILIES[0].0);
     let theme = TerminalTheme {
         background: if transparent {
@@ -283,7 +280,7 @@ fn main() {
         app.add_plugins(export_plugin)
             .add_systems(Startup, move |mut commands: Commands| {
                 commands.spawn(common::app::headless_terminal(
-                    TerminalRenderer::new(surface.clone()),
+                    renderer.clone(),
                     config.clone(),
                 ));
             })
@@ -297,7 +294,7 @@ fn main() {
         app.add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(Camera2d);
             commands.spawn(common::app::ui_terminal(
-                TerminalRenderer::new(surface.clone()),
+                renderer.clone(),
                 config.clone(),
                 Vec2::splat(MARGIN),
             ));
@@ -380,7 +377,7 @@ fn modifier_combination(bits: u16) -> Modifier {
         .fold(Modifier::empty(), |set, (_, (modifier, _))| set | *modifier)
 }
 
-fn draw_render_test(terminal: &mut Terminal<RatatuiBackend>, font_name: &str) {
+fn draw_render_test(terminal: &mut RatatuiTerminal, font_name: &str) {
     terminal
         .draw(|frame| {
             let mut lines: Vec<Line> = Vec::new();
@@ -631,8 +628,7 @@ fn draw_render_test(terminal: &mut Terminal<RatatuiBackend>, font_name: &str) {
 
             frame.render_widget(Paragraph::new(lines), frame.area());
             frame.set_cursor_position(Position::new(14, cursor_row_of_cursor_line()));
-        })
-        .expect("drawing into the in-memory backend is infallible");
+        });
 }
 
 /// Row index of the "cursor here >" line, derived from the fixed layout above.

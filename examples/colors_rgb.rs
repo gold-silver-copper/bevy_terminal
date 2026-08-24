@@ -34,14 +34,13 @@ use bevy::{
     window::{PresentMode, PrimaryWindow},
     winit::{UpdateMode, WinitSettings},
 };
+use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::prelude::{
     CellSizing, FontSizing, TerminalPlugin, TerminalRenderConfig, TerminalStats, TerminalSystems,
     TerminalTexture,
 };
-use bevy_terminal_ratatui::{RatatuiBackend, TerminalRenderer};
 use palette::{Okhsv, Srgb, convert::FromColorUnclamped};
 use ratatui::{
-    Terminal,
     buffer::Buffer,
     layout::{Constraint, Layout, Position, Rect},
     style::Color,
@@ -65,9 +64,7 @@ const INITIAL_COLUMNS: u16 = 80;
 const INITIAL_ROWS: u16 = 24;
 
 fn main() {
-    let backend = RatatuiBackend::new(INITIAL_COLUMNS, INITIAL_ROWS);
-    let terminal = Terminal::new(backend).expect("the in-memory backend is infallible");
-    let surface = terminal.backend().surface();
+    let (terminal, renderer) = RatatuiTerminal::new(INITIAL_COLUMNS, INITIAL_ROWS);
     let config = TerminalRenderConfig {
         cell_size: CellSizing::FromFont { line_height: 1.2 },
         font_size: FontSizing::Px(FONT_SIZE),
@@ -101,7 +98,7 @@ fn main() {
         .add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(Camera2d);
             commands.spawn(app::ui_terminal(
-                TerminalRenderer::new(surface.clone()),
+                renderer.clone(),
                 config.clone(),
                 Vec2::splat(MARGIN),
             ));
@@ -114,7 +111,7 @@ fn main() {
 #[derive(Resource)]
 struct ColorsRgb {
     /// The Ratatui terminal writing into the renderer's surface.
-    terminal: Terminal<RatatuiBackend>,
+    terminal: RatatuiTerminal,
     /// The ported upstream application.
     example: ColorsApp,
     /// Throttle for the window-title statistics.
@@ -131,9 +128,7 @@ fn draw(
         terminal, example, ..
     } = &mut *colors;
     app::fit_grid_to_window(terminal, &textures, &windows, MARGIN);
-    terminal
-        .draw(|frame| frame.render_widget(&mut *example, frame.area()))
-        .expect("the in-memory backend is infallible");
+    terminal.draw(|frame| frame.render_widget(&mut *example, frame.area()));
 }
 
 /// Shows the grid size and the renderer's per-frame statistics in the window

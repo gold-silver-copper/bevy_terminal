@@ -2,7 +2,7 @@
 
 mod backend;
 
-pub use backend::{RatatuiBackend, RatatuiTerminalExt};
+pub use backend::{RatatuiBackend, RatatuiTerminal};
 /// The Bevy terminal renderer this backend writes into.
 pub use bevy_terminal;
 /// The renderer component, under a name that does not collide with
@@ -19,12 +19,9 @@ pub use bevy_terminal::*;
 /// ```
 /// use bevy::prelude::*;
 /// use bevy_terminal_ratatui::prelude::*;
-/// use ratatui::Terminal;
 ///
-/// let (backend, renderer) = RatatuiBackend::with_terminal(10, 3);
-/// let terminal: Terminal<RatatuiBackend> = Terminal::new(backend).unwrap();
-/// let bundle = (renderer, TerminalRenderConfig::default(), ImageNode::default(), Node::default());
-/// # let _ = (terminal, bundle);
+/// let bundle = (RatatuiTerminal::new(10, 3), TerminalRenderConfig::default(), ImageNode::default());
+/// # let _ = bundle;
 /// ```
 pub mod prelude {
     #[cfg(feature = "3d")]
@@ -38,5 +35,5 @@ pub mod prelude {
         TerminalSystems, TerminalTexture, TerminalTheme, font_family,
     };
 
-    pub use crate::{RatatuiBackend, RatatuiTerminalExt, TerminalRenderer};
+    pub use crate::{RatatuiBackend, RatatuiTerminal, TerminalRenderer};
 }

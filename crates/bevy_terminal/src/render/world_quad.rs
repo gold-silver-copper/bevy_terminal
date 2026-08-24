@@ -1,7 +1,9 @@
 //! World-space presentation: [`TerminalWorldQuad`] shows a terminal on an
 //! unlit 3D rectangle whose aspect ratio follows the measured texture.
 
-use bevy::{asset::Assets, mesh::Mesh3d, pbr::MeshMaterial3d, prelude::*};
+use bevy::{
+    asset::Assets, mesh::Mesh3d, pbr::MeshMaterial3d, prelude::*, render::render_resource::Face,
+};
 
 use super::{TerminalSystems, TerminalTexture};
 
@@ -13,6 +15,16 @@ use super::{TerminalSystems, TerminalTexture};
 /// `StandardMaterial` bound to the terminal image. The mesh is rebuilt whenever
 /// the texture is (re)measured or this component changes; the material is
 /// created once because the image handle is stable.
+///
+/// # Material contract
+///
+/// The sync system writes exactly five `StandardMaterial` fields:
+/// `base_color_texture`, `unlit`, `alpha_mode`, `double_sided` and
+/// `cull_mode` — the ones mirrored by this component. Every other field
+/// (emissive color and texture, base color tint, perceptual roughness, …) is
+/// owned by the application and survives every re-sync, so customizing the
+/// plugin-created material from your own systems is supported, not
+/// accidental.
 ///
 /// Entities with their own mesh (an imported screen model, say) do not need
 /// this: bind [`TerminalTexture::image`] to your material once and observe
@@ -30,6 +42,12 @@ pub struct TerminalWorldQuad {
     /// Alpha mode of the material (default `AlphaMode::Blend`, so a
     /// transparent theme background shows the scene behind the quad).
     pub alpha_mode: AlphaMode,
+    /// Whether the back face is lit as a front face (default `false`).
+    /// Pair with `cull_mode: None` for a screen readable from behind.
+    pub double_sided: bool,
+    /// Which face is culled (default `Some(Face::Back)`); `None` renders the
+    /// quad from both sides.
+    pub cull_mode: Option<Face>,
 }
 
 impl Default for TerminalWorldQuad {
@@ -46,7 +64,32 @@ impl TerminalWorldQuad {
             height,
             unlit: true,
             alpha_mode: AlphaMode::Blend,
+            double_sided: false,
+            cull_mode: Some(Face::Back),
         }
+    }
+
+    /// Renders the quad from both sides (`double_sided = true`, `cull_mode =
+    /// None`).
+    #[must_use]
+    pub const fn two_sided(mut self) -> Self {
+        self.double_sided = true;
+        self.cull_mode = None;
+        self
+    }
+
+    /// Sets whether the material ignores lighting.
+    #[must_use]
+    pub const fn with_unlit(mut self, unlit: bool) -> Self {
+        self.unlit = unlit;
+        self
+    }
+
+    /// Sets the material's alpha mode.
+    #[must_use]
+    pub const fn with_alpha_mode(mut self, alpha_mode: AlphaMode) -> Self {
+        self.alpha_mode = alpha_mode;
+        self
     }
 
     /// Size of the quad in world units for a texture of `size` pixels.
@@ -112,6 +155,8 @@ fn sync_world_quads(
         material.base_color_texture = Some(texture.image.clone());
         material.unlit = quad.unlit;
         material.alpha_mode = quad.alpha_mode;
+        material.double_sided = quad.double_sided;
+        material.cull_mode = quad.cull_mode;
     }
 }
 
@@ -164,11 +209,32 @@ mod tests {
             .unwrap();
         assert_eq!(aabb.half_extents.truncate() * 2.0, expected);
 
+        // Application-owned fields survive a re-sync (the material contract).
+        let emissive = Handle::<Image>::default();
+        {
+            let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+            let mut standard = materials.get_mut(&material).unwrap();
+            standard.emissive_texture = Some(emissive.clone());
+            standard.emissive = LinearRgba::rgb(2.0, 0.5, 0.0);
+            standard.perceptual_roughness = 0.1;
+        }
+        app.world_mut()
+            .get_mut::<TerminalWorldQuad>(entity)
+            .unwrap()
+            .cull_mode = None;
         surface.update(|update| {
             update.resize((8, 2));
         });
         app.update();
         let world = app.world();
+        let standard = world
+            .resource::<Assets<StandardMaterial>>()
+            .get(&material)
+            .unwrap();
+        assert_eq!(standard.emissive_texture, Some(emissive));
+        assert_eq!(standard.emissive, LinearRgba::rgb(2.0, 0.5, 0.0));
+        assert_eq!(standard.perceptual_roughness, 0.1);
+        assert_eq!(standard.cull_mode, None);
         let doubled = TerminalWorldQuad::new(2.0)
             .size_for(world.get::<TerminalTexture>(entity).unwrap().size);
         assert!(

@@ -1,14 +1,13 @@
 use bevy::{app::SubApps, prelude::*, text::FontSource};
-use bevy_terminal_ratatui::{RatatuiBackend, TerminalRenderer};
+use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 use bevy_terminal_ratatui::prelude::{BlinkConfig, CursorConfig, FontSizing, TerminalPlugin, TerminalRenderConfig, TerminalStats, TerminalSurface, TerminalTexture};
-use ratatui::Terminal;
 use renderer_bench_sdk::{
     AdapterFrame, AdapterMetadata, BenchConfig, BenchResult, RendererAdapter, SharedFontFixture,
     measure, read_bevy_image_rgba, render_workload, run,
 };
 
 struct BevyTerminalRatatuiAdapter {
-    terminal: Terminal<RatatuiBackend>,
+    terminal: RatatuiTerminal,
     surface: TerminalSurface,
     last_stats: TerminalStats,
     max_glyph_quads: u32,
@@ -17,10 +16,10 @@ struct BevyTerminalRatatuiAdapter {
 
 impl RendererAdapter for BevyTerminalRatatuiAdapter {
     fn new(config: &BenchConfig) -> BenchResult<Self> {
-        let backend = RatatuiBackend::new(config.cols, config.rows);
-        let surface = backend.surface();
+        let (terminal, _renderer) = RatatuiTerminal::new(config.cols, config.rows);
+        let surface = terminal.surface();
         Ok(Self {
-            terminal: Terminal::new(backend)?,
+            terminal,
             surface,
             last_stats: TerminalStats::default(),
             max_glyph_quads: 0,
@@ -70,12 +69,11 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
             .unwrap_or_default();
         self.max_glyph_quads = self.max_glyph_quads.max(self.last_stats.glyph_quads);
         self.max_shape_misses = self.max_shape_misses.max(self.last_stats.shape_misses);
-        let (result, draw_ns) = measure(|| {
+        let ((), draw_ns) = measure(|| {
             self.terminal.draw(|frame| {
                 render_workload(frame, config.workload, frame_index);
-            })
+            });
         });
-        result?;
         Ok(AdapterFrame {
             draw_ns,
             ..default()

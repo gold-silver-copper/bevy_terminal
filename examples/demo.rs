@@ -7,17 +7,16 @@ use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_terminal_ratatui::prelude::{
     TerminalPlugin, TerminalRenderConfig, TerminalSystems, TerminalTexture,
 };
-use bevy_terminal_ratatui::{RatatuiBackend, TerminalRenderer};
-use ratatui::Terminal;
+use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 
 const MARGIN: f32 = 20.0;
 
 #[derive(Resource)]
-struct Demo(Terminal<RatatuiBackend>);
+struct Demo(RatatuiTerminal);
 
 fn main() {
     let terminal = common::demo_terminal();
-    let surface = terminal.backend().surface();
+    let surface = terminal.surface();
     let config = TerminalRenderConfig {
         cell_size: Vec2::new(11.0, 20.0).into(),
         ..default()

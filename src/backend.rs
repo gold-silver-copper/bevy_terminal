@@ -1,9 +1,12 @@
 use std::{convert::Infallible, ops::Range};
 
-use bevy_terminal::bevy::math::Vec2;
+use bevy_terminal::bevy::{
+    math::Vec2,
+    prelude::{Component, Deref, DerefMut},
+};
 use bevy_terminal::prelude::{
-    GridSize, StyleFlags, Terminal, TerminalCell, TerminalColor, TerminalStyle, TerminalSurface,
-    TerminalTexture,
+    GridSize, StyleFlags, Terminal, TerminalCell, TerminalColor, TerminalSnapshot, TerminalStyle,
+    TerminalSurface, TerminalTexture,
 };
 use ratatui::{
     backend::{Backend, ClearType, WindowSize},
@@ -36,54 +39,6 @@ impl RatatuiBackend {
         Self { surface }
     }
 
-    /// Creates a backend together with the [`Terminal`] component that renders
-    /// it — the common one-call setup:
-    ///
-    /// ```
-    /// # use bevy_terminal_ratatui::RatatuiBackend;
-    /// let (backend, renderer) = RatatuiBackend::with_terminal(80, 24);
-    /// let terminal = ratatui::Terminal::new(backend).unwrap();
-    /// // commands.spawn(renderer);
-    /// # let _ = (terminal, renderer);
-    /// ```
-    #[must_use]
-    pub fn with_terminal(columns: u16, rows: u16) -> (Self, Terminal) {
-        let backend = Self::new(columns, rows);
-        let renderer = Terminal::new(backend.surface());
-        (backend, renderer)
-    }
-
-    /// Like [`with_terminal`](Self::with_terminal), but also builds the
-    /// [`ratatui::Terminal`] and draws one frame with `draw` before returning,
-    /// so the very first presented frame already shows content instead of the
-    /// empty theme background:
-    ///
-    /// ```
-    /// # use bevy_terminal_ratatui::RatatuiBackend;
-    /// # use ratatui::widgets::Paragraph;
-    /// let (terminal, renderer) = RatatuiBackend::with_terminal_drawn(80, 24, |frame| {
-    ///     frame.render_widget(Paragraph::new("Loading..."), frame.area());
-    /// });
-    /// // commands.spawn(renderer);
-    /// # let _ = (terminal, renderer);
-    /// ```
-    ///
-    /// Applications that construct the terminal elsewhere can get the same
-    /// effect by drawing from a system with an `Added<T>` filter on the
-    /// component that holds the terminal.
-    #[must_use]
-    pub fn with_terminal_drawn(
-        columns: u16,
-        rows: u16,
-        draw: impl FnOnce(&mut ratatui::Frame<'_>),
-    ) -> (ratatui::Terminal<Self>, Terminal) {
-        let (backend, renderer) = Self::with_terminal(columns, rows);
-        let mut terminal =
-            ratatui::Terminal::new(backend).expect("the in-memory backend is infallible");
-        let Ok(_) = terminal.draw(draw);
-        (terminal, renderer)
-    }
-
     /// Returns a handle that can be passed to the Bevy renderer plugin.
     #[must_use]
     pub fn surface(&self) -> TerminalSurface {
@@ -91,7 +46,7 @@ impl RatatuiBackend {
     }
 
     /// Resizes the terminal grid, preserving cells in the overlapping area.
-    /// Use [`RatatuiTerminalExt::resize_grid`], which also makes Ratatui's own
+    /// Use [`RatatuiTerminal::resize_grid`], which also makes Ratatui's own
     /// double buffers adopt the new size.
     pub(crate) fn resize(&mut self, columns: u16, rows: u16) {
         self.surface.update(|update| {
@@ -100,30 +55,96 @@ impl RatatuiBackend {
     }
 }
 
-/// Convenience methods for a [`ratatui::Terminal`] driving a [`RatatuiBackend`].
-pub trait RatatuiTerminalExt {
+/// A [`ratatui::Terminal`] driving a [`RatatuiBackend`], as a Bevy component.
+///
+/// [`RatatuiTerminal::new`] returns it paired with the renderer component; the
+/// pair is a bundle, so it spawns as-is or destructures for resource-based
+/// setups. It dereferences to the inner [`ratatui::Terminal`]; the inherent
+/// [`draw`](Self::draw) shadows Ratatui's so the infallible backend needs no
+/// error handling at call sites.
+///
+/// ```no_run
+/// use bevy::prelude::*;
+/// use bevy_terminal_ratatui::prelude::*;
+/// use ratatui::widgets::Paragraph;
+///
+/// fn setup(mut commands: Commands) {
+///     commands.spawn((RatatuiTerminal::new(80, 24), ImageNode::default(), Node::default()));
+/// }
+///
+/// fn draw(mut terminal: Single<&mut RatatuiTerminal>) {
+///     terminal.draw(|frame| frame.render_widget(Paragraph::new("hi"), frame.area()));
+/// }
+/// ```
+#[derive(Component, Deref, DerefMut)]
+pub struct RatatuiTerminal(pub ratatui::Terminal<RatatuiBackend>);
+
+impl RatatuiTerminal {
+    /// Creates a terminal of `columns` × `rows` cells together with the
+    /// [`Terminal`] renderer component that shows it.
+    #[must_use]
+    pub fn new(columns: u16, rows: u16) -> (Self, Terminal) {
+        Self::from_backend(RatatuiBackend::new(columns, rows))
+    }
+
+    /// Like [`new`](Self::new), but draws one frame with `draw` first so the
+    /// very first presented frame already shows content instead of the empty
+    /// theme background.
+    #[must_use]
+    pub fn drawn(
+        columns: u16,
+        rows: u16,
+        draw: impl FnOnce(&mut ratatui::Frame<'_>),
+    ) -> (Self, Terminal) {
+        let (mut terminal, renderer) = Self::new(columns, rows);
+        terminal.draw(draw);
+        (terminal, renderer)
+    }
+
+    /// Wraps an existing backend and returns the renderer for its surface.
+    #[must_use]
+    pub fn from_backend(backend: RatatuiBackend) -> (Self, Terminal) {
+        let renderer = Terminal::new(backend.surface());
+        let terminal =
+            ratatui::Terminal::new(backend).expect("the in-memory backend is infallible");
+        (Self(terminal), renderer)
+    }
+
+    /// Draws one frame. The backend cannot fail, so unlike
+    /// [`ratatui::Terminal::draw`] there is no result to handle.
+    pub fn draw(&mut self, draw: impl FnOnce(&mut ratatui::Frame<'_>)) {
+        let Ok(_) = self.0.draw(draw);
+    }
+
     /// Resizes the backend grid and Ratatui's own double buffers together, so
-    /// the next `draw` renders at the new size.
-    fn resize_grid(&mut self, columns: u16, rows: u16);
+    /// the next [`draw`](Self::draw) renders at the new size.
+    pub fn resize_grid(&mut self, columns: u16, rows: u16) {
+        self.0.backend_mut().resize(columns, rows);
+        let Ok(()) = self.0.autoresize();
+    }
 
     /// Resizes the grid to fill `logical_size` (e.g. the window size) at the
     /// terminal's current cell size; returns whether the grid changed.
-    fn fit_to(&mut self, texture: &TerminalTexture, logical_size: Vec2) -> bool;
-}
-
-impl RatatuiTerminalExt for ratatui::Terminal<RatatuiBackend> {
-    fn resize_grid(&mut self, columns: u16, rows: u16) {
-        self.backend_mut().resize(columns, rows);
-        let Ok(()) = self.autoresize();
-    }
-
-    fn fit_to(&mut self, texture: &TerminalTexture, logical_size: Vec2) -> bool {
+    pub fn fit_to(&mut self, texture: &TerminalTexture, logical_size: Vec2) -> bool {
         let grid = texture.grid_for(logical_size);
-        if self.backend().surface().size() == grid {
+        if self.surface().size() == grid {
             return false;
         }
         self.resize_grid(grid.width, grid.height);
         true
+    }
+
+    /// The surface this terminal draws into.
+    #[must_use]
+    pub fn surface(&self) -> TerminalSurface {
+        self.0.backend().surface()
+    }
+
+    /// A snapshot of what is currently drawn, for assertions
+    /// ([`TerminalSnapshot::to_text`], [`TerminalSnapshot::iter`]).
+    #[must_use]
+    pub fn snapshot(&self) -> TerminalSnapshot {
+        self.0.backend().surface.snapshot()
     }
 }
 
@@ -586,19 +607,16 @@ mod tests {
 
     #[test]
     fn resize_grid_resizes_the_backend_and_ratatui_buffers_together() {
-        let backend = RatatuiBackend::new(4, 2);
-        let surface = backend.surface();
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| frame.render_widget("ABCDEFGH", frame.area()))
-            .unwrap();
+        let (mut terminal, _renderer) = RatatuiTerminal::new(4, 2);
+        let surface = terminal.surface();
+        terminal.draw(|frame| frame.render_widget("ABCDEFGH", frame.area()));
         terminal.resize_grid(6, 3);
         assert_eq!(terminal.size().unwrap(), Size::new(6, 3));
         assert_eq!(surface.size(), GridSize::new(6, 3));
-        terminal
-            .draw(|frame| frame.render_widget("wide now", frame.area()))
-            .unwrap();
+        terminal.draw(|frame| frame.render_widget("wide now", frame.area()));
         assert_eq!(surface.snapshot()[(5, 0)].symbol(), "n");
+        assert_eq!(terminal.snapshot().row_text(0), "wide n");
+        assert_eq!(terminal.snapshot().to_text(), "wide n\n      \n      ");
     }
 
     #[test]
@@ -621,23 +639,21 @@ mod tests {
     }
 
     #[test]
-    fn with_terminal_pairs_a_backend_with_its_renderer() {
-        let (backend, renderer) = RatatuiBackend::with_terminal(5, 2);
-        assert!(renderer.surface().shares_state_with(&backend.surface()));
-        let terminal = ratatui::Terminal::new(backend).unwrap();
-        assert!(
-            terminal
-                .backend()
-                .surface()
-                .shares_state_with(renderer.surface())
-        );
-        assert_eq!(terminal.backend().surface().size(), GridSize::new(5, 2));
+    fn new_pairs_a_terminal_with_its_renderer_and_drawn_draws_first() {
+        let (terminal, renderer) = RatatuiTerminal::new(5, 2);
+        assert!(terminal.surface().shares_state_with(renderer.surface()));
+        assert_eq!(terminal.surface().size(), GridSize::new(5, 2));
+
+        let (terminal, renderer) = RatatuiTerminal::drawn(5, 2, |frame| {
+            frame.render_widget("Hello", frame.area());
+        });
+        assert_eq!(renderer.surface().snapshot().row_text(0), "Hello");
+        assert_eq!(terminal.snapshot().to_text(), "Hello\n     ");
     }
 
     #[test]
     fn fit_to_resizes_the_grid_exactly_when_the_fit_changes() {
-        let (backend, renderer) = RatatuiBackend::with_terminal(4, 2);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let (mut terminal, renderer) = RatatuiTerminal::new(4, 2);
         let mut app = bevy_terminal::bevy::app::App::new();
         app.init_resource::<bevy_terminal::bevy::asset::Assets<bevy_terminal::bevy::image::Image>>(
         )

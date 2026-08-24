@@ -22,8 +22,8 @@ use bevy::{
 use bevy_terminal_ratatui::prelude::{
     TerminalPlugin, TerminalRenderConfig, TerminalSurface, TerminalSystems, TerminalTexture,
 };
-use bevy_terminal_ratatui::{RatatuiBackend, RatatuiTerminalExt, TerminalRenderer};
-use ratatui::{Terminal, layout::Size};
+use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
+use ratatui::layout::Size;
 
 const CELL_WIDTH: f32 = 10.0;
 const CELL_HEIGHT: f32 = 18.0;
@@ -93,13 +93,12 @@ fn main() {
 struct Gallery {
     index: usize,
     states: Vec<catalog::ExampleState>,
-    terminal: Terminal<RatatuiBackend>,
+    terminal: RatatuiTerminal,
 }
 
 impl Gallery {
     fn new(index: usize) -> Self {
-        let backend = RatatuiBackend::new(catalog::COLUMNS, catalog::ROWS);
-        let terminal = Terminal::new(backend).expect("the in-memory backend is infallible");
+        let (terminal, _renderer) = RatatuiTerminal::new(catalog::COLUMNS, catalog::ROWS);
         let mut gallery = Self {
             index,
             states: catalog::EXAMPLES
@@ -117,7 +116,7 @@ impl Gallery {
     }
 
     fn surface(&self) -> TerminalSurface {
-        self.terminal.backend().surface()
+        self.terminal.surface()
     }
 
     fn size(&self) -> Size {

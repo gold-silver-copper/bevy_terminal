@@ -21,9 +21,8 @@ use bevy_terminal_ratatui::prelude::{
     CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale,
     TerminalSystems,
 };
-use bevy_terminal_ratatui::{RatatuiBackend, RatatuiTerminalExt, TerminalRenderer};
+use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 use ratatui::{
-    Terminal,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text as RatatuiText},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
@@ -35,18 +34,18 @@ const EXPORT_FRAMES: u32 = 10;
 
 #[derive(Resource)]
 struct QaTerminals {
-    left: Terminal<RatatuiBackend>,
-    right: Terminal<RatatuiBackend>,
+    left: RatatuiTerminal,
+    right: RatatuiTerminal,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminals = QaTerminals {
-        left: Terminal::new(RatatuiBackend::new(37, 12))?,
-        right: Terminal::new(RatatuiBackend::new(32, 10))?,
+        left: RatatuiTerminal::new(37, 12).0,
+        right: RatatuiTerminal::new(32, 10).0,
     };
-    draw_terminals(&mut terminals, 0)?;
-    let left_surface = terminals.left.backend().surface();
-    let right_surface = terminals.right.backend().surface();
+    draw_terminals(&mut terminals, 0);
+    let left_surface = terminals.left.surface();
+    let right_surface = terminals.right.surface();
     let export_plugin = ImageExportPlugin::default();
     let export_threads = export_plugin.threads.clone();
 
@@ -169,13 +168,10 @@ fn mutate_for_qa(mut terminals: ResMut<QaTerminals>, mut frame: Local<u32>) {
     }
 
     terminals.right.resize_grid(36, 12);
-    draw_terminals(&mut terminals, 5).expect("the in-memory backend is infallible");
+    draw_terminals(&mut terminals, 5);
 }
 
-fn draw_terminals(
-    terminals: &mut QaTerminals,
-    revision: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn draw_terminals(terminals: &mut QaTerminals, revision: u64) {
     terminals.left.draw(|frame| {
         let area = frame.area();
         frame.render_widget(
@@ -201,7 +197,7 @@ fn draw_terminals(
                 .percent(if revision == 0 { 24 } else { 72 }),
             gauge_area,
         );
-    })?;
+    });
 
     terminals.right.draw(|frame| {
         let items = [
@@ -220,8 +216,7 @@ fn draw_terminals(
                 .block(Block::new().borders(Borders::ALL).title(" terminal B ")),
             frame.area(),
         );
-    })?;
-    Ok(())
+    });
 }
 
 fn stop_after_export(mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {

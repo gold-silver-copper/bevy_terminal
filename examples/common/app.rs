@@ -4,8 +4,7 @@
 
 use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_terminal_ratatui::prelude::{TerminalRenderConfig, TerminalTexture};
-use bevy_terminal_ratatui::{RatatuiBackend, RatatuiTerminalExt, TerminalRenderer};
-use ratatui::Terminal;
+use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 
 /// A terminal presented through a Bevy UI image node positioned absolutely at
 /// `origin` (logical pixels). The renderer sizes the node; place it however
@@ -38,7 +37,7 @@ pub fn headless_terminal(renderer: TerminalRenderer, config: TerminalRenderConfi
 /// changed, in which case the caller should redraw. Does nothing until the
 /// terminal has been measured (its `TerminalTexture` exists).
 pub fn fit_grid_to_window(
-    terminal: &mut Terminal<RatatuiBackend>,
+    terminal: &mut RatatuiTerminal,
     textures: &Query<&TerminalTexture>,
     windows: &Query<&Window, With<PrimaryWindow>>,
     margin: f32,

@@ -11,21 +11,20 @@
 mod common;
 
 use bevy::prelude::*;
+use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::prelude::{
     TerminalPlugin, TerminalReady, TerminalRemeasured, TerminalTexture, TerminalWorldQuad,
 };
-use bevy_terminal_ratatui::{RatatuiBackend, RatatuiTerminalExt};
-use ratatui::Terminal;
 
 #[derive(Resource)]
 struct Screen {
-    terminal: Terminal<RatatuiBackend>,
+    terminal: RatatuiTerminal,
     wide: bool,
 }
 
 fn main() {
     // The first presented frame already shows the demo scene.
-    let (terminal, renderer) = RatatuiBackend::with_terminal_drawn(60, 18, common::draw_demo_frame);
+    let (terminal, renderer) = RatatuiTerminal::drawn(60, 18, common::draw_demo_frame);
     let mut app = App::new();
     app.add_plugins((DefaultPlugins, TerminalPlugin));
     let fonts = common::fonts::load(&mut app);

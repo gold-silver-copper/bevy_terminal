@@ -592,6 +592,80 @@ impl TerminalSnapshot {
     pub const fn revision(&self) -> u64 {
         self.revision
     }
+
+    /// Iterates over every cell with its grid position, row-major.
+    ///
+    /// Together with the public `style` field this supports content and style
+    /// assertions against the real backend in tests:
+    ///
+    /// ```
+    /// # use bevy_terminal::scene::TerminalColor;
+    /// # use bevy_terminal::surface::TerminalSurface;
+    /// # let snapshot = TerminalSurface::new((4, 1)).snapshot();
+    /// assert!(snapshot.iter().all(|(_, cell)| {
+    ///     cell.style.foreground == TerminalColor::Default
+    /// }));
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = (CellPosition, &TerminalCell)> + '_ {
+        let width = usize::from(self.size.width.max(1));
+        self.cells.iter().enumerate().map(move |(index, cell)| {
+            let position = CellPosition::new(
+                u16::try_from(index % width).unwrap_or(u16::MAX),
+                u16::try_from(index / width).unwrap_or(u16::MAX),
+            );
+            (position, cell)
+        })
+    }
+
+    /// Returns one row as plain text: the symbols in order, wide glyphs once
+    /// (continuation cells are skipped), styles dropped and trailing spaces
+    /// kept so every row has a predictable width. An out-of-range row is
+    /// empty.
+    #[must_use]
+    pub fn row_text(&self, row: u16) -> String {
+        self.row(row)
+            .iter()
+            .filter(|cell| !cell.is_continuation())
+            .map(TerminalCell::symbol)
+            .collect()
+    }
+
+    /// Returns the whole grid as plain text, rows joined with `'\n'` — the
+    /// lossy "what is on screen" view for quick assertions:
+    ///
+    /// ```
+    /// # use bevy_terminal::scene::TerminalCell;
+    /// # use bevy_terminal::surface::TerminalSurface;
+    /// let surface = TerminalSurface::new((8, 2));
+    /// surface.update(|update| {
+    ///     for (x, ch) in "Loading".chars().enumerate() {
+    ///         update.set_cell((x as u16, 1), &TerminalCell::new(&ch.to_string()));
+    ///     }
+    /// });
+    /// assert!(surface.snapshot().to_text().contains("Loading"));
+    /// assert_eq!(surface.snapshot().row_text(1), "Loading ");
+    /// ```
+    ///
+    /// [`TerminalSnapshot`] also implements [`fmt::Display`] with this output.
+    #[must_use]
+    pub fn to_text(&self) -> String {
+        (0..self.size.height)
+            .map(|row| self.row_text(row))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl fmt::Display for TerminalSnapshot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for row in 0..self.size.height {
+            if row > 0 {
+                f.write_str("\n")?;
+            }
+            f.write_str(&self.row_text(row))?;
+        }
+        Ok(())
+    }
 }
 
 impl From<&str> for TerminalCell {

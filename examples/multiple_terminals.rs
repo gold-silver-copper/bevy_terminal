@@ -14,9 +14,8 @@ use bevy::{
 use bevy_terminal_ratatui::prelude::{
     TerminalPlugin, TerminalRenderConfig, TerminalSystems, TerminalTexture,
 };
-use bevy_terminal_ratatui::{RatatuiBackend, RatatuiTerminalExt, TerminalRenderer};
+use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 use ratatui::{
-    Terminal,
     layout::{Alignment, Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -25,8 +24,8 @@ use ratatui::{
 
 #[derive(Resource)]
 struct IndependentTerminals {
-    left: Terminal<RatatuiBackend>,
-    right: Terminal<RatatuiBackend>,
+    left: RatatuiTerminal,
+    right: RatatuiTerminal,
     tick: u64,
     timer: Timer,
 }
@@ -38,14 +37,14 @@ const ROW_BOTTOM_MARGIN: f32 = 24.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminals = IndependentTerminals {
-        left: Terminal::new(RatatuiBackend::new(42, 16))?,
-        right: Terminal::new(RatatuiBackend::new(34, 12))?,
+        left: RatatuiTerminal::new(42, 16).0,
+        right: RatatuiTerminal::new(34, 12).0,
         tick: 0,
         timer: Timer::new(Duration::from_millis(250), TimerMode::Repeating),
     };
-    redraw(&mut terminals)?;
-    let left_surface = terminals.left.backend().surface();
-    let right_surface = terminals.right.backend().surface();
+    redraw(&mut terminals);
+    let left_surface = terminals.left.surface();
+    let right_surface = terminals.right.surface();
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -176,7 +175,7 @@ fn fit_to_window(
         }
     }
     if changed {
-        redraw(&mut terminals).expect("the in-memory backend is infallible");
+        redraw(&mut terminals);
     }
 }
 
@@ -185,13 +184,13 @@ fn update_terminals(time: Res<Time>, mut terminals: ResMut<IndependentTerminals>
         return;
     }
     terminals.tick = terminals.tick.wrapping_add(1);
-    redraw(&mut terminals).expect("the in-memory backend is infallible");
+    redraw(&mut terminals);
 }
 
-fn redraw(terminals: &mut IndependentTerminals) -> Result<(), Box<dyn std::error::Error>> {
+fn redraw(terminals: &mut IndependentTerminals) {
     let tick = terminals.tick;
-    let left_size = terminals.left.size()?;
-    let right_size = terminals.right.size()?;
+    let Ok(left_size) = terminals.left.size();
+    let Ok(right_size) = terminals.right.size();
     terminals.left.draw(|frame| {
         let [heading, gauge, message] = Layout::vertical([
             Constraint::Length(4),
@@ -234,7 +233,7 @@ fn redraw(terminals: &mut IndependentTerminals) -> Result<(), Box<dyn std::error
                 .block(Block::new().borders(Borders::ALL)),
             message,
         );
-    })?;
+    });
 
     terminals.right.draw(|frame| {
         let events = (0..8).rev().map(|offset| {
@@ -250,6 +249,5 @@ fn redraw(terminals: &mut IndependentTerminals) -> Result<(), Box<dyn std::error
                 .style(Style::new().fg(Color::LightYellow)),
             frame.area(),
         );
-    })?;
-    Ok(())
+    });
 }
