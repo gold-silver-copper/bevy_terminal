@@ -158,10 +158,10 @@ pub fn raster_scale_for_window(window: &Window) -> f32 {
 /// been allocated at its measured size and can be presented or exported.
 ///
 /// This happens on the first sync after every configured font asset that is
-/// loaded has been registered with Bevy's font system (fonts that are still
-/// loading, or Bevy's optional default font, do not hold it back; a font that
-/// arrives later re-measures the terminal and may resize the texture in place
-/// — the handle never changes).
+/// loaded has been registered with Bevy's font system and any advance required
+/// by the sizing mode has been measured. A late font never exposes provisional
+/// cell geometry; after readiness, remeasurement may resize the texture in
+/// place without changing its handle.
 #[derive(Clone, Debug, EntityEvent)]
 pub struct TerminalReady {
     /// The terminal entity; read its [`TerminalTexture`] for the handle and size.
@@ -1191,11 +1191,6 @@ fn sync_batch_terminals(
         let fonts_ready = face_ids
             .iter()
             .all(|id| fonts.get(*id).is_some_and(|font| !font.alias.is_empty()));
-        // Fonts that are not loaded at all (still loading, or Bevy's optional default
-        // font) do not hold `TerminalReady` back; registered fonts must be usable.
-        let fonts_settled = face_ids
-            .iter()
-            .all(|id| fonts.get(*id).is_none_or(|font| !font.alias.is_empty()));
         let fonts_changed = state.font_ids != face_ids
             || state.fonts_ready != fonts_ready
             || face_ids.iter().any(|id| changed_fonts.contains(id));
@@ -1204,12 +1199,6 @@ fn sync_batch_terminals(
         // A resize during the sync that first reports readiness is part of settling,
         // not a re-measure; only terminals that were already ready get the event.
         let was_ready = state.ready_sent;
-        if fonts_settled && !state.ready_sent {
-            // The first sync with usable fonts settles the measured cell size, so the
-            // texture is now at its final size for this configuration.
-            state.ready_sent = true;
-            commands.trigger(TerminalReady { entity });
-        }
         let previous_size = sync_batch_terminal(
             terminal,
             &config,
@@ -1229,6 +1218,13 @@ fn sync_batch_terminals(
             window_scale,
             elapsed,
         );
+        let metrics_ready = !needs_measured_advance(&config) || state.measured_advance.is_some();
+        if fonts_ready && metrics_ready && !state.ready_sent {
+            // The first sync with usable fonts settles the measured cell size, so the
+            // texture is now at its final size for this configuration.
+            state.ready_sent = true;
+            commands.trigger(TerminalReady { entity });
+        }
         if let Some(previous_size) = previous_size
             && was_ready
         {
@@ -1257,6 +1253,11 @@ fn font_asset_ids(faces: &super::FontFaces) -> Vec<AssetId<Font>> {
         _ => None,
     })
     .collect()
+}
+
+fn needs_measured_advance(config: &TerminalRenderConfig) -> bool {
+    config.font_size == super::FontSizing::FitCellWidth
+        || matches!(config.cell_size, super::CellSizing::FromFont { .. })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1292,13 +1293,17 @@ fn sync_batch_terminal(
 
     let raster_scale = resolve_raster_scale(config.raster.scale, presented, window_scale);
     let scale_changed = state.raster_scale != raster_scale;
-    let needs_measured_advance = config.font_size == super::FontSizing::FitCellWidth
-        || matches!(config.cell_size, super::CellSizing::FromFont { .. });
+    let needs_measured_advance = needs_measured_advance(config);
     if needs_measured_advance
         && (state.measured_advance.is_none() || config_changed || fonts_changed)
     {
         state.measured_advance =
             super::measure_advance(&config.font, fonts, text_pipeline, font_cx, layout_cx);
+    }
+    // An unmeasured cell is not geometry. Keep the provisional component and
+    // do not publish a scene or readiness event until the selected face shapes.
+    if needs_measured_advance && state.measured_advance.is_none() {
+        return None;
     }
     let metrics = super::resolve_metrics(config, state.measured_advance);
     let font_size_changed = state.metrics != Some(metrics);
@@ -2616,6 +2621,60 @@ mod tests {
         // 30 px: 18 px advance and a measured 39 px block box.
         assert_eq!(zoomed.size, UVec2::new(72, 39));
         assert_eq!(zoomed.image, handle);
+    }
+
+    #[test]
+    fn font_driven_cells_wait_for_a_loading_handle_before_ready() {
+        #[derive(Resource, Default)]
+        struct Ready(usize);
+
+        let mut app = text_app();
+        app.init_resource::<Ready>()
+            .add_observer(|_: On<TerminalReady>, mut ready: ResMut<Ready>| ready.0 += 1);
+        let regular = Handle::<Font>::from(bevy::asset::uuid::Uuid::from_u128(0x5241_5454_5901));
+        let entity = app
+            .world_mut()
+            .spawn((
+                Terminal::new(TerminalSurface::new((4, 1))),
+                TerminalRenderConfig {
+                    cell_size: super::super::CellSizing::FROM_FONT,
+                    font_size: super::super::FontSizing::Px(20.0),
+                    font: super::super::FontFaces::regular(regular.clone()),
+                    ..default()
+                },
+            ))
+            .id();
+
+        for _ in 0..2 {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<Ready>().0, 0);
+        let state = app.world().get::<BatchMainState>(entity).unwrap();
+        assert!(state.measured_advance.is_none());
+        assert!(
+            state.last_snapshot.is_none(),
+            "no 1x1 scene may be published"
+        );
+
+        app.world_mut()
+            .resource_mut::<Assets<Font>>()
+            .insert(
+                regular.id(),
+                Font::from_bytes(
+                    include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")
+                        .to_vec(),
+                ),
+            )
+            .expect("the pending font id is unused");
+        for _ in 0..3 {
+            app.update();
+        }
+
+        assert_eq!(app.world().resource::<Ready>().0, 1);
+        let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+        assert!((texture.cell_size.x - 12.0).abs() < 0.05);
+        assert!((texture.cell_size.y - 26.0).abs() < 0.05);
+        assert_eq!(texture.size, UVec2::new(48, 26));
     }
 
     fn glyph(offset_x: f32, columns: &[u32]) -> CachedGlyph {
