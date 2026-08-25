@@ -114,8 +114,8 @@ every resize/zoom.
   on window resize instead of hand-computed cells; a `terminal_emulator_like`
   example (font-driven cells, zoom with `+`/`-`, translucent background over a
   gradient) is welcome but keep it small.
-- Tests: `CellSizing::FromFont` measurement (advance and line height at a known
-  size for the embedded JetBrains Mono → cell ≈ 0.6·size × line-height),
+- Tests: `CellSizing::FromFont` measurement (advance and line box at a known
+  size for the embedded JetBrains Mono),
   `grid_for`/`grid_for_window`, `raster_scale_for_window`, `fit_to` changes the
   grid exactly once, sRGB target format on the created image, transparent
   background alpha, features compile matrix, fallback behavior (or its

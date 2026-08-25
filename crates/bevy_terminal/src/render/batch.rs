@@ -541,7 +541,7 @@ fn refine_metrics(
     // derived from the cell width or a font-driven cell gets a cell at least
     // as tall as the font's line box.
     let may_grow = config.font_size == super::FontSizing::FitCellWidth
-        || matches!(config.cell_size, super::CellSizing::FromFont { .. });
+        || config.cell_size == super::CellSizing::FromFont;
     let mut block = None;
     for _ in 0..FIT_ROUNDS {
         // The block's fully opaque rows are what tiles seamlessly; its anti-aliased
@@ -1292,7 +1292,9 @@ fn sync_batch_terminal(
 
     let raster_scale = resolve_raster_scale(config.raster.scale, presented, window_scale);
     let scale_changed = state.raster_scale != raster_scale;
-    if config.font_size == super::FontSizing::FitCellWidth
+    let needs_measured_advance = config.font_size == super::FontSizing::FitCellWidth
+        || config.cell_size == super::CellSizing::FromFont;
+    if needs_measured_advance
         && (state.measured_advance.is_none() || config_changed || fonts_changed)
     {
         state.measured_advance =
@@ -2573,7 +2575,7 @@ mod tests {
             .spawn((
                 Terminal::new(surface.clone()),
                 TerminalRenderConfig {
-                    cell_size: super::super::CellSizing::FROM_FONT,
+                    cell_size: super::super::CellSizing::FromFont,
                     font_size: super::super::FontSizing::Px(20.0),
                     font: super::super::FontFaces::regular(regular),
                     ..default()
@@ -2584,9 +2586,8 @@ mod tests {
             app.update();
         }
         let texture = app.world().get::<TerminalTexture>(entity).unwrap();
-        // JetBrains Mono's advance is 0.6 em: 12 px wide at 20 px. The 1.2 line
-        // height (24 px) is shorter than the font's line box (the full block's
-        // 26 fully covered rows), so the cell grows to show the whole box.
+        // JetBrains Mono's advance is 0.6 em: 12 px wide at 20 px. Its full
+        // block has 26 fully covered rows, which becomes the measured height.
         assert!(
             (texture.cell_size.x - 12.0).abs() < 0.05,
             "{:?}",
@@ -2612,7 +2613,7 @@ mod tests {
         app.update();
         let zoomed = app.world().get::<TerminalTexture>(entity).unwrap();
         assert!((zoomed.cell_size.x - 18.0).abs() < 0.05);
-        // 30 px: 18 px advance, block box 39 px (> 1.2 × 30 = 36).
+        // 30 px: 18 px advance and a measured 39 px block box.
         assert_eq!(zoomed.size, UVec2::new(72, 39));
         assert_eq!(zoomed.image, handle);
     }
