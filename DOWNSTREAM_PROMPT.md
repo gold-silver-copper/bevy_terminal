@@ -20,15 +20,16 @@ every resize/zoom.
 
 - Change `TerminalRenderConfig::cell_size: Vec2` to
   `cell_size: CellSizing` with
-  `enum CellSizing { Logical(Vec2), FromFont }` (keep a `Vec2` `From` impl so
+  `enum CellSizing { Logical(Vec2), FromFont { line_height: f32 } }` (keep the
+  0.7 payload for source compatibility but ignore it in metric calculation;
+  keep a `Vec2` `From` impl so
   `cell_size: Vec2::new(11.0, 20.0).into()` / `CellSizing::Logical(..)` both
   work; default stays `Logical(11×20)`).
 - `CellSizing::FromFont` requires `FontSizing::Px(size)` (with
-  `FitCellWidth` it is a configuration error: `warn_once!` and fall back to
-  `Logical(11×20)`); the renderer measures the regular face at that size —
-  advance width (already done via the probe run) **and line height** (from the
-  probe layout height / the font's ascent+descent+line-gap as Bevy exposes it)
-  — and uses ceil-to-whole-physical-pixel cell dimensions. Re-measure exactly
+  `FitCellWidth` it is a configuration error: `warn_once!` and use the
+  renderer's default font size); the renderer measures the regular face at that
+  size — advance width and the full block's covered line box — and uses
+  ceil-to-whole-physical-pixel cell dimensions. Re-measure exactly
   as today (font asset registered, config changed, own font assets changed).
 - Expose the effective logical cell size: bring back
   `TerminalTexture::cell_size: Vec2` (**logical** pixels this time; document

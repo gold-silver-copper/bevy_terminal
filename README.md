@@ -222,7 +222,7 @@ fn setup(mut commands: Commands, window: Query<&Window>) {
     commands.spawn((
         RatatuiTerminal::new(80, 24),
         TerminalRenderConfig {
-            cell_size: CellSizing::FromFont,      // width and height measured from the font
+            cell_size: CellSizing::FROM_FONT,     // width and height measured from the font
             font_size: FontSizing::Px(16.0),      // zoom by mutating this
             font: FontFaces::regular(font_family("JetBrains Mono")),
             raster: RasterConfig {
@@ -284,7 +284,7 @@ coverage).
 fallback fonts and there is no single metric valid for every Unicode glyph, so
 an explicit cell keeps every glyph anchored to its column. Pick a primary
 monospace font; with `FontSizing::FitCellWidth` (default) the font is measured
-and sized so its advance fills the cell. `CellSizing::FromFont` derives the cell
+and sized so its advance fills the cell. `CellSizing::FROM_FONT` derives the cell
 from a `FontSizing::Px` size instead (see above). Integer logical cell
 dimensions are recommended. The compact renderer snaps the physical cell to
 whole pixels so cell edges cannot accumulate subpixel drift.
@@ -301,8 +301,9 @@ seams), the ASCII probe is fully inside the cell (descenders included), and
 accented capitals fit when the font leaves room.
 
 - With `FitCellWidth`, the configured cell height is a minimum and grows to the
-  measured line box. With `CellSizing::FromFont`, both dimensions come from the
-  font. A primary-font glyph inside the line box is therefore never clipped.
+  measured line box. With `CellSizing::FROM_FONT`, both dimensions come from the
+  font. The legacy `FromFont { line_height }` payload is ignored. A primary-font
+  glyph inside the line box is therefore never clipped.
   Iosevka Fixed sized to an 11 px column is a 22 px font whose line box is 27
   px, so a requested 11×20 cell becomes 11×27; read the effective size from
   `TerminalTexture::cell_size`. To keep an exact grid, choose `FontSizing::Px`
@@ -582,7 +583,7 @@ are discarded rather than retained as host-side scrollback.
 
 | 0.4 | 0.5 |
 |---|---|
-| `cell_size: Vec2` | `cell_size: CellSizing` (`Vec2::into()` / `CellSizing::Logical`, or `CellSizing::FromFont` with `FontSizing::Px`) |
+| `cell_size: Vec2` | `cell_size: CellSizing` (`Vec2::into()` / `CellSizing::Logical`, or `CellSizing::FROM_FONT` with `FontSizing::Px`) |
 | — | `TerminalTexture::cell_size` (logical), `TerminalTexture::grid_for`, `render::{grid_for, grid_for_window, raster_scale_for_window}`, `RatatuiTerminalExt::fit_to` |
 | `Rgba8Unorm` texture (linear bytes) | `Rgba8UnormSrgb` (display-ready) |
 | always-on `bevy/2d`, `bevy/ui`, `bevy/system_font_discovery` | minimal Bevy features; crate features `ui` and `system_fonts` (both default) |

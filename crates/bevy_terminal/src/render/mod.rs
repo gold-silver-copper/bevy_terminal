@@ -313,7 +313,7 @@ fn resolve_metrics(config: &TerminalRenderConfig, measured_advance: Option<f32>)
                 .map_or(UNMEASURED_FONT_SIZE, |ratio| (cell.x / ratio).max(1.0)),
             cell_size: cell,
         },
-        (CellSizing::FromFont, FontSizing::Px(size)) => {
+        (CellSizing::FromFont { .. }, FontSizing::Px(size)) => {
             let font_size = size.max(1.0);
             let cell_size = advance_per_px.map_or(Vec2::ONE, |ratio| {
                 Vec2::new((ratio * font_size).max(1.0), 1.0)
@@ -323,7 +323,7 @@ fn resolve_metrics(config: &TerminalRenderConfig, measured_advance: Option<f32>)
                 cell_size,
             }
         }
-        (CellSizing::FromFont, FontSizing::FitCellWidth) => {
+        (CellSizing::FromFont { .. }, FontSizing::FitCellWidth) => {
             warn_once!(
                 "bevy_terminal: CellSizing::FromFont requires FontSizing::Px; using the default font size"
             );
@@ -462,7 +462,16 @@ pub enum CellSizing {
     /// measured line box (the rows a full block covers), rounded up to whole
     /// pixels. This is how terminal emulators work ("font size in, cell size
     /// out"; zoom by changing the font size). Requires [`FontSizing::Px`].
-    FromFont,
+    FromFont {
+        /// Retained for 0.7 source compatibility. Font measurement determines
+        /// the height, so this value has no effect.
+        line_height: f32,
+    },
+}
+
+impl CellSizing {
+    /// Derive both cell dimensions from the selected font.
+    pub const FROM_FONT: Self = Self::FromFont { line_height: 1.2 };
 }
 
 impl Default for CellSizing {
@@ -868,7 +877,7 @@ mod tests {
         // Before refinement, font-driven cells have a measured width and a
         // placeholder height; refinement replaces it with the measured line box.
         let from_font = TerminalRenderConfig {
-            cell_size: CellSizing::FromFont,
+            cell_size: CellSizing::FROM_FONT,
             font_size: FontSizing::Px(20.0),
             ..config
         };

@@ -541,7 +541,7 @@ fn refine_metrics(
     // derived from the cell width or a font-driven cell gets a cell at least
     // as tall as the font's line box.
     let may_grow = config.font_size == super::FontSizing::FitCellWidth
-        || config.cell_size == super::CellSizing::FromFont;
+        || matches!(config.cell_size, super::CellSizing::FromFont { .. });
     let mut block = None;
     for _ in 0..FIT_ROUNDS {
         // The block's fully opaque rows are what tiles seamlessly; its anti-aliased
@@ -1293,7 +1293,7 @@ fn sync_batch_terminal(
     let raster_scale = resolve_raster_scale(config.raster.scale, presented, window_scale);
     let scale_changed = state.raster_scale != raster_scale;
     let needs_measured_advance = config.font_size == super::FontSizing::FitCellWidth
-        || config.cell_size == super::CellSizing::FromFont;
+        || matches!(config.cell_size, super::CellSizing::FromFont { .. });
     if needs_measured_advance
         && (state.measured_advance.is_none() || config_changed || fonts_changed)
     {
@@ -2575,7 +2575,7 @@ mod tests {
             .spawn((
                 Terminal::new(surface.clone()),
                 TerminalRenderConfig {
-                    cell_size: super::super::CellSizing::FromFont,
+                    cell_size: super::super::CellSizing::FROM_FONT,
                     font_size: super::super::FontSizing::Px(20.0),
                     font: super::super::FontFaces::regular(regular),
                     ..default()
