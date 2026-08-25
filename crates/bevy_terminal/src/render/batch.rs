@@ -91,9 +91,10 @@ impl From<TerminalSurface> for Terminal {
 /// handle is stable for the terminal's lifetime.
 ///
 /// Attached to every [`Terminal`] entity by [`TerminalPlugin`] on the first
-/// update after it is spawned; [`TerminalReady`] is triggered on the entity at
-/// that moment. The image handle stays the same for the lifetime of the
-/// terminal: resizes reallocate the image in place.
+/// update after it is spawned. [`TerminalReady`] is triggered once the selected
+/// fonts and any font-driven cell metrics have been measured. The image handle
+/// stays the same for the lifetime of the terminal: resizes reallocate the
+/// image in place.
 #[derive(Clone, Debug, Component)]
 pub struct TerminalTexture {
     /// Render-world image containing the completed terminal.
