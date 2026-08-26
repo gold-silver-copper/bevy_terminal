@@ -36,7 +36,7 @@ use super::{
     cursor_should_be_visible, text_font,
 };
 use crate::{
-    scene::{GridSize, TerminalSnapshot},
+    scene::{GridSize, StyleFlags, TerminalSnapshot},
     surface::TerminalSurface,
 };
 
@@ -962,15 +962,57 @@ impl UnifiedGlyphAtlas {
 /// insertions.
 struct ShapeCaches {
     entries: Vec<Vec<CachedGlyph>>,
-    normal: HashMap<String, usize>,
-    bold: HashMap<String, usize>,
-    italic: HashMap<String, usize>,
-    bold_italic: HashMap<String, usize>,
+    normal: StyleShapes,
+    bold: StyleShapes,
+    italic: StyleShapes,
+    bold_italic: StyleShapes,
+}
+
+/// Sentinel for an unoccupied ASCII fast-path slot.
+const ASCII_UNCACHED: u32 = u32::MAX;
+
+/// Shape lookup for one bold/italic class: single-byte ASCII symbols — the
+/// bulk of terminal content — index a table directly with no hashing or
+/// string allocation; everything else uses the map.
+struct StyleShapes {
+    ascii: [u32; 128],
+    other: HashMap<String, usize>,
+}
+
+impl Default for StyleShapes {
+    fn default() -> Self {
+        Self {
+            ascii: [ASCII_UNCACHED; 128],
+            other: HashMap::default(),
+        }
+    }
+}
+
+impl StyleShapes {
+    fn clear(&mut self) {
+        self.ascii = [ASCII_UNCACHED; 128];
+        self.other.clear();
+    }
+}
+
+/// The direct-index key for a single-byte ASCII symbol, if `text` is one.
+fn ascii_key(text: &str) -> Option<u8> {
+    match *text.as_bytes() {
+        [byte] if byte < 128 => Some(byte),
+        _ => None,
+    }
 }
 
 #[derive(Default)]
 struct SceneScratch {
     backgrounds: Vec<QuadInstance>,
+    /// Background rectangles in pixel space, so adjoining rows can merge
+    /// before conversion to clip-space quads.
+    background_rects: Vec<(PixelGeometry, Color)>,
+    /// Indices into `background_rects` emitted for the previous row.
+    prev_runs: Vec<usize>,
+    /// Indices into `background_rects` emitted for the current row.
+    current_runs: Vec<usize>,
     foregrounds: Vec<QuadInstance>,
     glyphs: Vec<(AssetId<Image>, QuadInstance)>,
     decorations: Vec<QuadInstance>,
@@ -981,6 +1023,9 @@ struct SceneScratch {
 impl SceneScratch {
     fn clear(&mut self) {
         self.backgrounds.clear();
+        self.background_rects.clear();
+        self.prev_runs.clear();
+        self.current_runs.clear();
         self.foregrounds.clear();
         self.glyphs.clear();
         self.decorations.clear();
@@ -989,8 +1034,35 @@ impl SceneScratch {
     }
 }
 
+/// Records a background run, extending an identically aligned run from the
+/// previous row into one taller rectangle when possible.
+fn merge_background_rect(
+    rects: &mut Vec<(PixelGeometry, Color)>,
+    prev_runs: &[usize],
+    current_runs: &mut Vec<usize>,
+    geometry: PixelGeometry,
+    color: Color,
+) {
+    for &index in prev_runs {
+        let (rect, existing) = &mut rects[index];
+        if *existing == color
+            && rect.x == geometry.x
+            && rect.width == geometry.width
+            && (rect.y + rect.height - geometry.y).abs() < 0.01
+        {
+            // Anchor the merged bottom edge on the current row's own geometry
+            // so accumulated float error cannot drift the rectangle.
+            rect.height = geometry.y + geometry.height - rect.y;
+            current_runs.push(index);
+            return;
+        }
+    }
+    rects.push((geometry, color));
+    current_runs.push(rects.len() - 1);
+}
+
 impl ShapeCaches {
-    fn select(&self, style: &ResolvedStyle) -> &HashMap<String, usize> {
+    fn select(&self, style: &ResolvedStyle) -> &StyleShapes {
         match (style.bold, style.italic) {
             (false, false) => &self.normal,
             (true, false) => &self.bold,
@@ -999,7 +1071,7 @@ impl ShapeCaches {
         }
     }
 
-    fn select_mut(&mut self, style: &ResolvedStyle) -> &mut HashMap<String, usize> {
+    fn select_mut(&mut self, style: &ResolvedStyle) -> &mut StyleShapes {
         match (style.bold, style.italic) {
             (false, false) => &mut self.normal,
             (true, false) => &mut self.bold,
@@ -1009,13 +1081,26 @@ impl ShapeCaches {
     }
 
     fn lookup(&self, style: &ResolvedStyle, text: &str) -> Option<usize> {
-        self.select(style).get(text).copied()
+        let shapes = self.select(style);
+        match ascii_key(text) {
+            Some(byte) => {
+                let index = shapes.ascii[usize::from(byte)];
+                (index != ASCII_UNCACHED).then_some(index as usize)
+            }
+            None => shapes.other.get(text).copied(),
+        }
     }
 
     fn insert(&mut self, style: &ResolvedStyle, text: &str, glyphs: Vec<CachedGlyph>) -> usize {
         let index = self.entries.len();
         self.entries.push(glyphs);
-        self.select_mut(style).insert(text.to_owned(), index);
+        let shapes = self.select_mut(style);
+        match ascii_key(text) {
+            Some(byte) => shapes.ascii[usize::from(byte)] = index as u32,
+            None => {
+                shapes.other.insert(text.to_owned(), index);
+            }
+        }
         index
     }
 
@@ -1032,7 +1117,7 @@ impl ShapeCaches {
 struct BatchMainState {
     output: Handle<Image>,
     /// Font asset ids in use, to scope re-measurement to this terminal's own fonts.
-    font_ids: Vec<AssetId<Font>>,
+    font_ids: [Option<AssetId<Font>>; 4],
     /// Whether every handle font above is registered with the font context.
     fonts_ready: bool,
     /// Whether [`TerminalReady`] has been triggered for this terminal.
@@ -1044,11 +1129,12 @@ struct BatchMainState {
     /// Logical font size in use.
     metrics: Option<super::LogicalMetrics>,
     last_snapshot: Option<TerminalSnapshot>,
+    /// Whether the retained snapshot holds any `SLOW_BLINK`/`RAPID_BLINK` cells.
+    snapshot_blinks: bool,
     pending: Option<BatchScene>,
     shapes: ShapeCaches,
     glyph_atlas: UnifiedGlyphAtlas,
     scratch: SceneScratch,
-    vertex_capacity: usize,
     blink: BlinkPhases,
 }
 
@@ -1061,7 +1147,7 @@ impl BatchMainState {
     ) -> Self {
         Self {
             output,
-            font_ids: Vec::new(),
+            font_ids: [None; 4],
             fonts_ready: false,
             ready_sent: false,
             raster_scale,
@@ -1069,11 +1155,11 @@ impl BatchMainState {
             measured_advance: None,
             metrics: None,
             last_snapshot: None,
+            snapshot_blinks: false,
             pending: None,
             shapes: ShapeCaches::default(),
             glyph_atlas: UnifiedGlyphAtlas::new(glyph_atlas),
             scratch: SceneScratch::default(),
-            vertex_capacity: 0,
             blink: BlinkPhases::default(),
         }
     }
@@ -1173,13 +1259,17 @@ fn sync_batch_terminals(
     // Font assets that changed this frame; only terminals using them re-shape.
     let changed_fonts: Vec<AssetId<Font>> = font_events
         .into_iter()
-        .flat_map(|mut events| events.read().copied().collect::<Vec<_>>())
-        .map(|event| match event {
-            AssetEvent::Added { id }
-            | AssetEvent::Modified { id }
-            | AssetEvent::Removed { id }
-            | AssetEvent::Unused { id }
-            | AssetEvent::LoadedWithDependencies { id } => id,
+        .flat_map(|mut events| {
+            events
+                .read()
+                .map(|event| match *event {
+                    AssetEvent::Added { id }
+                    | AssetEvent::Modified { id }
+                    | AssetEvent::Removed { id }
+                    | AssetEvent::Unused { id }
+                    | AssetEvent::LoadedWithDependencies { id } => id,
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
     for (entity, terminal, config, mut state, mut output, mut stats, ui) in &mut terminals {
@@ -1190,15 +1280,21 @@ fn sync_batch_terminals(
         // family and must be re-shaped afterwards.
         let fonts_ready = face_ids
             .iter()
+            .flatten()
             .all(|id| fonts.get(*id).is_some_and(|font| !font.alias.is_empty()));
         // Fonts that are not loaded at all (still loading, or Bevy's optional default
         // font) do not hold `TerminalReady` back; registered fonts must be usable.
         let fonts_settled = face_ids
             .iter()
+            .flatten()
             .all(|id| fonts.get(*id).is_none_or(|font| !font.alias.is_empty()));
         let fonts_changed = state.font_ids != face_ids
             || state.fonts_ready != fonts_ready
-            || face_ids.iter().any(|id| changed_fonts.contains(id));
+            || (!changed_fonts.is_empty()
+                && face_ids
+                    .iter()
+                    .flatten()
+                    .any(|id| changed_fonts.contains(id)));
         state.font_ids = face_ids;
         state.fonts_ready = fonts_ready;
         // A resize during the sync that first reports readiness is part of settling,
@@ -1242,21 +1338,27 @@ fn sync_batch_terminals(
     }
 }
 
+/// Whether any snapshot cell carries a text blink attribute.
+fn snapshot_blinks(snapshot: &TerminalSnapshot) -> bool {
+    let blink = (StyleFlags::SLOW_BLINK | StyleFlags::RAPID_BLINK).bits();
+    snapshot
+        .cells()
+        .iter()
+        .any(|cell| cell.style.flags.bits() & blink != 0)
+}
+
 /// Font asset ids referenced by a set of faces (system/family sources have none).
-fn font_asset_ids(faces: &super::FontFaces) -> Vec<AssetId<Font>> {
-    [
-        Some(&faces.regular),
-        faces.bold.as_ref(),
-        faces.italic.as_ref(),
-        faces.bold_italic.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(|source| match source {
-        FontSource::Handle(handle) => Some(handle.id()),
+fn font_asset_ids(faces: &super::FontFaces) -> [Option<AssetId<Font>>; 4] {
+    let id = |source: Option<&FontSource>| match source {
+        Some(FontSource::Handle(handle)) => Some(handle.id()),
         _ => None,
-    })
-    .collect()
+    };
+    [
+        id(Some(&faces.regular)),
+        id(faces.bold.as_ref()),
+        id(faces.italic.as_ref()),
+        id(faces.bold_italic.as_ref()),
+    ]
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1325,10 +1427,23 @@ fn sync_batch_terminal(
         state.glyph_atlas.clear(images);
     }
     let blink = BlinkPhases::at(elapsed, config);
-    let blink_changed = blink != state.blink;
+    // A phase flip only matters where it changes pixels: text phases when the
+    // snapshot holds blinking cells, the cursor phase when the cursor shows.
+    let text_blink_changed = state.snapshot_blinks
+        && (blink.slow_hidden != state.blink.slow_hidden
+            || blink.rapid_hidden != state.blink.rapid_hidden);
+    let cursor_blink_changed = blink.cursor_hidden != state.blink.cursor_hidden
+        && state
+            .last_snapshot
+            .as_ref()
+            .is_some_and(cursor_should_be_visible);
+    let blink_changed = text_blink_changed || cursor_blink_changed;
     if state.last_snapshot.as_ref().is_some_and(|snapshot| {
         snapshot.revision() == surface.revision() && !text_assets_changed && !blink_changed
     }) {
+        // Keep the recorded phases current so an irrelevant flip is not
+        // mistaken for a change once blinking content appears later.
+        state.blink = blink;
         return None;
     }
 
@@ -1348,7 +1463,13 @@ fn sync_batch_terminal(
         }
         let full = update.resized || text_assets_changed;
         if blink_changed && !full {
-            rows.extend(0..snapshot.size().height);
+            if text_blink_changed {
+                rows.extend(0..snapshot.size().height);
+            } else {
+                // Only the cursor phase flipped: its row is the only change.
+                rows.push(snapshot.cursor_position().y);
+                rows.retain(|row| *row < snapshot.size().height);
+            }
             rows.sort_unstable();
             rows.dedup();
         }
@@ -1438,11 +1559,8 @@ fn sync_batch_terminal(
     stats.scene_ns = scene_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
     stats.changed_rows = u32::try_from(rows.len()).unwrap_or(u32::MAX);
     stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
-    let vertex_bytes = scene.instances.len() * 48;
-    if vertex_bytes > state.vertex_capacity {
-        state.vertex_capacity = vertex_bytes.next_power_of_two();
-    }
     state.pending = Some(scene);
+    state.snapshot_blinks = snapshot_blinks(&snapshot);
     state.last_snapshot = Some(snapshot);
     state.blink = blink;
     state.raster_scale = raster_scale;
@@ -1476,6 +1594,9 @@ fn build_scene(
     scratch.styles.reserve(usize::from(snapshot.size().width));
     let SceneScratch {
         backgrounds,
+        background_rects,
+        prev_runs,
+        current_runs,
         foregrounds,
         glyphs,
         decorations,
@@ -1484,8 +1605,12 @@ fn build_scene(
     } = scratch;
 
     for &row in rows {
+        current_runs.clear();
         if !full {
-            backgrounds.push(solid_quad(
+            // Partial repaints interleave a per-row clear with that row's runs,
+            // so later rows' clears would overwrite runs merged upward; merge
+            // vertically only in full rebuilds (which have no per-row clears).
+            background_rects.push((
                 PixelGeometry {
                     x: 0.0,
                     y: f32::from(row) * raster.cell_size.y,
@@ -1493,7 +1618,6 @@ fn build_scene(
                     height: raster.cell_size.y,
                 },
                 config.theme.background,
-                size,
             ));
         }
         let cells = snapshot.row(row);
@@ -1514,18 +1638,20 @@ fn build_scene(
                 background_start = background_end;
                 continue;
             }
-            backgrounds.push(solid_quad(
-                PixelGeometry {
-                    x: background_start as f32 * raster.cell_size.x,
-                    y: f32::from(row) * raster.cell_size.y,
-                    width: (background_end - background_start) as f32 * raster.cell_size.x,
-                    height: raster.cell_size.y,
-                },
-                color,
-                size,
-            ));
+            let geometry = PixelGeometry {
+                x: background_start as f32 * raster.cell_size.x,
+                y: f32::from(row) * raster.cell_size.y,
+                width: (background_end - background_start) as f32 * raster.cell_size.x,
+                height: raster.cell_size.y,
+            };
+            if full {
+                merge_background_rect(background_rects, prev_runs, current_runs, geometry, color);
+            } else {
+                background_rects.push((geometry, color));
+            }
             background_start = background_end;
         }
+        std::mem::swap(prev_runs, current_runs);
 
         let mut column = 0;
         while column < cells.len() {
@@ -1621,6 +1747,12 @@ fn build_scene(
             column += width;
         }
     }
+
+    backgrounds.extend(
+        background_rects
+            .iter()
+            .map(|&(geometry, color)| solid_quad(geometry, color, size)),
+    );
 
     if cursor_should_be_visible(snapshot)
         && !blink.cursor_hidden
@@ -1987,6 +2119,8 @@ fn batch_scenes_can_render_early(pending: Res<PendingBatchScenes>) -> bool {
 struct BatchGpuState {
     vertex_buffer: Option<Buffer>,
     vertex_capacity: u64,
+    /// Persistent CPU staging for instance serialization, reused every frame.
+    staging: Vec<u8>,
     texture_layout: Option<BindGroupLayout>,
     pipeline: Option<RenderPipeline>,
     replace_pipeline: Option<RenderPipeline>,
@@ -2106,20 +2240,21 @@ fn create_pipeline(
     })
 }
 
-fn instance_bytes(instances: &[QuadInstance]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(instances.len() * 48);
-    for instance in instances {
-        for value in instance
-            .rect
-            .to_array()
-            .into_iter()
-            .chain(instance.uv.to_array())
-            .chain(instance.color.to_array())
-        {
-            bytes.extend_from_slice(&value.to_ne_bytes());
+/// Appends the 48-byte GPU encoding of each instance, writing whole instances
+/// into pre-sized chunks instead of growing the vector one scalar at a time.
+fn append_instance_bytes(instances: &[QuadInstance], bytes: &mut Vec<u8>) {
+    let start = bytes.len();
+    bytes.resize(start + instances.len() * 48, 0);
+    for (chunk, instance) in bytes[start..].chunks_exact_mut(48).zip(instances) {
+        let values = [
+            instance.rect.to_array(),
+            instance.uv.to_array(),
+            instance.color.to_array(),
+        ];
+        for (slot, value) in chunk.chunks_exact_mut(4).zip(values.as_flattened()) {
+            slot.copy_from_slice(&value.to_ne_bytes());
         }
     }
-    bytes
 }
 
 fn render_batch_scenes(
@@ -2130,6 +2265,7 @@ fn render_batch_scenes(
     queue: Res<RenderQueue>,
 ) {
     let scenes = std::mem::take(&mut pending.0);
+    let mut renderable = Vec::with_capacity(scenes.len());
     for scene in scenes {
         let Some(target) = gpu_images.get(scene.destination) else {
             pending.0.push(scene);
@@ -2152,29 +2288,45 @@ fn render_batch_scenes(
             pending.0.push(scene);
             continue;
         }
+        renderable.push(scene);
+    }
+    if renderable.is_empty() {
+        return;
+    }
 
-        gpu.ensure_pipeline(&device);
-        if !scene.instances.is_empty() {
-            let bytes = instance_bytes(&scene.instances);
-            let required = bytes.len() as u64;
-            if required > gpu.vertex_capacity {
-                gpu.vertex_capacity = required.next_power_of_two();
-                gpu.vertex_buffer = Some(device.create_buffer(&BufferDescriptor {
-                    label: Some("bevy_terminal terminal instances"),
-                    size: gpu.vertex_capacity,
-                    usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }));
-            }
-            queue.write_buffer(
-                gpu.vertex_buffer
-                    .as_ref()
-                    .expect("non-empty instances allocate a vertex buffer"),
-                0,
-                &bytes,
-            );
+    gpu.ensure_pipeline(&device);
+    // Serialize every scene into one persistent staging buffer; each scene
+    // draws from its own byte offset so one buffer write, one command encoder
+    // and one submission cover all terminals.
+    let mut staging = std::mem::take(&mut gpu.staging);
+    staging.clear();
+    let mut offsets = Vec::with_capacity(renderable.len());
+    for scene in &renderable {
+        offsets.push(staging.len() as u64);
+        append_instance_bytes(&scene.instances, &mut staging);
+    }
+    if !staging.is_empty() {
+        let required = staging.len() as u64;
+        if required > gpu.vertex_capacity {
+            gpu.vertex_capacity = required.next_power_of_two();
+            gpu.vertex_buffer = Some(device.create_buffer(&BufferDescriptor {
+                label: Some("bevy_terminal terminal instances"),
+                size: gpu.vertex_capacity,
+                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
         }
+        queue.write_buffer(
+            gpu.vertex_buffer
+                .as_ref()
+                .expect("non-empty instances allocate a vertex buffer"),
+            0,
+            &staging,
+        );
+    }
+    gpu.staging = staging;
 
+    for scene in &renderable {
         for batch in &scene.batches {
             let texture = batch.texture;
             let image = gpu_images
@@ -2206,15 +2358,20 @@ fn render_batch_scenes(
                     .insert(texture, (texture_id, bind_group));
             }
         }
+    }
 
+    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+        label: Some("bevy_terminal terminal batch"),
+    });
+    for (scene, offset) in renderable.iter().zip(&offsets) {
+        let target = gpu_images
+            .get(scene.destination)
+            .expect("destination readiness was checked before encoding");
         let load = if scene.clear {
             LoadOp::Clear(scene.clear_color.to_linear().into())
         } else {
             LoadOp::Load
         };
-        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("bevy_terminal terminal batch"),
-        });
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("bevy_terminal terminal batch"),
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -2231,8 +2388,10 @@ fn render_batch_scenes(
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        if let Some(vertex_buffer) = &gpu.vertex_buffer {
-            pass.set_vertex_buffer(0, *vertex_buffer.slice(..));
+        if !scene.instances.is_empty()
+            && let Some(vertex_buffer) = &gpu.vertex_buffer
+        {
+            pass.set_vertex_buffer(0, *vertex_buffer.slice(*offset..));
             let mut current_replace = None;
             for batch in &scene.batches {
                 if current_replace != Some(batch.replace) {
@@ -2256,8 +2415,8 @@ fn render_batch_scenes(
             }
         }
         drop(pass);
-        queue.submit([encoder.finish()]);
     }
+    queue.submit([encoder.finish()]);
 }
 
 const BATCH_SHADER: &str = r#"
@@ -2308,7 +2467,7 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{GridSize, TerminalCell};
+    use crate::scene::{GridSize, TerminalCell, TerminalStyle};
 
     fn quad(value: f32) -> QuadInstance {
         QuadInstance {
@@ -3001,7 +3160,9 @@ mod tests {
         append_glyph_batches(&mut instances, &mut batches, &[]);
         assert!(instances.is_empty());
         assert!(batches.is_empty());
-        assert!(instance_bytes(&instances).is_empty());
+        let mut bytes = Vec::new();
+        append_instance_bytes(&instances, &mut bytes);
+        assert!(bytes.is_empty());
     }
 
     #[test]
@@ -3081,5 +3242,160 @@ mod tests {
 
         config.cursor.blink_hz = Some(1.0);
         assert!(BlinkPhases::at(0.6, &config).cursor_hidden);
+    }
+
+    /// A text app with a manually driven clock, for deterministic blink tests.
+    fn timed_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins
+                .build()
+                .disable::<bevy::time::TimePlugin>(),
+            bevy::asset::AssetPlugin::default(),
+            bevy::text::TextPlugin,
+            TerminalPlugin,
+        ))
+        .init_asset::<Image>()
+        .init_resource::<Time>();
+        app
+    }
+
+    fn advance(app: &mut App, seconds: f32) {
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs_f32(seconds));
+    }
+
+    /// Consumes pending payloads the way render-world extraction would, so a
+    /// later partial repaint is not upgraded to a full one.
+    fn drain_pending(app: &mut App) {
+        let mut states = app.world_mut().query::<&mut BatchMainState>();
+        for mut state in states.iter_mut(app.world_mut()) {
+            state.pending = None;
+        }
+    }
+
+    #[test]
+    fn blink_phases_only_rebuild_blinking_content() {
+        let mut app = timed_app();
+        let surface = TerminalSurface::new((6, 3));
+        write_text(&surface, "hello!");
+        let entity = app.world_mut().spawn(Terminal::new(surface.clone())).id();
+        for _ in 0..4 {
+            app.update();
+        }
+
+        // No blinking cells, hidden cursor: a text/cursor phase flip is
+        // invisible and must not rebuild anything.
+        advance(&mut app, 0.6);
+        app.update();
+        let idle = *app.world().get::<TerminalStats>(entity).unwrap();
+        assert_eq!(idle.changed_rows, 0, "{idle}");
+
+        // A visible blinking cursor dirties only its own row on a phase flip.
+        surface.update(|update| {
+            update.set_cursor_position((0, 2));
+            update.set_cursor_visible(true);
+        });
+        app.update();
+        drain_pending(&mut app);
+        advance(&mut app, 0.5);
+        app.update();
+        let cursor_only = *app.world().get::<TerminalStats>(entity).unwrap();
+        assert_eq!(cursor_only.changed_rows, 1, "{cursor_only}");
+
+        // A SLOW_BLINK cell restores the full-surface phase rebuild.
+        surface.update(|update| {
+            let mut cell = TerminalCell::new("x");
+            cell.style = TerminalStyle::new().with(StyleFlags::SLOW_BLINK);
+            update.set_cell((0, 0), &cell);
+        });
+        app.update();
+        drain_pending(&mut app);
+        advance(&mut app, 0.5);
+        app.update();
+        let blinking = *app.world().get::<TerminalStats>(entity).unwrap();
+        assert_eq!(blinking.changed_rows, 3, "{blinking}");
+    }
+
+    #[test]
+    fn full_rebuilds_merge_identical_backgrounds_vertically() {
+        let mut app = text_app();
+        let surface = TerminalSurface::new((4, 3));
+        surface.update(|update| {
+            for row in 0..3 {
+                for column in 0..4 {
+                    let mut cell = TerminalCell::new(" ");
+                    cell.style = TerminalStyle::new()
+                        .bg(crate::scene::TerminalColor::Rgb(200, 30, 30));
+                    update.set_cell((column, row), &cell);
+                }
+            }
+        });
+        let entity = app.world_mut().spawn(Terminal::new(surface.clone())).id();
+        for _ in 0..4 {
+            app.update();
+        }
+        // Force a full rebuild and check the uniform background collapsed into
+        // a single quad instead of one per row.
+        app.world_mut()
+            .get_mut::<TerminalRenderConfig>(entity)
+            .unwrap()
+            .cell_size = Vec2::new(12.0, 22.0).into();
+        app.update();
+        let stats = *app.world().get::<TerminalStats>(entity).unwrap();
+        assert_eq!(stats.changed_rows, 3, "{stats}");
+        assert_eq!(stats.solid_quads, 1, "{stats}");
+    }
+
+    #[test]
+    fn ascii_and_non_ascii_symbols_reuse_the_shape_cache() {
+        let mut app = text_app();
+        let surface = TerminalSurface::new((4, 1));
+        write_text(&surface, "abéé");
+        let entity = app.world_mut().spawn(Terminal::new(surface.clone())).id();
+        for _ in 0..4 {
+            app.update();
+        }
+        // Re-shuffling the same symbols shapes nothing new: the ASCII fast
+        // path and the map fallback both hit.
+        write_text(&surface, "ébéa");
+        app.update();
+        let stats = *app.world().get::<TerminalStats>(entity).unwrap();
+        assert_eq!(stats.shape_misses, 0, "{stats}");
+        assert_eq!(stats.changed_rows, 1, "{stats}");
+        // A genuinely new symbol still misses once.
+        write_text(&surface, "cbéa");
+        app.update();
+        let stats = *app.world().get::<TerminalStats>(entity).unwrap();
+        assert_eq!(stats.shape_misses, 1, "{stats}");
+    }
+
+    #[test]
+    fn instance_bytes_append_whole_instances_in_order() {
+        let instances = [
+            QuadInstance {
+                rect: Vec4::new(1.0, 2.0, 3.0, 4.0),
+                uv: Vec4::new(5.0, 6.0, 7.0, 8.0),
+                color: Vec4::new(9.0, 10.0, 11.0, 12.0),
+            },
+            quad(42.0),
+        ];
+        let mut bytes = Vec::new();
+        append_instance_bytes(&instances, &mut bytes);
+        assert_eq!(bytes.len(), 96);
+        let floats: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            &floats[..12],
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+        );
+        assert_eq!(&floats[12..16], &[42.0; 4]);
+        // Appending again extends at the previous end, as the shared staging
+        // buffer relies on.
+        append_instance_bytes(&instances[1..], &mut bytes);
+        assert_eq!(bytes.len(), 144);
     }
 }

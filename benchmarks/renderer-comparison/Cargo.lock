@@ -1574,7 +1574,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_terminal"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bevy",
  "smol_str",
@@ -1582,7 +1582,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_terminal_ratatui"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bevy",
  "bevy_terminal",
