@@ -109,7 +109,9 @@ pub struct TerminalTexture {
     /// possibly grown to the font's line box — see [`super::FontSizing`])
     /// divided by `raster_scale`.
     pub cell_size: Vec2,
-    /// Effective logical font size (measured for [`super::FontSizing::FitCellWidth`]).
+    /// Effective logical font size. This can differ slightly from a requested
+    /// [`super::FontSizing::Px`] size when [`super::CellSizing::FromFont`]
+    /// snaps the measured advance to a whole physical-pixel cell.
     pub font_size: f32,
 }
 
@@ -502,6 +504,20 @@ fn physical_config(logical: super::LogicalMetrics, raster_scale: f32) -> RasterM
     }
 }
 
+fn font_size_for_cell(
+    config: &TerminalRenderConfig,
+    measured_advance: Option<f32>,
+    raster: RasterMetrics,
+) -> f32 {
+    let fit_width = config.font_size == super::FontSizing::FitCellWidth
+        || matches!(config.cell_size, super::CellSizing::FromFont { .. });
+    measured_advance
+        .filter(|advance| fit_width && *advance > 0.0)
+        .map_or(raster.font_size, |advance| {
+            (raster.cell_size.x * super::PROBE_FONT_SIZE / advance).max(1.0)
+        })
+}
+
 /// ASCII glyphs whose ink must stay inside a cell: descenders, ascenders and
 /// tall brackets. Measured for every configured face.
 const CORE_PROBE: &str = "gjpqy|[]{}()_";
@@ -531,12 +547,7 @@ fn refine_metrics(
     layout_cx: &mut LayoutCx,
     scale_cx: &mut ScaleCx,
 ) -> RasterMetrics {
-    if config.font_size == super::FontSizing::FitCellWidth
-        && let Some(advance) = measured_advance
-        && advance > 0.0
-    {
-        raster.font_size = (raster.cell_size.x * super::PROBE_FONT_SIZE / advance).max(1.0);
-    }
+    raster.font_size = font_size_for_cell(config, measured_advance, raster);
     let requested_height = raster.cell_size.y;
     // An explicit font size in an explicit cell is honored exactly; a font
     // derived from the cell width or a font-driven cell gets a cell at least
@@ -2954,6 +2965,30 @@ mod tests {
                 height: 2.0,
             }
         );
+    }
+
+    #[test]
+    fn font_driven_cells_refit_the_font_after_physical_pixel_rounding() {
+        let raster = physical_config(
+            super::super::LogicalMetrics {
+                font_size: 23.0,
+                cell_size: Vec2::new(11.5, 1.0),
+            },
+            1.0,
+        );
+        let from_font = TerminalRenderConfig {
+            cell_size: super::super::CellSizing::FROM_FONT,
+            font_size: super::super::FontSizing::Px(23.0),
+            ..default()
+        };
+        assert_eq!(raster.cell_size.x, 12.0);
+        assert_eq!(font_size_for_cell(&from_font, Some(32.0), raster), 24.0);
+
+        let explicit = TerminalRenderConfig {
+            cell_size: super::super::CellSizing::Logical(Vec2::new(11.5, 20.0)),
+            ..from_font
+        };
+        assert_eq!(font_size_for_cell(&explicit, Some(32.0), raster), 23.0);
     }
 
     #[test]

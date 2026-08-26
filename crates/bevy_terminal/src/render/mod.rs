@@ -225,7 +225,11 @@ pub enum FontSizing {
     /// font. The cell height is at least the font's line box (see above).
     #[default]
     FitCellWidth,
-    /// Use exactly this size in logical pixels.
+    /// Request this size in logical pixels. With an explicit cell this is used
+    /// exactly. With [`CellSizing::FromFont`], the physical size is adjusted
+    /// just enough for the measured advance to equal the cell's whole-pixel
+    /// width, preventing seams in block and box-drawing glyphs; read the
+    /// effective size from [`TerminalTexture::font_size`](crate::render::TerminalTexture::font_size).
     Px(f32),
 }
 
@@ -458,10 +462,12 @@ pub enum CellSizing {
     /// or with [`FontSizing::Px`] for full control of both.
     Logical(Vec2),
     /// Derive the cell from the font: width = the regular font's measured
-    /// advance at the configured [`FontSizing::Px`] size, height = the font's
-    /// measured line box (the rows a full block covers), rounded up to whole
-    /// pixels. This is how terminal emulators work ("font size in, cell size
-    /// out"; zoom by changing the font size). Requires [`FontSizing::Px`].
+    /// advance at the configured [`FontSizing::Px`] size, snapped to a whole
+    /// physical pixel, and height = the measured line box (the rows a full
+    /// block covers). The final raster font size is derived back from the
+    /// snapped width so glyph advance and cell width remain identical. This is
+    /// how terminal emulators work ("font size in, cell size out"; zoom by
+    /// changing the font size). Requires [`FontSizing::Px`].
     FromFont {
         /// Retained for 0.7 source compatibility. Font measurement determines
         /// the height, so this value has no effect.
