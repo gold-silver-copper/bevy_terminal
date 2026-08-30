@@ -66,7 +66,7 @@ const INITIAL_ROWS: u16 = 24;
 fn main() {
     let (terminal, renderer) = RatatuiTerminal::new(INITIAL_COLUMNS, INITIAL_ROWS);
     let config = TerminalRenderConfig {
-        cell_size: CellSizing::FromFont { line_height: 1.2 },
+        cell_size: CellSizing::FROM_FONT,
         font_size: FontSizing::Px(FONT_SIZE),
         ..default()
     };
