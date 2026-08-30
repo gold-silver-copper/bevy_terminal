@@ -222,7 +222,7 @@ fn setup(mut commands: Commands, window: Query<&Window>) {
     commands.spawn((
         RatatuiTerminal::new(80, 24),
         TerminalRenderConfig {
-            cell_size: CellSizing::FROM_FONT,     // width = measured advance, height = 1.2 × size
+            cell_size: CellSizing::FROM_FONT,     // width and height measured from the font
             font_size: FontSizing::Px(16.0),      // zoom by mutating this
             font: FontFaces::regular(font_family("JetBrains Mono")),
             raster: RasterConfig {
@@ -284,7 +284,7 @@ coverage).
 fallback fonts and there is no single metric valid for every Unicode glyph, so
 an explicit cell keeps every glyph anchored to its column. Pick a primary
 monospace font; with `FontSizing::FitCellWidth` (default) the font is measured
-and sized so its advance fills the cell. `CellSizing::FromFont` derives the cell
+and sized so its advance fills the cell. `CellSizing::FROM_FONT` derives the cell
 from a `FontSizing::Px` size instead (see above). Integer logical cell
 dimensions are recommended. The compact renderer snaps the physical cell to
 whole pixels so cell edges cannot accumulate subpixel drift.
@@ -300,13 +300,14 @@ in priority order, the block keeps covering the cell (block/box tiles have no
 seams), the ASCII probe is fully inside the cell (descenders included), and
 accented capitals fit when the font leaves room.
 
-- With `FitCellWidth` (or `CellSizing::FromFont`) the configured cell height
-  is a minimum: it grows to the line box, so a primary-font glyph inside the
-  line box is never clipped. Iosevka Fixed sized to an 11 px column is a 22 px
-  font whose line box is 27 px, so a requested 11×20 cell becomes 11×27; read
-  the effective size from `TerminalTexture::cell_size`. To keep an exact grid,
-  choose `FontSizing::Px` (the cell is then honored and glyphs beyond it are
-  clipped after the same fitting).
+- With `FitCellWidth`, the configured cell height is a minimum and grows to the
+  measured line box. With `CellSizing::FROM_FONT`, both dimensions come from the
+  font. The legacy `FromFont { line_height }` payload is ignored. A primary-font
+  glyph inside the line box is therefore never clipped.
+  Iosevka Fixed sized to an 11 px column is a 22 px font whose line box is 27
+  px, so a requested 11×20 cell becomes 11×27; read the effective size from
+  `TerminalTexture::cell_size`. To keep an exact grid, choose `FontSizing::Px`
+  in a logical cell (glyphs beyond it are clipped after the same fitting).
 - The font size is fitted to the *physical* cell width, so fractional raster
   scales (1.5×) do not open seams between advances.
 - Horizontally, a run wider than its cell (a fallback family with a larger

@@ -165,11 +165,11 @@ window metrics without knowing the renderer's internals.
 ## Cell sizing, texture format, features
 
 - `CellSizing::Logical(Vec2)` (default) fixes the cell and, with
-  `FontSizing::FitCellWidth`, sizes the font to it. `CellSizing::FromFont {
-  line_height }` (`CellSizing::FROM_FONT` = 1.2) derives the cell from a
-  `FontSizing::Px` size: width = the regular font's measured advance, height =
-  the larger of size × line height and the font's measured line box (the rows
-  a full block covers). `TerminalTexture::cell_size` reports the
+  `FontSizing::FitCellWidth`, sizes the font to it. `CellSizing::FROM_FONT`
+  derives the cell from a `FontSizing::Px` size: width = the regular font's
+  measured advance, height = its measured line box (the rows a full block
+  covers). The legacy `FromFont { line_height }` payload is ignored.
+  `TerminalTexture::cell_size` reports the
   logical cell in use, `TerminalTexture::grid_for` / `render::grid_for` /
   `render::grid_for_window` compute the grid that fits a size, and
   `render::raster_scale_for_window` the physical/logical ratio for

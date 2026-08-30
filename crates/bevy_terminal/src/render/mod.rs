@@ -207,15 +207,15 @@ impl<T: Into<FontSource>> From<T> for FontFaces {
 /// measurement is repeated whenever fonts or the configuration change and
 /// never per frame.
 ///
-/// With [`FitCellWidth`](Self::FitCellWidth) (or [`CellSizing::FromFont`])
-/// the configured cell height is a *minimum*: it grows to the line box so a
-/// primary-font glyph inside the line box is never clipped and blocks tile
-/// with no seam. With [`Px`](Self::Px) in a [`CellSizing::Logical`] cell both
-/// sizes are honored exactly and glyphs beyond the cell are clipped after the
-/// same fitting. Fallback-font glyphs, italics that overhang their advance and
-/// accents that a font draws above its own line box are centered/pushed into
-/// the cell (dropping the faintest columns when they are wider than it) and
-/// clipped as a last resort.
+/// With [`FitCellWidth`](Self::FitCellWidth), the configured cell height is a
+/// *minimum*; [`CellSizing::FromFont`] instead takes the measured line box as
+/// its height. In either mode a primary-font glyph inside the line box is never
+/// clipped and blocks tile with no seam. With [`Px`](Self::Px) in a
+/// [`CellSizing::Logical`] cell both sizes are honored exactly and glyphs
+/// beyond the cell are clipped after the same fitting. Fallback-font glyphs,
+/// italics that overhang their advance and accents that a font draws above its
+/// own line box are centered/pushed into the cell (dropping the faintest
+/// columns when they are wider than it) and clipped as a last resort.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum FontSizing {
     /// Measure the regular font's advance width by shaping it and pick the
@@ -225,7 +225,11 @@ pub enum FontSizing {
     /// font. The cell height is at least the font's line box (see above).
     #[default]
     FitCellWidth,
-    /// Use exactly this size in logical pixels.
+    /// Request this size in logical pixels. With an explicit cell this is used
+    /// exactly. With [`CellSizing::FromFont`], the physical size is adjusted
+    /// just enough for the measured advance to equal the cell's whole-pixel
+    /// width, preventing seams in block and box-drawing glyphs; read the
+    /// effective size from [`TerminalTexture::font_size`](crate::render::TerminalTexture::font_size).
     Px(f32),
 }
 
@@ -313,21 +317,23 @@ fn resolve_metrics(config: &TerminalRenderConfig, measured_advance: Option<f32>)
                 .map_or(UNMEASURED_FONT_SIZE, |ratio| (cell.x / ratio).max(1.0)),
             cell_size: cell,
         },
-        (CellSizing::FromFont { line_height }, FontSizing::Px(size)) => {
+        (CellSizing::FromFont { .. }, FontSizing::Px(size)) => {
             let font_size = size.max(1.0);
-            let width = advance_per_px.map_or(font_size * 0.6, |ratio| ratio * font_size);
+            let cell_size = advance_per_px.map_or(Vec2::ONE, |ratio| {
+                Vec2::new((ratio * font_size).max(1.0), 1.0)
+            });
             LogicalMetrics {
                 font_size,
-                cell_size: Vec2::new(width.max(1.0), (font_size * line_height).max(1.0)),
+                cell_size,
             }
         }
         (CellSizing::FromFont { .. }, FontSizing::FitCellWidth) => {
             warn_once!(
-                "bevy_terminal: CellSizing::FromFont requires FontSizing::Px; using an 11×20 cell"
+                "bevy_terminal: CellSizing::FromFont requires FontSizing::Px; using the default font size"
             );
             resolve_metrics(
                 &TerminalRenderConfig {
-                    cell_size: CellSizing::default(),
+                    font_size: FontSizing::Px(UNMEASURED_FONT_SIZE),
                     ..config.clone()
                 },
                 measured_advance,
@@ -456,24 +462,21 @@ pub enum CellSizing {
     /// or with [`FontSizing::Px`] for full control of both.
     Logical(Vec2),
     /// Derive the cell from the font: width = the regular font's measured
-    /// advance at the configured [`FontSizing::Px`] size, height = the larger
-    /// of font size × `line_height` and the font's measured line box (the rows
-    /// a full block covers), rounded up to whole pixels. This is how terminal
-    /// emulators work ("font size in, cell size out"; zoom by changing the
-    /// font size). Requires [`FontSizing::Px`].
-    ///
-    /// Bevy's public text API does not expose a font's own ascent/descent/line
-    /// gap, so the multiplier is the only knob; 1.2 matches Bevy's default
-    /// line height. Fonts whose block glyph is taller (JetBrains Mono: 1.32 em)
-    /// get the taller cell.
+    /// advance at the configured [`FontSizing::Px`] size, snapped to a whole
+    /// physical pixel, and height = the measured line box (the rows a full
+    /// block covers). The final raster font size is derived back from the
+    /// snapped width so glyph advance and cell width remain identical. This is
+    /// how terminal emulators work ("font size in, cell size out"; zoom by
+    /// changing the font size). Requires [`FontSizing::Px`].
     FromFont {
-        /// Cell height as a multiple of the font size.
+        /// Retained for 0.7 source compatibility. Font measurement determines
+        /// the height, so this value has no effect.
         line_height: f32,
     },
 }
 
 impl CellSizing {
-    /// `FromFont` with the default 1.2 line height.
+    /// Derive both cell dimensions from the selected font.
     pub const FROM_FONT: Self = Self::FromFont { line_height: 1.2 };
 }
 
@@ -877,7 +880,8 @@ mod tests {
         assert_eq!(resolve_metrics(&explicit, Some(38.4)).font_size, 18.0);
         assert_eq!(resolve_metrics(&explicit, None).font_size, 18.0);
 
-        // Font-driven cells: width from the measured advance, height from the factor.
+        // Before refinement, font-driven cells have a measured width and a
+        // placeholder height; refinement replaces it with the measured line box.
         let from_font = TerminalRenderConfig {
             cell_size: CellSizing::FROM_FONT,
             font_size: FontSizing::Px(20.0),
@@ -886,22 +890,24 @@ mod tests {
         let metrics = resolve_metrics(&from_font, Some(38.4));
         assert_eq!(metrics.font_size, 20.0);
         assert!((metrics.cell_size.x - 12.0).abs() < 1e-4);
-        assert!((metrics.cell_size.y - 24.0).abs() < 1e-4);
+        assert_eq!(metrics.cell_size.y, 1.0);
+        assert_eq!(resolve_metrics(&from_font, None).cell_size, Vec2::ONE);
         // Zooming changes the cell.
         let zoomed = TerminalRenderConfig {
             font_size: FontSizing::Px(30.0),
             ..from_font.clone()
         };
         assert!((resolve_metrics(&zoomed, Some(38.4)).cell_size.x - 18.0).abs() < 1e-4);
-        // FromFont with FitCellWidth is a configuration error → 11×20 fallback.
+        // FromFont with FitCellWidth is a configuration error: retain
+        // font-driven sizing and substitute the renderer's default font size.
         let invalid = TerminalRenderConfig {
             font_size: FontSizing::FitCellWidth,
             ..from_font
         };
-        assert_eq!(
-            resolve_metrics(&invalid, Some(38.4)).cell_size,
-            Vec2::new(11.0, 20.0)
-        );
+        let fallback = resolve_metrics(&invalid, Some(38.4));
+        assert_eq!(fallback.font_size, UNMEASURED_FONT_SIZE);
+        assert!((fallback.cell_size.x - 9.6).abs() < 1e-4);
+        assert_eq!(fallback.cell_size.y, 1.0);
     }
 
     #[test]

@@ -15,6 +15,9 @@
 //! - `--font <index|dir|all>` selects the vendored family (see `render_test`),
 //!   `all` renders every family;
 //! - `--scale <f|all>` selects the raster scale (`all` = 1, 1.5, 2, 3);
+//! - `--from-font <px>` derives the cell from that logical font size instead
+//!   of fitting the font to the fixed 11×20 logical-pixel test cell;
+//! - `--tiles-only` limits `--check` to the block/box seam panels;
 //! - `--export` writes PNGs to `target/glyph-fidelity/<family>/<scale>x/`
 //!   headlessly;
 //! - `--check` reads every texture back from the GPU and asserts, per glyph
@@ -288,6 +291,7 @@ struct Case {
 struct Options {
     export: bool,
     check: bool,
+    tiles_only: bool,
 }
 
 /// Textures waiting for exporters (spawned a frame after `TerminalReady`).
@@ -311,9 +315,12 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let export = args.iter().any(|argument| argument == "--export");
     let check = args.iter().any(|argument| argument == "--check");
+    let tiles_only = args.iter().any(|argument| argument == "--tiles-only");
     let headless = export || check;
     let font_argument = parse_arg(&args, "--font");
     let scale_argument = parse_arg(&args, "--scale");
+    let from_font =
+        parse_arg(&args, "--from-font").map(|value| value.parse::<f32>().unwrap_or(18.0).max(1.0));
 
     let wanted: Vec<usize> = match font_argument.as_deref() {
         Some("all") => (0..FAMILIES.len()).collect(),
@@ -378,7 +385,11 @@ fn main() {
         std::process::exit(2);
     }
     app.add_plugins(TerminalPlugin)
-        .insert_resource(Options { export, check })
+        .insert_resource(Options {
+            export,
+            check,
+            tiles_only,
+        })
         .init_resource::<PendingExports>()
         .init_resource::<Captures>()
         .init_resource::<Frame>()
@@ -402,8 +413,9 @@ fn main() {
             let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS);
             draw_harness(&mut terminal, family.name, scale.unwrap_or(1.0), None);
             let config = TerminalRenderConfig {
-                cell_size: CELL.into(),
+                cell_size: from_font.map_or(CELL.into(), |_| CellSizing::FROM_FONT),
                 font: family.faces.clone(),
+                font_size: from_font.map_or(FontSizing::FitCellWidth, FontSizing::Px),
                 raster: RasterConfig {
                     scale: scale.map_or(TerminalRenderScale::Automatic, TerminalRenderScale::Fixed),
                     ..default()
@@ -630,7 +642,7 @@ fn tick(
             return;
         }
         let captures = captures.0.lock().unwrap();
-        let failures = run_checks(&captures, &cases);
+        let failures = run_checks(&captures, &cases, options.tiles_only);
         RESULT.store(i32::from(failures > 0), std::sync::atomic::Ordering::SeqCst);
         exit.write(AppExit::Success);
     } else if frame.0 >= 8 {
@@ -879,6 +891,7 @@ fn groups() -> Vec<Group> {
 fn run_checks(
     captures: &[Capture],
     cases: &Query<(Entity, &Case, &TerminalRenderer, &TerminalTexture)>,
+    tiles_only: bool,
 ) -> usize {
     let capture_of = |entity: Entity| captures.iter().find(|(e, ..)| *e == entity);
     let mut failures = 0;
@@ -917,7 +930,7 @@ fn run_checks(
             );
             block_rows(ref_data, *ref_size, ref_cell, tile_column(0), TILE_ROWS_A)
         });
-        for group in groups() {
+        for group in groups().into_iter().filter(|_| !tiles_only) {
             // A glyph whose unclipped ink lies inside the font's line box and is no
             // wider than its cell must keep every pixel. A glyph the font designed
             // beyond the line box or wider than the cell (accents that overshoot,
