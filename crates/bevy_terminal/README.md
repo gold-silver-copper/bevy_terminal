@@ -182,7 +182,10 @@ window metrics without knowing the renderer's internals.
   height grows to the line box; with `FontSizing::Px` in a `Logical` cell the
   configured sizes are exact and glyphs beyond the cell are clipped. Runs
   wider than their cell (fallback families, wide italics) drop their faintest
-  columns; overhanging runs are pushed inside. The font is sized to the
+  columns; overhanging runs are pushed inside, but a sub-pixel overshoot (the
+  fraction of a column that box-drawing glyphs are drawn past their advance so
+  strokes overlap) is clipped in place so corners stay aligned with stems. The
+  font is sized to the
   physical cell width so fractional raster scales do not open seams.
 - The texture is `Rgba8UnormSrgb` with straight alpha; `TerminalTheme::background`
   alpha is honored (backgrounds replace, glyphs blend), so translucent

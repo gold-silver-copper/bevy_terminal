@@ -215,7 +215,11 @@ impl<T: Into<FontSource>> From<T> for FontFaces {
 /// beyond the cell are clipped after the same fitting. Fallback-font glyphs,
 /// italics that overhang their advance and accents that a font draws above its
 /// own line box are centered/pushed into the cell (dropping the faintest
-/// columns when they are wider than it) and clipped as a last resort.
+/// columns when they are wider than it) and clipped as a last resort. A
+/// sub-pixel overshoot — the fraction of a column that box-drawing and block
+/// glyphs are drawn past their advance so strokes overlap — is not overhang:
+/// the run keeps its bearings and the cell clips the column, so `┌` stays
+/// aligned with `│`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum FontSizing {
     /// Measure the regular font's advance width by shaping it and pick the

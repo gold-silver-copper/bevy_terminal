@@ -313,6 +313,10 @@ accented capitals fit when the font leaves room.
 - Horizontally, a run wider than its cell (a fallback family with a larger
   advance, a wide italic) is placed so the faintest columns are clipped;
   a run that fits but overhangs (italic, negative bearing) is pushed inside.
+  A sub-pixel overshoot — box-drawing and block glyphs drawn a fraction past
+  their advance so strokes overlap (JetBrains Mono, Cascadia) — is not
+  overhang: the run keeps its bearings and the cell clips the faint column,
+  so `┌` stays on the same pixel column as `│`.
 - Everything else — accents a font draws above its own line box (Iosevka's
   `Ẫ`, Cascadia's `À`), emoji/CJK from a taller fallback family — is centered
   and clipped to its cell as a last resort.

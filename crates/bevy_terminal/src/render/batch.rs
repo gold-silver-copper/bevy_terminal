@@ -1921,6 +1921,20 @@ fn cached_shape<'a>(
 /// bearings; a run wider than the span (a fallback family with a larger
 /// advance, a wide italic) is placed so the clipped columns carry the least
 /// coverage — centered when the sides are equally faint.
+///
+/// # Sub-pixel overshoot
+///
+/// Box-drawing and block glyphs are commonly drawn a little past their
+/// advance on purpose (JetBrains Mono's `─` spans -20..620 units of a 600
+/// advance) so that neighbouring strokes overlap instead of gapping. Rasterised,
+/// that overshoot lights one faint extra column outside the span. Pushing the
+/// run inside for it would move `┌` one pixel away from a `│` in the row
+/// below, which is exactly the misalignment the overshoot exists to prevent.
+/// A single outside column on either side whose coverage is below the run's
+/// strongest column is therefore treated as overshoot: the run keeps its
+/// bearings and the per-cell clip drops the column, the way Ghostty renders
+/// ordinary text without any alignment constraint. A full-strength column
+/// outside the span is real overhang and is still pushed inside.
 fn fit_horizontally(glyphs: &[CachedGlyph], span: f32) -> f32 {
     let mut left = f32::INFINITY;
     let mut right = f32::NEG_INFINITY;
@@ -1928,6 +1942,10 @@ fn fit_horizontally(glyphs: &[CachedGlyph], span: f32) -> f32 {
         left = left.min(glyph.offset.x + glyph.ink.0);
         right = right.max(glyph.offset.x + glyph.ink.1);
     }
+    if right <= left {
+        return 0.0;
+    }
+    let (left, right) = trim_overshoot(glyphs, span, left, right);
     if right <= left {
         0.0
     } else if right - left <= span {
@@ -1977,6 +1995,43 @@ fn fit_horizontally(glyphs: &[CachedGlyph], span: f32) -> f32 {
         }
         best
     }
+}
+
+/// Largest number of outside columns per side that may be sub-pixel overshoot.
+const OVERSHOOT_COLUMNS: f32 = 1.0;
+
+/// Narrows a run's ink extents `[left, right)` by dropping, on each side, a
+/// single outside column that is fainter than the run's strongest column (a
+/// rasterised sub-pixel overshoot). Extents of runs without such columns are
+/// returned unchanged.
+fn trim_overshoot(glyphs: &[CachedGlyph], span: f32, left: f32, right: f32) -> (f32, f32) {
+    let coverage_at = |x: f32| -> u32 {
+        glyphs
+            .iter()
+            .filter_map(|glyph| {
+                let index = x - glyph.offset.x;
+                (index >= 0.0)
+                    .then(|| glyph.columns.get(index as usize).copied())
+                    .flatten()
+            })
+            .sum()
+    };
+    let peak = glyphs
+        .iter()
+        .flat_map(|glyph| glyph.columns.iter().copied())
+        .max()
+        .unwrap_or(0);
+    let mut trimmed_left = left;
+    let mut trimmed_right = right;
+    let left_over = -left;
+    if left_over > 0.0 && left_over <= OVERSHOOT_COLUMNS && coverage_at(left) < peak {
+        trimmed_left = left + left_over;
+    }
+    let right_over = right - span;
+    if right_over > 0.0 && right_over <= OVERSHOOT_COLUMNS && coverage_at(right - 1.0) < peak {
+        trimmed_right = right - right_over;
+    }
+    (trimmed_left, trimmed_right)
 }
 
 fn solid_quad(geometry: PixelGeometry, color: Color, target: Vec2) -> QuadInstance {
@@ -2880,6 +2935,35 @@ mod tests {
         assert_eq!(fit_horizontally(&[glyph(3.0, &[0, 0])], 11.0), 0.0);
     }
 
+    /// A box-drawing bar drawn a fraction past its advance rasterises to one
+    /// faint column outside the span; that is overshoot to clip, not overhang
+    /// to push, or `┌` would land a pixel away from `│`.
+    #[test]
+    fn horizontal_fit_ignores_sub_pixel_overshoot() {
+        // `─`: full-strength bar across the cell plus a 47% column past it.
+        let mut bar = vec![255; 11];
+        bar.push(120);
+        assert_eq!(fit_horizontally(&[glyph(0.0, &bar)], 11.0), 0.0);
+        // The same on the left (`┐`'s bar reaching into the previous cell).
+        let mut bar = vec![120];
+        bar.extend([255; 11]);
+        assert_eq!(fit_horizontally(&[glyph(-1.0, &bar)], 11.0), 0.0);
+        // Overshoot on both sides at once.
+        let mut bar = vec![120];
+        bar.extend([255; 11]);
+        bar.push(120);
+        assert_eq!(fit_horizontally(&[glyph(-1.0, &bar)], 11.0), 0.0);
+        // A full-strength column outside the span is real overhang: pushed.
+        assert_eq!(fit_horizontally(&[glyph(3.0, &[255; 9])], 11.0), -1.0);
+        // Two faint columns are past the tolerance: the run is wider than the
+        // span and placed by retained coverage, which keeps the solid columns.
+        let mut bar = vec![255; 11];
+        bar.extend([120, 120]);
+        assert_eq!(fit_horizontally(&[glyph(0.0, &bar)], 11.0), 0.0);
+        // A negative-bearing italic with a solid first column is still pushed.
+        assert_eq!(fit_horizontally(&[glyph(-1.0, &[255; 9])], 11.0), 1.0);
+    }
+
     #[test]
     fn snapping_and_clipping_keep_glyphs_that_fit_inside_their_cell() {
         let cell = PixelGeometry {
@@ -3343,9 +3427,7 @@ mod tests {
     fn timed_app() -> App {
         let mut app = App::new();
         app.add_plugins((
-            MinimalPlugins
-                .build()
-                .disable::<bevy::time::TimePlugin>(),
+            MinimalPlugins.build().disable::<bevy::time::TimePlugin>(),
             bevy::asset::AssetPlugin::default(),
             bevy::text::TextPlugin,
             TerminalPlugin,
@@ -3421,8 +3503,8 @@ mod tests {
             for row in 0..3 {
                 for column in 0..4 {
                     let mut cell = TerminalCell::new(" ");
-                    cell.style = TerminalStyle::new()
-                        .bg(crate::scene::TerminalColor::Rgb(200, 30, 30));
+                    cell.style =
+                        TerminalStyle::new().bg(crate::scene::TerminalColor::Rgb(200, 30, 30));
                     update.set_cell((column, row), &cell);
                 }
             }
@@ -3485,7 +3567,9 @@ mod tests {
             .collect();
         assert_eq!(
             &floats[..12],
-            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+            &[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0
+            ]
         );
         assert_eq!(&floats[12..16], &[42.0; 4]);
         // Appending again extends at the previous end, as the shared staging
