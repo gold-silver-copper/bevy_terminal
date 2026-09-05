@@ -659,14 +659,21 @@ fn refine_metrics(
     // An explicit font size in an explicit cell is honored exactly; a font
     // derived from the cell width or a font-driven cell gets a cell at least
     // as tall as the font's line box.
-    let may_grow = config.font_size == super::FontSizing::FitCellWidth
-        || matches!(config.cell_size, super::CellSizing::FromFont { .. });
-    // The font's own line box (ascent + descent + leading) is the floor for
-    // a font-driven cell, the way terminal emulators size rows: a block glyph
-    // shorter than the line box (Menlo, DejaVu Sans Mono) must not collapse
-    // the row onto the neighbouring rows' ascenders and descenders.
-    if may_grow && let Some(line_box) = font_line_box(config, raster.font_size, fonts, font_cx) {
-        raster.cell_size.y = raster.cell_size.y.max(line_box.ceil());
+    let font_driven = matches!(config.cell_size, super::CellSizing::FromFont { .. });
+    let line_height = config.cell_size.line_height();
+    // The font's own line box (ascent + descent + leading), scaled by the
+    // configured line height, is the floor for a font-driven cell, the way
+    // terminal emulators size rows: a block glyph shorter than the line box
+    // (Menlo, DejaVu Sans Mono) must not collapse the row onto the
+    // neighbouring rows' ascenders and descenders. A multiplier below one
+    // asks for exactly that tighter row, so the block glyph does not grow it
+    // back (block elements are geometry and tile regardless).
+    let may_grow =
+        config.font_size == super::FontSizing::FitCellWidth || (font_driven && line_height >= 1.0);
+    if (may_grow || font_driven)
+        && let Some(line_box) = font_line_box(config, raster.font_size, fonts, font_cx)
+    {
+        raster.cell_size.y = raster.cell_size.y.max((line_box * line_height).ceil());
     }
     let mut block = None;
     for _ in 0..FIT_ROUNDS {

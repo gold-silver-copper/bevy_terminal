@@ -469,21 +469,41 @@ pub enum CellSizing {
     /// Derive the cell from the font: width = the regular font's measured
     /// advance at the configured [`FontSizing::Px`] size, snapped to a whole
     /// physical pixel, and height = the font's line box (ascent + descent +
-    /// leading from its metrics tables, as terminal emulators size rows),
-    /// grown to the full block glyph when that is taller. The final raster font size is derived back from the
+    /// leading from its metrics tables, as terminal emulators size rows)
+    /// times `line_height`, grown to the full block glyph when that is taller
+    /// and the multiplier is not below one. The final raster font size is derived back from the
     /// snapped width so glyph advance and cell width remain identical. This is
     /// how terminal emulators work ("font size in, cell size out"; zoom by
     /// changing the font size). Requires [`FontSizing::Px`].
     FromFont {
-        /// Retained for 0.7 source compatibility. Font measurement determines
-        /// the height, so this value has no effect.
+        /// Multiplier applied to the font's line box to get the cell height:
+        /// `1.0` is the font's natural row (the terminal-emulator default),
+        /// `0.9` packs rows tighter, `1.2` spaces them out, like WezTerm's
+        /// `line_height` or Ghostty's `adjust-cell-height`. Below `1.0` the
+        /// outermost ascender and descender pixels clip; block elements are
+        /// drawn from geometry, so they still tile. The block glyph only
+        /// grows the cell when the multiplier is at least `1.0`. Values that
+        /// are not finite or not positive are treated as `1.0`.
         line_height: f32,
     },
 }
 
 impl CellSizing {
-    /// Derive both cell dimensions from the selected font.
-    pub const FROM_FONT: Self = Self::FromFont { line_height: 1.2 };
+    /// Derive both cell dimensions from the selected font at its natural line
+    /// height.
+    pub const FROM_FONT: Self = Self::FromFont { line_height: 1.0 };
+
+    /// The effective line-height multiplier of a font-driven cell (`1.0` for
+    /// an explicit cell or an invalid value).
+    #[must_use]
+    pub fn line_height(self) -> f32 {
+        match self {
+            Self::FromFont { line_height } if line_height.is_finite() && line_height > 0.0 => {
+                line_height
+            }
+            _ => 1.0,
+        }
+    }
 }
 
 impl Default for CellSizing {
@@ -699,6 +719,21 @@ mod tests {
         assert_eq!(snap(4.5) - snap(-0.5), 5.0);
         assert_eq!(snap(2.49), 2.0);
         assert_eq!(snap(-2.51), -3.0);
+    }
+
+    #[test]
+    fn from_font_line_height_multiplier() {
+        assert_eq!(CellSizing::FROM_FONT.line_height(), 1.0);
+        assert_eq!(CellSizing::FromFont { line_height: 0.9 }.line_height(), 0.9);
+        assert_eq!(CellSizing::FromFont { line_height: 0.0 }.line_height(), 1.0);
+        assert_eq!(
+            CellSizing::FromFont {
+                line_height: f32::NAN
+            }
+            .line_height(),
+            1.0
+        );
+        assert_eq!(CellSizing::Logical(Vec2::ONE).line_height(), 1.0);
     }
 
     #[test]

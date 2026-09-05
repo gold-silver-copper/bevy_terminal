@@ -167,8 +167,11 @@ window metrics without knowing the renderer's internals.
 - `CellSizing::Logical(Vec2)` (default) fixes the cell and, with
   `FontSizing::FitCellWidth`, sizes the font to it. `CellSizing::FROM_FONT`
   derives the cell from a `FontSizing::Px` size: width = the regular font's
-  measured advance, height = its measured line box (the rows a full block
-  covers). The legacy `FromFont { line_height }` payload is ignored.
+  measured advance, height = the font's line box (ascent + descent + leading)
+  times `line_height` (`1.0` = the font's natural row; `0.9` tightens, `1.2`
+  loosens, like WezTerm's `line_height` or Ghostty's `adjust-cell-height`),
+  grown to the block glyph when that is taller and the multiplier is at least
+  `1.0`.
   `TerminalTexture::cell_size` reports the
   logical cell in use, `TerminalTexture::grid_for` / `render::grid_for` /
   `render::grid_for_window` compute the grid that fits a size, and

@@ -302,8 +302,10 @@ accented capitals fit when the font leaves room.
 
 - With `FitCellWidth`, the configured cell height is a minimum and grows to the
   measured line box. With `CellSizing::FROM_FONT`, both dimensions come from the
-  font. The legacy `FromFont { line_height }` payload is ignored. A primary-font
-  glyph inside the line box is therefore never clipped.
+  font; `CellSizing::FromFont { line_height }` scales the row by a multiplier
+  (`1.0` natural, `0.9` tighter, `1.2` looser). At `1.0` or more a primary-font
+  glyph inside the line box is never clipped; below `1.0` the outermost
+  ascender and descender pixels clip, which is the user's trade.
   Iosevka Fixed sized to an 11 px column is a 22 px font whose line box is 27
   px, so a requested 11×20 cell becomes 11×27; read the effective size from
   `TerminalTexture::cell_size`. To keep an exact grid, choose `FontSizing::Px`

@@ -309,3 +309,33 @@ fn block_elements_tile_the_cell_from_geometry() {
     let y = cell_h + cell_h / 2;
     assert!(opaque(2 * cell_w + cell_w / 4, y) && !opaque(2 * cell_w + 3 * cell_w / 4, y));
 }
+
+/// `FromFont { line_height }` scales the font's line box: DejaVu Sans Mono's
+/// 27.06 px box at 23.25 px becomes 22 rows at 0.8 and 34 rows at 1.25.
+#[test]
+#[ignore = "requires a GPU"]
+fn line_height_scales_the_font_driven_cell() {
+    for (line_height, expected_rows) in [(0.8_f32, 22_u32), (1.0, 28), (1.25, 34)] {
+        let surface = TerminalSurface::new((2, 2));
+        surface.update(|u| {
+            u.set_cell((0, 0), &TerminalCell::new("A"));
+            u.set_cell((1, 1), &TerminalCell::new("█"));
+        });
+        let (data, size) = render_headless_with(surface, move |fonts| {
+            let bytes = include_bytes!("../../../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
+            let mut config = font_driven_config(fonts.add(Font::from_bytes(bytes.to_vec())), 24.0);
+            config.cell_size = CellSizing::FromFont { line_height };
+            config
+        });
+        assert_eq!(size.y / 2, expected_rows, "line_height {line_height}");
+        // The block still fills its whole (shorter or taller) cell.
+        let cell_w = size.x / 2;
+        let cell_h = size.y / 2;
+        for y in cell_h..size.y {
+            assert!(
+                texel(&data, size, cell_w + cell_w / 2, y)[0] > 240,
+                "block row {y} not filled at line_height {line_height}"
+            );
+        }
+    }
+}
