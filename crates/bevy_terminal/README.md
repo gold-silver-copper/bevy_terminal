@@ -179,12 +179,16 @@ window metrics without knowing the renderer's internals.
   in every face, then shifts all glyphs by one whole-pixel offset so blocks
   keep covering the cell, ASCII (descenders included) is never clipped and
   accents fit when there is room. With `FitCellWidth`/`FromFont` the cell
-  height grows to the line box; with `FontSizing::Px` in a `Logical` cell the
+  height is the font's line box (ascent + descent + leading from its metrics
+  tables, grown to the block glyph when that is taller); with `FontSizing::Px` in a `Logical` cell the
   configured sizes are exact and glyphs beyond the cell are clipped. Runs
   wider than their cell (fallback families, wide italics) drop their faintest
   columns; overhanging runs are pushed inside, but a sub-pixel overshoot (the
   fraction of a column that box-drawing glyphs are drawn past their advance so
-  strokes overlap) is clipped in place so corners stay aligned with stems. The
+  strokes overlap) is clipped in place so corners stay aligned with stems.
+  Unicode Block Elements (U+2580..U+259F, shades excepted) are drawn as
+  geometry rather than glyphs, as Ghostty does, so halves, eighths and
+  quadrants tile the cell exactly with any font. The
   font is sized to the
   physical cell width so fractional raster scales do not open seams.
 - The texture is `Rgba8UnormSrgb` with straight alpha; `TerminalTheme::background`

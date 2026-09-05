@@ -317,6 +317,11 @@ accented capitals fit when the font leaves room.
   their advance so strokes overlap (JetBrains Mono, Cascadia) — is not
   overhang: the run keeps its bearings and the cell clips the faint column,
   so `┌` stays on the same pixel column as `│`.
+- A font-driven cell is at least the font's line box (ascent + descent +
+  leading from its metrics tables), not merely the block glyph's height, so
+  fonts with a short `█` (Menlo, DejaVu Sans Mono) keep their rows apart.
+- Block Elements (U+2580..U+259F, shades excepted) are drawn as solid
+  geometry, so they tile the cell exactly with any font.
 - Everything else — accents a font draws above its own line box (Iosevka's
   `Ẫ`, Cascadia's `À`), emoji/CJK from a taller fallback family — is centered
   and clipped to its cell as a last resort.

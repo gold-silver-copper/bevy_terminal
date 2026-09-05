@@ -518,6 +518,113 @@ fn font_size_for_cell(
         })
 }
 
+/// The regular face's line box (ascent + descent + leading) in physical
+/// pixels at `font_size`, read from the font's metrics tables the way
+/// terminal emulators size their rows (`OS/2` typographic metrics when the
+/// font asks for them, `hhea` otherwise). `None` when the face cannot be
+/// resolved or loaded, in which case the block-glyph measurement stands alone.
+fn font_line_box(
+    config: &TerminalRenderConfig,
+    font_size: f32,
+    fonts: &Assets<Font>,
+    font_cx: &mut FontCx,
+) -> Option<f32> {
+    use skrifa::MetadataProvider as _;
+    // A font asset is registered in the collection under its alias; every
+    // other source resolves through Bevy's generic-family mapping.
+    let family = match &config.font.regular {
+        FontSource::Handle(handle) => fonts.get(handle.id()).map(|font| font.alias.clone()),
+        source => font_cx.get_family(source).map(str::to_owned),
+    };
+    let Some(family) = family.filter(|family| !family.is_empty()) else {
+        debug!(
+            "bevy_terminal: line box: no family for {:?}",
+            config.font.regular
+        );
+        return None;
+    };
+    let Some(family_info) = font_cx.context.collection.family_by_name(&family) else {
+        debug!("bevy_terminal: line box: family {family:?} not in the collection");
+        return None;
+    };
+    let Some(info) = family_info.default_font().cloned() else {
+        debug!("bevy_terminal: line box: family {family:?} has no fonts");
+        return None;
+    };
+    let Some(blob) = info.load(Some(&mut font_cx.context.source_cache)) else {
+        debug!("bevy_terminal: line box: font data of {family:?} could not be loaded");
+        return None;
+    };
+    let Ok(font) = skrifa::FontRef::from_index(blob.as_ref(), info.index()) else {
+        debug!("bevy_terminal: line box: font data of {family:?} could not be parsed");
+        return None;
+    };
+    let metrics = font.metrics(
+        skrifa::instance::Size::new(font_size),
+        skrifa::instance::LocationRef::default(),
+    );
+    let height = metrics.ascent + metrics.descent.abs() + metrics.leading.max(0.0);
+    debug!(
+        "bevy_terminal: line box of {family:?} at {font_size:.2}px: ascent {} descent {} leading {} upem {} -> {height:.2}px",
+        metrics.ascent, metrics.descent, metrics.leading, metrics.units_per_em
+    );
+    (height.is_finite() && height > 0.0).then_some(height)
+}
+
+/// Solid rectangles, as fractions of the cell `(left, top, right, bottom)`,
+/// for a Unicode Block Elements symbol (U+2580..U+259F, shades excluded).
+///
+/// Drawing these from geometry instead of the font, as Ghostty does, makes
+/// halves, eighths and quadrants tile the cell exactly whatever the font's
+/// block glyphs look like: a cell sized to the font's line box no longer
+/// leaves a seam under a shorter `█`, and fonts with no block glyphs at all
+/// still render them.
+fn block_element(symbol: &str) -> Option<&'static [(f32, f32, f32, f32)]> {
+    const FULL: &[(f32, f32, f32, f32)] = &[(0.0, 0.0, 1.0, 1.0)];
+    macro_rules! rects {
+        ($($r:expr),* $(,)?) => {{
+            const R: &[(f32, f32, f32, f32)] = &[$($r),*];
+            Some(R)
+        }};
+    }
+    let mut chars = symbol.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    match c {
+        '\u{2580}' => rects![(0.0, 0.0, 1.0, 0.5)],
+        '\u{2581}' => rects![(0.0, 7.0 / 8.0, 1.0, 1.0)],
+        '\u{2582}' => rects![(0.0, 6.0 / 8.0, 1.0, 1.0)],
+        '\u{2583}' => rects![(0.0, 5.0 / 8.0, 1.0, 1.0)],
+        '\u{2584}' => rects![(0.0, 0.5, 1.0, 1.0)],
+        '\u{2585}' => rects![(0.0, 3.0 / 8.0, 1.0, 1.0)],
+        '\u{2586}' => rects![(0.0, 2.0 / 8.0, 1.0, 1.0)],
+        '\u{2587}' => rects![(0.0, 1.0 / 8.0, 1.0, 1.0)],
+        '\u{2588}' => Some(FULL),
+        '\u{2589}' => rects![(0.0, 0.0, 7.0 / 8.0, 1.0)],
+        '\u{258a}' => rects![(0.0, 0.0, 6.0 / 8.0, 1.0)],
+        '\u{258b}' => rects![(0.0, 0.0, 5.0 / 8.0, 1.0)],
+        '\u{258c}' => rects![(0.0, 0.0, 0.5, 1.0)],
+        '\u{258d}' => rects![(0.0, 0.0, 3.0 / 8.0, 1.0)],
+        '\u{258e}' => rects![(0.0, 0.0, 2.0 / 8.0, 1.0)],
+        '\u{258f}' => rects![(0.0, 0.0, 1.0 / 8.0, 1.0)],
+        '\u{2590}' => rects![(0.5, 0.0, 1.0, 1.0)],
+        '\u{2594}' => rects![(0.0, 0.0, 1.0, 1.0 / 8.0)],
+        '\u{2595}' => rects![(7.0 / 8.0, 0.0, 1.0, 1.0)],
+        '\u{2596}' => rects![(0.0, 0.5, 0.5, 1.0)],
+        '\u{2597}' => rects![(0.5, 0.5, 1.0, 1.0)],
+        '\u{2598}' => rects![(0.0, 0.0, 0.5, 0.5)],
+        '\u{2599}' => rects![(0.0, 0.0, 0.5, 0.5), (0.0, 0.5, 1.0, 1.0)],
+        '\u{259a}' => rects![(0.0, 0.0, 0.5, 0.5), (0.5, 0.5, 1.0, 1.0)],
+        '\u{259b}' => rects![(0.0, 0.0, 1.0, 0.5), (0.0, 0.5, 0.5, 1.0)],
+        '\u{259c}' => rects![(0.0, 0.0, 1.0, 0.5), (0.5, 0.5, 1.0, 1.0)],
+        '\u{259d}' => rects![(0.5, 0.0, 1.0, 0.5)],
+        '\u{259e}' => rects![(0.5, 0.0, 1.0, 0.5), (0.0, 0.5, 0.5, 1.0)],
+        '\u{259f}' => rects![(0.5, 0.0, 1.0, 0.5), (0.0, 0.5, 1.0, 1.0)],
+        _ => None,
+    }
+}
+
 /// ASCII glyphs whose ink must stay inside a cell: descenders, ascenders and
 /// tall brackets. Measured for every configured face.
 const CORE_PROBE: &str = "gjpqy|[]{}()_";
@@ -554,6 +661,13 @@ fn refine_metrics(
     // as tall as the font's line box.
     let may_grow = config.font_size == super::FontSizing::FitCellWidth
         || matches!(config.cell_size, super::CellSizing::FromFont { .. });
+    // The font's own line box (ascent + descent + leading) is the floor for
+    // a font-driven cell, the way terminal emulators size rows: a block glyph
+    // shorter than the line box (Menlo, DejaVu Sans Mono) must not collapse
+    // the row onto the neighbouring rows' ascenders and descenders.
+    if may_grow && let Some(line_box) = font_line_box(config, raster.font_size, fonts, font_cx) {
+        raster.cell_size.y = raster.cell_size.y.max(line_box.ceil());
+    }
     let mut block = None;
     for _ in 0..FIT_ROUNDS {
         // The block's fully opaque rows are what tiles seamlessly; its anti-aliased
@@ -1685,7 +1799,24 @@ fn build_scene(
                 column += width;
                 continue;
             }
-            if symbol != " " && !symbol.is_empty() {
+            if let Some(rects) = block_element(symbol) {
+                let cell_x = column as f32 * raster.cell_size.x;
+                let cell_y = f32::from(row) * raster.cell_size.y;
+                let cell_w = width as f32 * raster.cell_size.x;
+                let cell_h = raster.cell_size.y;
+                for &(left, top, right, bottom) in rects {
+                    decorations.push(solid_quad(
+                        PixelGeometry {
+                            x: cell_x + left * cell_w,
+                            y: cell_y + top * cell_h,
+                            width: (right - left) * cell_w,
+                            height: (bottom - top) * cell_h,
+                        },
+                        style.foreground,
+                        size,
+                    ));
+                }
+            } else if symbol != " " && !symbol.is_empty() {
                 let shaped = cached_shape(
                     symbol,
                     style,
@@ -2816,19 +2947,20 @@ mod tests {
             app.update();
         }
         let texture = app.world().get::<TerminalTexture>(entity).unwrap();
-        // JetBrains Mono's advance is 0.6 em: 12 px wide at 20 px. Its full
-        // block has 26 fully covered rows, which becomes the measured height.
+        // JetBrains Mono's advance is 0.6 em: 12 px wide at 20 px. Its line
+        // box is 1.32 em (ascender 1020, descender 300): 26.4 px, so the cell
+        // is 27 px tall.
         assert!(
             (texture.cell_size.x - 12.0).abs() < 0.05,
             "{:?}",
             texture.cell_size
         );
         assert!(
-            (texture.cell_size.y - 26.0).abs() < 0.05,
+            (texture.cell_size.y - 27.0).abs() < 0.05,
             "{:?}",
             texture.cell_size
         );
-        assert_eq!(texture.size, UVec2::new(48, 26));
+        assert_eq!(texture.size, UVec2::new(48, 27));
         assert_eq!(
             texture.grid_for(Vec2::new(125.0, 60.0)),
             GridSize::new(10, 2)
@@ -2843,8 +2975,8 @@ mod tests {
         app.update();
         let zoomed = app.world().get::<TerminalTexture>(entity).unwrap();
         assert!((zoomed.cell_size.x - 18.0).abs() < 0.05);
-        // 30 px: 18 px advance and a measured 39 px block box.
-        assert_eq!(zoomed.size, UVec2::new(72, 39));
+        // 30 px: 18 px advance and a 39.6 px line box, so 40 px rows.
+        assert_eq!(zoomed.size, UVec2::new(72, 40));
         assert_eq!(zoomed.image, handle);
     }
 
@@ -2898,8 +3030,8 @@ mod tests {
         assert_eq!(app.world().resource::<Ready>().0, 1);
         let texture = app.world().get::<TerminalTexture>(entity).unwrap();
         assert!((texture.cell_size.x - 12.0).abs() < 0.05);
-        assert!((texture.cell_size.y - 26.0).abs() < 0.05);
-        assert_eq!(texture.size, UVec2::new(48, 26));
+        assert!((texture.cell_size.y - 27.0).abs() < 0.05);
+        assert_eq!(texture.size, UVec2::new(48, 27));
     }
 
     fn glyph(offset_x: f32, columns: &[u32]) -> CachedGlyph {
@@ -2933,6 +3065,47 @@ mod tests {
         assert_eq!(fit_horizontally(&[glyph(0.0, &columns)], 11.0), 0.0);
         // Blank runs never shift.
         assert_eq!(fit_horizontally(&[glyph(3.0, &[0, 0])], 11.0), 0.0);
+    }
+
+    #[test]
+    fn block_elements_map_to_cell_fractions() {
+        assert_eq!(block_element("█"), Some(&[(0.0, 0.0, 1.0, 1.0)][..]));
+        assert_eq!(block_element("▄"), Some(&[(0.0, 0.5, 1.0, 1.0)][..]));
+        assert_eq!(block_element("▁"), Some(&[(0.0, 0.875, 1.0, 1.0)][..]));
+        assert_eq!(block_element("▏"), Some(&[(0.0, 0.0, 0.125, 1.0)][..]));
+        assert_eq!(
+            block_element("▚"),
+            Some(&[(0.0, 0.0, 0.5, 0.5), (0.5, 0.5, 1.0, 1.0)][..])
+        );
+        // Shades keep their font glyphs; text and clusters are never blocks.
+        assert_eq!(block_element("░"), None);
+        assert_eq!(block_element("a"), None);
+        assert_eq!(block_element("█\u{fe0f}"), None);
+        // Every quadrant combination covers exactly the quadrants it names.
+        for (symbol, quadrants) in [
+            ("▖", 0b0010),
+            ("▗", 0b0001),
+            ("▘", 0b1000),
+            ("▙", 0b1011),
+            ("▚", 0b1001),
+            ("▛", 0b1110),
+            ("▜", 0b1101),
+            ("▝", 0b0100),
+            ("▞", 0b0110),
+            ("▟", 0b0111),
+        ] {
+            let rects = block_element(symbol).expect(symbol);
+            let covered = |x: f32, y: f32| {
+                rects
+                    .iter()
+                    .any(|&(l, t, r, b)| x >= l && x < r && y >= t && y < b)
+            };
+            let mask = u8::from(covered(0.25, 0.25)) << 3
+                | u8::from(covered(0.75, 0.25)) << 2
+                | u8::from(covered(0.25, 0.75)) << 1
+                | u8::from(covered(0.75, 0.75));
+            assert_eq!(mask, quadrants, "{symbol}");
+        }
     }
 
     /// A box-drawing bar drawn a fraction past its advance rasterises to one

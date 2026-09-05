@@ -216,3 +216,96 @@ fn box_drawing_overshoot_keeps_stems_aligned() {
         );
     }
 }
+
+/// Builds the font-driven config used by the metrics tests.
+fn font_driven_config(handle: Handle<Font>, font_size: f32) -> TerminalRenderConfig {
+    TerminalRenderConfig {
+        cell_size: CellSizing::FROM_FONT,
+        font: FontFaces::regular(FontSource::Handle(handle)),
+        font_size: FontSizing::Px(font_size),
+        theme: TerminalTheme {
+            foreground: Color::WHITE,
+            background: Color::BLACK,
+            ..default()
+        },
+        cursor: CursorConfig {
+            blink_hz: None,
+            ..default()
+        },
+        blink: BlinkConfig::NONE,
+        ..default()
+    }
+}
+
+/// DejaVu Sans Mono (like Menlo, which derives from it) draws its full block
+/// 1.02 em tall inside a 1.164 em line box. Sizing the cell from the block
+/// collapsed rows onto each other; the cell must be at least the line box.
+#[test]
+#[ignore = "requires a GPU"]
+fn font_driven_cell_is_at_least_the_font_line_box() {
+    let surface = TerminalSurface::new((2, 2));
+    surface.update(|u| {
+        u.set_cell((0, 0), &TerminalCell::new("A"));
+        u.set_cell((1, 0), &TerminalCell::new("g"));
+        u.set_cell((0, 1), &TerminalCell::new("A"));
+        u.set_cell((1, 1), &TerminalCell::new("g"));
+    });
+    let (data, size) = render_headless_with(surface, |fonts| {
+        let bytes = include_bytes!("../../../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
+        font_driven_config(fonts.add(Font::from_bytes(bytes.to_vec())), 24.0)
+    });
+    // 24px * (1901 + 483) / 2048 = 27.9px, so rows are at least 28px tall.
+    assert!(
+        size.y / 2 >= 28,
+        "cell height {} is below the line box",
+        size.y / 2
+    );
+    // The rows do not touch: at least one blank raster row separates the
+    // descender of `g` from the cap of the `A` below it.
+    let cell_h = size.y / 2;
+    let blank_rows = (cell_h.saturating_sub(4)..cell_h + 4)
+        .filter(|&y| (0..size.x).all(|x| texel(&data, size, x, y)[0] < 32))
+        .count();
+    assert!(blank_rows >= 1, "no blank row between the two text rows");
+}
+
+/// Block elements are drawn from geometry, so a font whose `█` is shorter than
+/// its line box still tiles a column of blocks without a seam, and halves meet
+/// exactly at the cell's midline.
+#[test]
+#[ignore = "requires a GPU"]
+fn block_elements_tile_the_cell_from_geometry() {
+    let surface = TerminalSurface::new((3, 2));
+    surface.update(|u| {
+        u.set_cell((0, 0), &TerminalCell::new("█"));
+        u.set_cell((0, 1), &TerminalCell::new("█"));
+        u.set_cell((1, 0), &TerminalCell::new("▄"));
+        u.set_cell((1, 1), &TerminalCell::new("▀"));
+        u.set_cell((2, 0), &TerminalCell::new("▐"));
+        u.set_cell((2, 1), &TerminalCell::new("▌"));
+    });
+    let (data, size) = render_headless_with(surface, |fonts| {
+        let bytes = include_bytes!("../../../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
+        font_driven_config(fonts.add(Font::from_bytes(bytes.to_vec())), 24.0)
+    });
+    let cell_w = size.x / 3;
+    let cell_h = size.y / 2;
+    let opaque = |x: u32, y: u32| texel(&data, size, x, y)[0] > 240;
+    // Column 0: every row of both stacked blocks is opaque.
+    for y in 0..size.y {
+        assert!(opaque(cell_w / 2, y), "seam in the block column at row {y}");
+    }
+    // Column 1: lower half of row 0 and upper half of row 1 are opaque, the
+    // rest dark, so the two halves form one seamless block around the cell
+    // boundary.
+    let x = cell_w + cell_w / 2;
+    for y in 0..size.y {
+        let expect = (y >= cell_h / 2) && (y < cell_h + cell_h / 2);
+        assert_eq!(opaque(x, y), expect, "half block mismatch at row {y}");
+    }
+    // Column 2: right half above left half, split at the cell's midline.
+    let y = cell_h / 2;
+    assert!(!opaque(2 * cell_w + cell_w / 4, y) && opaque(2 * cell_w + 3 * cell_w / 4, y));
+    let y = cell_h + cell_h / 2;
+    assert!(opaque(2 * cell_w + cell_w / 4, y) && !opaque(2 * cell_w + 3 * cell_w / 4, y));
+}

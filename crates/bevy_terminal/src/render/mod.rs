@@ -372,9 +372,10 @@ impl GlyphBox {
 
 /// Cell height (whole physical pixels) that shows the primary font's line
 /// box: the configured height, grown to the full block glyph's box when that
-/// is taller. Blocks and box-drawing glyphs span the line box, so a cell this
-/// tall tiles them without seams and shows every glyph the font designed to
-/// stay inside its line — descenders included.
+/// is taller. Font-driven cells start from the font's own line box (ascent +
+/// descent + leading, read from its metrics tables), so a font whose block
+/// glyph is shorter than its line box (DejaVu Sans Mono, Menlo) still gets a
+/// row tall enough for its ascenders and descenders.
 pub(crate) fn fitted_cell_height(cell_height: f32, block: Option<GlyphBox>) -> f32 {
     block
         .map(|block| block.height().ceil())
@@ -467,8 +468,9 @@ pub enum CellSizing {
     Logical(Vec2),
     /// Derive the cell from the font: width = the regular font's measured
     /// advance at the configured [`FontSizing::Px`] size, snapped to a whole
-    /// physical pixel, and height = the measured line box (the rows a full
-    /// block covers). The final raster font size is derived back from the
+    /// physical pixel, and height = the font's line box (ascent + descent +
+    /// leading from its metrics tables, as terminal emulators size rows),
+    /// grown to the full block glyph when that is taller. The final raster font size is derived back from the
     /// snapped width so glyph advance and cell width remain identical. This is
     /// how terminal emulators work ("font size in, cell size out"; zoom by
     /// changing the font size). Requires [`FontSizing::Px`].
