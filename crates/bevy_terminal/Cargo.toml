@@ -1,6 +1,6 @@
 [package]
 name = "bevy_terminal"
-version = "0.7.2"
+version = "0.7.3"
 edition = "2024"
 rust-version = "1.95"
 description = "A terminal scene model and renderer built on Bevy text, UI, and the render world"
@@ -35,6 +35,10 @@ bevy = { version = "0.19", default-features = false, features = [
 
 # The string type of `FontSource::Family`, re-exported so it needs no extra dependency.
 smol_str = "0.2"
+# Font line metrics (ascent, descent, leading) for font-driven cell heights.
+# Versions follow `bevy_text`'s `parley`, so no second copy is compiled.
+parley = { version = "0.9", default-features = false }
+skrifa = { version = "0.42", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 bevy = { version = "0.19", default-features = false, features = ["2d", "3d", "ui", "system_font_discovery"] }

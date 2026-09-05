@@ -1560,16 +1560,18 @@ dependencies = [
 
 [[package]]
 name = "bevy_terminal"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "bevy",
  "bevy_image_export",
+ "parley",
+ "skrifa 0.42.1",
  "smol_str",
 ]
 
 [[package]]
 name = "bevy_terminal_ratatui"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "bevy",
  "bevy_image_export",

@@ -167,8 +167,11 @@ window metrics without knowing the renderer's internals.
 - `CellSizing::Logical(Vec2)` (default) fixes the cell and, with
   `FontSizing::FitCellWidth`, sizes the font to it. `CellSizing::FROM_FONT`
   derives the cell from a `FontSizing::Px` size: width = the regular font's
-  measured advance, height = its measured line box (the rows a full block
-  covers). The legacy `FromFont { line_height }` payload is ignored.
+  measured advance, height = the font's line box (ascent + descent + leading)
+  times `line_height` (`1.0` = the font's natural row; `0.9` tightens, `1.2`
+  loosens, like WezTerm's `line_height` or Ghostty's `adjust-cell-height`),
+  grown to the block glyph when that is taller and the multiplier is at least
+  `1.0`.
   `TerminalTexture::cell_size` reports the
   logical cell in use, `TerminalTexture::grid_for` / `render::grid_for` /
   `render::grid_for_window` compute the grid that fits a size, and
@@ -179,10 +182,17 @@ window metrics without knowing the renderer's internals.
   in every face, then shifts all glyphs by one whole-pixel offset so blocks
   keep covering the cell, ASCII (descenders included) is never clipped and
   accents fit when there is room. With `FitCellWidth`/`FromFont` the cell
-  height grows to the line box; with `FontSizing::Px` in a `Logical` cell the
+  height is the font's line box (ascent + descent + leading from its metrics
+  tables, grown to the block glyph when that is taller); with `FontSizing::Px` in a `Logical` cell the
   configured sizes are exact and glyphs beyond the cell are clipped. Runs
   wider than their cell (fallback families, wide italics) drop their faintest
-  columns; overhanging runs are pushed inside. The font is sized to the
+  columns; overhanging runs are pushed inside, but a sub-pixel overshoot (the
+  fraction of a column that box-drawing glyphs are drawn past their advance so
+  strokes overlap) is clipped in place so corners stay aligned with stems.
+  Unicode Block Elements (U+2580..U+259F, shades excepted) are drawn as
+  geometry rather than glyphs, as Ghostty does, so halves, eighths and
+  quadrants tile the cell exactly with any font. The
+  font is sized to the
   physical cell width so fractional raster scales do not open seams.
 - The texture is `Rgba8UnormSrgb` with straight alpha; `TerminalTheme::background`
   alpha is honored (backgrounds replace, glyphs blend), so translucent
