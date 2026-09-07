@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Bevy's debug artifacts and concurrent links can exhaust hosted runners.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+  CARGO_BUILD_JOBS: "2"
+
+jobs:
+  verify:
+    name: Workspace and software Vulkan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      WGPU_BACKEND: vulkan
+      WGPU_FORCE_FALLBACK_ADAPTER: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Install Linux and software Vulkan dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libvulkan1 \
+            mesa-vulkan-drivers \
+            vulkan-tools \
+            fonts-dejavu-core
+          # Restrict Vulkan to Mesa's CPU driver, independent of host devices.
+          drivers=(/usr/share/vulkan/icd.d/lvp_icd*.json)
+          test -f "${drivers[0]}"
+          printf 'VK_DRIVER_FILES=%s\n' "${drivers[0]}" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/xdg-runtime"
+          chmod 700 "$RUNNER_TEMP/xdg-runtime"
+          printf 'XDG_RUNTIME_DIR=%s\n' "$RUNNER_TEMP/xdg-runtime" >> "$GITHUB_ENV"
+
+      - name: Verify software Vulkan availability
+        run: vulkaninfo --summary
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      # Use the same workspace feature set for each Cargo invocation so the
+      # GPU test reuses the libraries built for the regular tests.
+      - name: Check all targets
+        run: cargo check --workspace --all-features --all-targets --locked
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
+
+      - name: Unit and integration tests
+        run: cargo test --workspace --all-features --lib --tests --locked
+
+      - name: GPU readback regressions
+        timeout-minutes: 10
+        run: cargo test --workspace --all-features --test gpu_readback --locked -- --ignored --test-threads=1
+
+      - name: Documentation tests
+        run: cargo test --workspace --all-features --doc --locked
+
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps --locked
