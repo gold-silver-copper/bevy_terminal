@@ -176,8 +176,7 @@ fn box_drawing_overshoot_keeps_stems_aligned() {
         u.set_cell((2, 1), &TerminalCell::new("│"));
     });
     let (data, size) = render_headless_with(surface, |fonts| {
-        let bytes =
-            include_bytes!("../../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf");
+        let bytes = include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf");
         let handle = fonts.add(Font::from_bytes(bytes.to_vec()));
         TerminalRenderConfig {
             cell_size: CellSizing::FROM_FONT,
@@ -251,7 +250,7 @@ fn font_driven_cell_is_at_least_the_font_line_box() {
         u.set_cell((1, 1), &TerminalCell::new("g"));
     });
     let (data, size) = render_headless_with(surface, |fonts| {
-        let bytes = include_bytes!("../../../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
+        let bytes = include_bytes!("../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
         font_driven_config(fonts.add(Font::from_bytes(bytes.to_vec())), 24.0)
     });
     // 24px * (1901 + 483) / 2048 = 27.9px, so rows are at least 28px tall.
@@ -285,7 +284,7 @@ fn block_elements_tile_the_cell_from_geometry() {
         u.set_cell((2, 1), &TerminalCell::new("▌"));
     });
     let (data, size) = render_headless_with(surface, |fonts| {
-        let bytes = include_bytes!("../../../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
+        let bytes = include_bytes!("../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
         font_driven_config(fonts.add(Font::from_bytes(bytes.to_vec())), 24.0)
     });
     let cell_w = size.x / 3;
@@ -322,7 +321,7 @@ fn line_height_scales_the_font_driven_cell() {
             u.set_cell((1, 1), &TerminalCell::new("█"));
         });
         let (data, size) = render_headless_with(surface, move |fonts| {
-            let bytes = include_bytes!("../../../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
+            let bytes = include_bytes!("../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
             let mut config = font_driven_config(fonts.add(Font::from_bytes(bytes.to_vec())), 24.0);
             config.cell_size = CellSizing::FromFont { line_height };
             config
