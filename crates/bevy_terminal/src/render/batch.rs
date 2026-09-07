@@ -172,11 +172,11 @@ pub struct TerminalReady {
 }
 
 /// Triggered on a [`Terminal`] entity whenever its [`TerminalTexture`] changes
-/// physical size *after* [`TerminalReady`] has fired: a surface resize, a
-/// configuration change, a raster-scale change, or a font that arrived late and
-/// re-measured the cell. The image handle is unchanged; only its dimensions
-/// (and possibly `cell_size`) differ. Custom presentation code (a world-space
-/// quad, an export pipeline) should rebuild anything derived from the size.
+/// physical or logical geometry *after* [`TerminalReady`] has fired: a surface
+/// resize, a configuration change, a raster-scale change, or a font that arrived
+/// late and re-measured the cell. The image handle is unchanged. Physical sizes
+/// may be equal when a scale change preserves snapped pixels but changes the
+/// logical cell size. Custom presentation code should refresh derived geometry.
 ///
 /// Sizes reported here are physical pixels; [`TerminalTexture`] on the entity
 /// already holds the new values when the event is delivered.
@@ -1543,6 +1543,7 @@ fn sync_batch_terminal(
     let font_size_changed = state.metrics != Some(metrics);
     state.metrics = Some(metrics);
     let text_assets_changed = config_changed || fonts_changed || scale_changed || font_size_changed;
+    let previous_cell_size = output.cell_size;
     if text_assets_changed {
         state.raster_config = refine_metrics(
             config,
@@ -1636,7 +1637,12 @@ fn sync_batch_terminal(
 
     let new_size = terminal_pixel_size(snapshot.size(), &state.raster_config);
     let output_resized = output.size != new_size;
-    let previous_size = output_resized.then_some(output.size);
+    let logical_size = new_size.as_vec2() / raster_scale;
+    let geometry_changed = output_resized
+        || output.cell_size != previous_cell_size
+        || output.logical_size != logical_size
+        || output.raster_scale != raster_scale;
+    let previous_size = geometry_changed.then_some(output.size);
     if output_resized {
         // Reallocate the image in place so the handle stays stable; the render world
         // recreates the GPU texture for the modified asset.
@@ -1650,7 +1656,6 @@ fn sync_batch_terminal(
     }
     // Write the texture component only when something changed so `Changed<TerminalTexture>`
     // observers are not woken on every synced frame.
-    let logical_size = new_size.as_vec2() / raster_scale;
     if output.logical_size != logical_size || output.raster_scale != raster_scale {
         output.logical_size = logical_size;
         output.raster_scale = raster_scale;
@@ -3271,6 +3276,67 @@ mod tests {
             app.world().resource::<Seen>().0.len(),
             1,
             "no event without a resize"
+        );
+    }
+
+    #[test]
+    fn terminal_remeasured_fires_when_only_logical_metrics_change() {
+        #[derive(Resource, Default)]
+        struct Seen(Vec<(UVec2, UVec2, Vec2)>);
+        let mut app = text_app();
+        app.init_resource::<Seen>().add_observer(
+            |event: On<TerminalRemeasured>, mut seen: ResMut<Seen>| {
+                seen.0
+                    .push((event.previous_size, event.size, event.cell_size));
+            },
+        );
+        let regular = app
+            .world_mut()
+            .resource_mut::<Assets<Font>>()
+            .add(Font::from_bytes(
+                include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")
+                    .to_vec(),
+            ));
+        let entity = app
+            .world_mut()
+            .spawn((
+                Terminal::new(TerminalSurface::new((4, 2))),
+                TerminalRenderConfig {
+                    cell_size: super::super::CellSizing::FROM_FONT,
+                    font_size: super::super::FontSizing::Px(20.0),
+                    font: super::super::FontFaces::regular(regular),
+                    raster: super::super::RasterConfig {
+                        scale: TerminalRenderScale::Fixed(1.0),
+                        ..default()
+                    },
+                    ..default()
+                },
+            ))
+            .id();
+        for _ in 0..3 {
+            app.update();
+        }
+        let initial = app.world().get::<TerminalTexture>(entity).unwrap().clone();
+        assert!(app.world().resource::<Seen>().0.is_empty());
+        app.world_mut()
+            .get_mut::<TerminalRenderConfig>(entity)
+            .unwrap()
+            .raster
+            .scale = TerminalRenderScale::Fixed(1.001);
+        app.update();
+        let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+        assert_eq!(texture.size, initial.size, "physical pixels remain snapped");
+        assert_ne!(texture.cell_size, initial.cell_size);
+        assert_ne!(texture.logical_size, initial.logical_size);
+        assert_eq!(
+            app.world().resource::<Seen>().0,
+            vec![(initial.size, texture.size, texture.cell_size)]
+        );
+        app.update();
+        assert_eq!(
+            app.world().resource::<Seen>().0.len(),
+            1,
+            "no repeated event on an idle frame"
         );
     }
 
