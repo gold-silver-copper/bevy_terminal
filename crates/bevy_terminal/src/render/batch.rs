@@ -2461,13 +2461,23 @@ fn create_pipeline(
 fn append_instance_bytes(instances: &[QuadInstance], bytes: &mut Vec<u8>) {
     let start = bytes.len();
     bytes.resize(start + instances.len() * 48, 0);
-    for (chunk, instance) in bytes[start..].chunks_exact_mut(48).zip(instances) {
+    for (chunk, instance) in bytes[start..]
+        .as_chunks_mut::<48>()
+        .0
+        .iter_mut()
+        .zip(instances)
+    {
         let values = [
             instance.rect.to_array(),
             instance.uv.to_array(),
             instance.color.to_array(),
         ];
-        for (slot, value) in chunk.chunks_exact_mut(4).zip(values.as_flattened()) {
+        for (slot, value) in chunk
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(values.as_flattened())
+        {
             slot.copy_from_slice(&value.to_ne_bytes());
         }
     }
@@ -3808,8 +3818,10 @@ mod tests {
         append_instance_bytes(&instances, &mut bytes);
         assert_eq!(bytes.len(), 96);
         let floats: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_ne_bytes(*chunk))
             .collect();
         assert_eq!(
             &floats[..12],
