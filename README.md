@@ -302,8 +302,10 @@ accented capitals fit when the font leaves room.
 
 - With `FitCellWidth`, the configured cell height is a minimum and grows to the
   measured line box. With `CellSizing::FROM_FONT`, both dimensions come from the
-  font. The legacy `FromFont { line_height }` payload is ignored. A primary-font
-  glyph inside the line box is therefore never clipped.
+  font; `CellSizing::FromFont { line_height }` scales the row by a multiplier
+  (`1.0` natural, `0.9` tighter, `1.2` looser). At `1.0` or more a primary-font
+  glyph inside the line box is never clipped; below `1.0` the outermost
+  ascender and descender pixels clip, which is the user's trade.
   Iosevka Fixed sized to an 11 px column is a 22 px font whose line box is 27
   px, so a requested 11×20 cell becomes 11×27; read the effective size from
   `TerminalTexture::cell_size`. To keep an exact grid, choose `FontSizing::Px`
@@ -313,6 +315,15 @@ accented capitals fit when the font leaves room.
 - Horizontally, a run wider than its cell (a fallback family with a larger
   advance, a wide italic) is placed so the faintest columns are clipped;
   a run that fits but overhangs (italic, negative bearing) is pushed inside.
+  A sub-pixel overshoot — box-drawing and block glyphs drawn a fraction past
+  their advance so strokes overlap (JetBrains Mono, Cascadia) — is not
+  overhang: the run keeps its bearings and the cell clips the faint column,
+  so `┌` stays on the same pixel column as `│`.
+- A font-driven cell is at least the font's line box (ascent + descent +
+  leading from its metrics tables), not merely the block glyph's height, so
+  fonts with a short `█` (Menlo, DejaVu Sans Mono) keep their rows apart.
+- Block Elements (U+2580..U+259F, shades excepted) are drawn as solid
+  geometry, so they tile the cell exactly with any font.
 - Everything else — accents a font draws above its own line box (Iosevka's
   `Ẫ`, Cascadia's `À`), emoji/CJK from a taller fallback family — is centered
   and clipped to its cell as a last resort.

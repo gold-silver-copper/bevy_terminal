@@ -172,11 +172,11 @@ pub struct TerminalReady {
 }
 
 /// Triggered on a [`Terminal`] entity whenever its [`TerminalTexture`] changes
-/// physical size *after* [`TerminalReady`] has fired: a surface resize, a
-/// configuration change, a raster-scale change, or a font that arrived late and
-/// re-measured the cell. The image handle is unchanged; only its dimensions
-/// (and possibly `cell_size`) differ. Custom presentation code (a world-space
-/// quad, an export pipeline) should rebuild anything derived from the size.
+/// physical or logical geometry *after* [`TerminalReady`] has fired: a surface
+/// resize, a configuration change, a raster-scale change, or a font that arrived
+/// late and re-measured the cell. The image handle is unchanged. Physical sizes
+/// may be equal when a scale change preserves snapped pixels but changes the
+/// logical cell size. Custom presentation code should refresh derived geometry.
 ///
 /// Sizes reported here are physical pixels; [`TerminalTexture`] on the entity
 /// already holds the new values when the event is delivered.
@@ -518,6 +518,113 @@ fn font_size_for_cell(
         })
 }
 
+/// The regular face's line box (ascent + descent + leading) in physical
+/// pixels at `font_size`, read from the font's metrics tables the way
+/// terminal emulators size their rows (`OS/2` typographic metrics when the
+/// font asks for them, `hhea` otherwise). `None` when the face cannot be
+/// resolved or loaded, in which case the block-glyph measurement stands alone.
+fn font_line_box(
+    config: &TerminalRenderConfig,
+    font_size: f32,
+    fonts: &Assets<Font>,
+    font_cx: &mut FontCx,
+) -> Option<f32> {
+    use skrifa::MetadataProvider as _;
+    // A font asset is registered in the collection under its alias; every
+    // other source resolves through Bevy's generic-family mapping.
+    let family = match &config.font.regular {
+        FontSource::Handle(handle) => fonts.get(handle.id()).map(|font| font.alias.clone()),
+        source => font_cx.get_family(source).map(str::to_owned),
+    };
+    let Some(family) = family.filter(|family| !family.is_empty()) else {
+        debug!(
+            "bevy_terminal: line box: no family for {:?}",
+            config.font.regular
+        );
+        return None;
+    };
+    let Some(family_info) = font_cx.context.collection.family_by_name(&family) else {
+        debug!("bevy_terminal: line box: family {family:?} not in the collection");
+        return None;
+    };
+    let Some(info) = family_info.default_font().cloned() else {
+        debug!("bevy_terminal: line box: family {family:?} has no fonts");
+        return None;
+    };
+    let Some(blob) = info.load(Some(&mut font_cx.context.source_cache)) else {
+        debug!("bevy_terminal: line box: font data of {family:?} could not be loaded");
+        return None;
+    };
+    let Ok(font) = skrifa::FontRef::from_index(blob.as_ref(), info.index()) else {
+        debug!("bevy_terminal: line box: font data of {family:?} could not be parsed");
+        return None;
+    };
+    let metrics = font.metrics(
+        skrifa::instance::Size::new(font_size),
+        skrifa::instance::LocationRef::default(),
+    );
+    let height = metrics.ascent + metrics.descent.abs() + metrics.leading.max(0.0);
+    debug!(
+        "bevy_terminal: line box of {family:?} at {font_size:.2}px: ascent {} descent {} leading {} upem {} -> {height:.2}px",
+        metrics.ascent, metrics.descent, metrics.leading, metrics.units_per_em
+    );
+    (height.is_finite() && height > 0.0).then_some(height)
+}
+
+/// Solid rectangles, as fractions of the cell `(left, top, right, bottom)`,
+/// for a Unicode Block Elements symbol (U+2580..U+259F, shades excluded).
+///
+/// Drawing these from geometry instead of the font, as Ghostty does, makes
+/// halves, eighths and quadrants tile the cell exactly whatever the font's
+/// block glyphs look like: a cell sized to the font's line box no longer
+/// leaves a seam under a shorter `█`, and fonts with no block glyphs at all
+/// still render them.
+fn block_element(symbol: &str) -> Option<&'static [(f32, f32, f32, f32)]> {
+    const FULL: &[(f32, f32, f32, f32)] = &[(0.0, 0.0, 1.0, 1.0)];
+    macro_rules! rects {
+        ($($r:expr),* $(,)?) => {{
+            const R: &[(f32, f32, f32, f32)] = &[$($r),*];
+            Some(R)
+        }};
+    }
+    let mut chars = symbol.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    match c {
+        '\u{2580}' => rects![(0.0, 0.0, 1.0, 0.5)],
+        '\u{2581}' => rects![(0.0, 7.0 / 8.0, 1.0, 1.0)],
+        '\u{2582}' => rects![(0.0, 6.0 / 8.0, 1.0, 1.0)],
+        '\u{2583}' => rects![(0.0, 5.0 / 8.0, 1.0, 1.0)],
+        '\u{2584}' => rects![(0.0, 0.5, 1.0, 1.0)],
+        '\u{2585}' => rects![(0.0, 3.0 / 8.0, 1.0, 1.0)],
+        '\u{2586}' => rects![(0.0, 2.0 / 8.0, 1.0, 1.0)],
+        '\u{2587}' => rects![(0.0, 1.0 / 8.0, 1.0, 1.0)],
+        '\u{2588}' => Some(FULL),
+        '\u{2589}' => rects![(0.0, 0.0, 7.0 / 8.0, 1.0)],
+        '\u{258a}' => rects![(0.0, 0.0, 6.0 / 8.0, 1.0)],
+        '\u{258b}' => rects![(0.0, 0.0, 5.0 / 8.0, 1.0)],
+        '\u{258c}' => rects![(0.0, 0.0, 0.5, 1.0)],
+        '\u{258d}' => rects![(0.0, 0.0, 3.0 / 8.0, 1.0)],
+        '\u{258e}' => rects![(0.0, 0.0, 2.0 / 8.0, 1.0)],
+        '\u{258f}' => rects![(0.0, 0.0, 1.0 / 8.0, 1.0)],
+        '\u{2590}' => rects![(0.5, 0.0, 1.0, 1.0)],
+        '\u{2594}' => rects![(0.0, 0.0, 1.0, 1.0 / 8.0)],
+        '\u{2595}' => rects![(7.0 / 8.0, 0.0, 1.0, 1.0)],
+        '\u{2596}' => rects![(0.0, 0.5, 0.5, 1.0)],
+        '\u{2597}' => rects![(0.5, 0.5, 1.0, 1.0)],
+        '\u{2598}' => rects![(0.0, 0.0, 0.5, 0.5)],
+        '\u{2599}' => rects![(0.0, 0.0, 0.5, 0.5), (0.0, 0.5, 1.0, 1.0)],
+        '\u{259a}' => rects![(0.0, 0.0, 0.5, 0.5), (0.5, 0.5, 1.0, 1.0)],
+        '\u{259b}' => rects![(0.0, 0.0, 1.0, 0.5), (0.0, 0.5, 0.5, 1.0)],
+        '\u{259c}' => rects![(0.0, 0.0, 1.0, 0.5), (0.5, 0.5, 1.0, 1.0)],
+        '\u{259d}' => rects![(0.5, 0.0, 1.0, 0.5)],
+        '\u{259e}' => rects![(0.5, 0.0, 1.0, 0.5), (0.0, 0.5, 0.5, 1.0)],
+        '\u{259f}' => rects![(0.5, 0.0, 1.0, 0.5), (0.0, 0.5, 1.0, 1.0)],
+        _ => None,
+    }
+}
+
 /// ASCII glyphs whose ink must stay inside a cell: descenders, ascenders and
 /// tall brackets. Measured for every configured face.
 const CORE_PROBE: &str = "gjpqy|[]{}()_";
@@ -552,8 +659,22 @@ fn refine_metrics(
     // An explicit font size in an explicit cell is honored exactly; a font
     // derived from the cell width or a font-driven cell gets a cell at least
     // as tall as the font's line box.
-    let may_grow = config.font_size == super::FontSizing::FitCellWidth
-        || matches!(config.cell_size, super::CellSizing::FromFont { .. });
+    let font_driven = matches!(config.cell_size, super::CellSizing::FromFont { .. });
+    let line_height = config.cell_size.line_height();
+    // The font's own line box (ascent + descent + leading), scaled by the
+    // configured line height, is the floor for a font-driven cell, the way
+    // terminal emulators size rows: a block glyph shorter than the line box
+    // (Menlo, DejaVu Sans Mono) must not collapse the row onto the
+    // neighbouring rows' ascenders and descenders. A multiplier below one
+    // asks for exactly that tighter row, so the block glyph does not grow it
+    // back (block elements are geometry and tile regardless).
+    let may_grow =
+        config.font_size == super::FontSizing::FitCellWidth || (font_driven && line_height >= 1.0);
+    if (may_grow || font_driven)
+        && let Some(line_box) = font_line_box(config, raster.font_size, fonts, font_cx)
+    {
+        raster.cell_size.y = raster.cell_size.y.max((line_box * line_height).ceil());
+    }
     let mut block = None;
     for _ in 0..FIT_ROUNDS {
         // The block's fully opaque rows are what tiles seamlessly; its anti-aliased
@@ -1422,6 +1543,7 @@ fn sync_batch_terminal(
     let font_size_changed = state.metrics != Some(metrics);
     state.metrics = Some(metrics);
     let text_assets_changed = config_changed || fonts_changed || scale_changed || font_size_changed;
+    let previous_cell_size = output.cell_size;
     if text_assets_changed {
         state.raster_config = refine_metrics(
             config,
@@ -1515,7 +1637,12 @@ fn sync_batch_terminal(
 
     let new_size = terminal_pixel_size(snapshot.size(), &state.raster_config);
     let output_resized = output.size != new_size;
-    let previous_size = output_resized.then_some(output.size);
+    let logical_size = new_size.as_vec2() / raster_scale;
+    let geometry_changed = output_resized
+        || output.cell_size != previous_cell_size
+        || output.logical_size != logical_size
+        || output.raster_scale != raster_scale;
+    let previous_size = geometry_changed.then_some(output.size);
     if output_resized {
         // Reallocate the image in place so the handle stays stable; the render world
         // recreates the GPU texture for the modified asset.
@@ -1529,7 +1656,6 @@ fn sync_batch_terminal(
     }
     // Write the texture component only when something changed so `Changed<TerminalTexture>`
     // observers are not woken on every synced frame.
-    let logical_size = new_size.as_vec2() / raster_scale;
     if output.logical_size != logical_size || output.raster_scale != raster_scale {
         output.logical_size = logical_size;
         output.raster_scale = raster_scale;
@@ -1685,7 +1811,24 @@ fn build_scene(
                 column += width;
                 continue;
             }
-            if symbol != " " && !symbol.is_empty() {
+            if let Some(rects) = block_element(symbol) {
+                let cell_x = column as f32 * raster.cell_size.x;
+                let cell_y = f32::from(row) * raster.cell_size.y;
+                let cell_w = width as f32 * raster.cell_size.x;
+                let cell_h = raster.cell_size.y;
+                for &(left, top, right, bottom) in rects {
+                    decorations.push(solid_quad(
+                        PixelGeometry {
+                            x: cell_x + left * cell_w,
+                            y: cell_y + top * cell_h,
+                            width: (right - left) * cell_w,
+                            height: (bottom - top) * cell_h,
+                        },
+                        style.foreground,
+                        size,
+                    ));
+                }
+            } else if symbol != " " && !symbol.is_empty() {
                 let shaped = cached_shape(
                     symbol,
                     style,
@@ -1921,6 +2064,20 @@ fn cached_shape<'a>(
 /// bearings; a run wider than the span (a fallback family with a larger
 /// advance, a wide italic) is placed so the clipped columns carry the least
 /// coverage — centered when the sides are equally faint.
+///
+/// # Sub-pixel overshoot
+///
+/// Box-drawing and block glyphs are commonly drawn a little past their
+/// advance on purpose (JetBrains Mono's `─` spans -20..620 units of a 600
+/// advance) so that neighbouring strokes overlap instead of gapping. Rasterised,
+/// that overshoot lights one faint extra column outside the span. Pushing the
+/// run inside for it would move `┌` one pixel away from a `│` in the row
+/// below, which is exactly the misalignment the overshoot exists to prevent.
+/// A single outside column on either side whose coverage is below the run's
+/// strongest column is therefore treated as overshoot: the run keeps its
+/// bearings and the per-cell clip drops the column, the way Ghostty renders
+/// ordinary text without any alignment constraint. A full-strength column
+/// outside the span is real overhang and is still pushed inside.
 fn fit_horizontally(glyphs: &[CachedGlyph], span: f32) -> f32 {
     let mut left = f32::INFINITY;
     let mut right = f32::NEG_INFINITY;
@@ -1928,6 +2085,10 @@ fn fit_horizontally(glyphs: &[CachedGlyph], span: f32) -> f32 {
         left = left.min(glyph.offset.x + glyph.ink.0);
         right = right.max(glyph.offset.x + glyph.ink.1);
     }
+    if right <= left {
+        return 0.0;
+    }
+    let (left, right) = trim_overshoot(glyphs, span, left, right);
     if right <= left {
         0.0
     } else if right - left <= span {
@@ -1977,6 +2138,43 @@ fn fit_horizontally(glyphs: &[CachedGlyph], span: f32) -> f32 {
         }
         best
     }
+}
+
+/// Largest number of outside columns per side that may be sub-pixel overshoot.
+const OVERSHOOT_COLUMNS: f32 = 1.0;
+
+/// Narrows a run's ink extents `[left, right)` by dropping, on each side, a
+/// single outside column that is fainter than the run's strongest column (a
+/// rasterised sub-pixel overshoot). Extents of runs without such columns are
+/// returned unchanged.
+fn trim_overshoot(glyphs: &[CachedGlyph], span: f32, left: f32, right: f32) -> (f32, f32) {
+    let coverage_at = |x: f32| -> u32 {
+        glyphs
+            .iter()
+            .filter_map(|glyph| {
+                let index = x - glyph.offset.x;
+                (index >= 0.0)
+                    .then(|| glyph.columns.get(index as usize).copied())
+                    .flatten()
+            })
+            .sum()
+    };
+    let peak = glyphs
+        .iter()
+        .flat_map(|glyph| glyph.columns.iter().copied())
+        .max()
+        .unwrap_or(0);
+    let mut trimmed_left = left;
+    let mut trimmed_right = right;
+    let left_over = -left;
+    if left_over > 0.0 && left_over <= OVERSHOOT_COLUMNS && coverage_at(left) < peak {
+        trimmed_left = left + left_over;
+    }
+    let right_over = right - span;
+    if right_over > 0.0 && right_over <= OVERSHOOT_COLUMNS && coverage_at(right - 1.0) < peak {
+        trimmed_right = right - right_over;
+    }
+    (trimmed_left, trimmed_right)
 }
 
 fn solid_quad(geometry: PixelGeometry, color: Color, target: Vec2) -> QuadInstance {
@@ -2263,13 +2461,23 @@ fn create_pipeline(
 fn append_instance_bytes(instances: &[QuadInstance], bytes: &mut Vec<u8>) {
     let start = bytes.len();
     bytes.resize(start + instances.len() * 48, 0);
-    for (chunk, instance) in bytes[start..].chunks_exact_mut(48).zip(instances) {
+    for (chunk, instance) in bytes[start..]
+        .as_chunks_mut::<48>()
+        .0
+        .iter_mut()
+        .zip(instances)
+    {
         let values = [
             instance.rect.to_array(),
             instance.uv.to_array(),
             instance.color.to_array(),
         ];
-        for (slot, value) in chunk.chunks_exact_mut(4).zip(values.as_flattened()) {
+        for (slot, value) in chunk
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(values.as_flattened())
+        {
             slot.copy_from_slice(&value.to_ne_bytes());
         }
     }
@@ -2761,19 +2969,20 @@ mod tests {
             app.update();
         }
         let texture = app.world().get::<TerminalTexture>(entity).unwrap();
-        // JetBrains Mono's advance is 0.6 em: 12 px wide at 20 px. Its full
-        // block has 26 fully covered rows, which becomes the measured height.
+        // JetBrains Mono's advance is 0.6 em: 12 px wide at 20 px. Its line
+        // box is 1.32 em (ascender 1020, descender 300): 26.4 px, so the cell
+        // is 27 px tall.
         assert!(
             (texture.cell_size.x - 12.0).abs() < 0.05,
             "{:?}",
             texture.cell_size
         );
         assert!(
-            (texture.cell_size.y - 26.0).abs() < 0.05,
+            (texture.cell_size.y - 27.0).abs() < 0.05,
             "{:?}",
             texture.cell_size
         );
-        assert_eq!(texture.size, UVec2::new(48, 26));
+        assert_eq!(texture.size, UVec2::new(48, 27));
         assert_eq!(
             texture.grid_for(Vec2::new(125.0, 60.0)),
             GridSize::new(10, 2)
@@ -2788,8 +2997,8 @@ mod tests {
         app.update();
         let zoomed = app.world().get::<TerminalTexture>(entity).unwrap();
         assert!((zoomed.cell_size.x - 18.0).abs() < 0.05);
-        // 30 px: 18 px advance and a measured 39 px block box.
-        assert_eq!(zoomed.size, UVec2::new(72, 39));
+        // 30 px: 18 px advance and a 39.6 px line box, so 40 px rows.
+        assert_eq!(zoomed.size, UVec2::new(72, 40));
         assert_eq!(zoomed.image, handle);
     }
 
@@ -2843,8 +3052,8 @@ mod tests {
         assert_eq!(app.world().resource::<Ready>().0, 1);
         let texture = app.world().get::<TerminalTexture>(entity).unwrap();
         assert!((texture.cell_size.x - 12.0).abs() < 0.05);
-        assert!((texture.cell_size.y - 26.0).abs() < 0.05);
-        assert_eq!(texture.size, UVec2::new(48, 26));
+        assert!((texture.cell_size.y - 27.0).abs() < 0.05);
+        assert_eq!(texture.size, UVec2::new(48, 27));
     }
 
     fn glyph(offset_x: f32, columns: &[u32]) -> CachedGlyph {
@@ -2878,6 +3087,76 @@ mod tests {
         assert_eq!(fit_horizontally(&[glyph(0.0, &columns)], 11.0), 0.0);
         // Blank runs never shift.
         assert_eq!(fit_horizontally(&[glyph(3.0, &[0, 0])], 11.0), 0.0);
+    }
+
+    #[test]
+    fn block_elements_map_to_cell_fractions() {
+        assert_eq!(block_element("█"), Some(&[(0.0, 0.0, 1.0, 1.0)][..]));
+        assert_eq!(block_element("▄"), Some(&[(0.0, 0.5, 1.0, 1.0)][..]));
+        assert_eq!(block_element("▁"), Some(&[(0.0, 0.875, 1.0, 1.0)][..]));
+        assert_eq!(block_element("▏"), Some(&[(0.0, 0.0, 0.125, 1.0)][..]));
+        assert_eq!(
+            block_element("▚"),
+            Some(&[(0.0, 0.0, 0.5, 0.5), (0.5, 0.5, 1.0, 1.0)][..])
+        );
+        // Shades keep their font glyphs; text and clusters are never blocks.
+        assert_eq!(block_element("░"), None);
+        assert_eq!(block_element("a"), None);
+        assert_eq!(block_element("█\u{fe0f}"), None);
+        // Every quadrant combination covers exactly the quadrants it names.
+        for (symbol, quadrants) in [
+            ("▖", 0b0010),
+            ("▗", 0b0001),
+            ("▘", 0b1000),
+            ("▙", 0b1011),
+            ("▚", 0b1001),
+            ("▛", 0b1110),
+            ("▜", 0b1101),
+            ("▝", 0b0100),
+            ("▞", 0b0110),
+            ("▟", 0b0111),
+        ] {
+            let rects = block_element(symbol).expect(symbol);
+            let covered = |x: f32, y: f32| {
+                rects
+                    .iter()
+                    .any(|&(l, t, r, b)| x >= l && x < r && y >= t && y < b)
+            };
+            let mask = u8::from(covered(0.25, 0.25)) << 3
+                | u8::from(covered(0.75, 0.25)) << 2
+                | u8::from(covered(0.25, 0.75)) << 1
+                | u8::from(covered(0.75, 0.75));
+            assert_eq!(mask, quadrants, "{symbol}");
+        }
+    }
+
+    /// A box-drawing bar drawn a fraction past its advance rasterises to one
+    /// faint column outside the span; that is overshoot to clip, not overhang
+    /// to push, or `┌` would land a pixel away from `│`.
+    #[test]
+    fn horizontal_fit_ignores_sub_pixel_overshoot() {
+        // `─`: full-strength bar across the cell plus a 47% column past it.
+        let mut bar = vec![255; 11];
+        bar.push(120);
+        assert_eq!(fit_horizontally(&[glyph(0.0, &bar)], 11.0), 0.0);
+        // The same on the left (`┐`'s bar reaching into the previous cell).
+        let mut bar = vec![120];
+        bar.extend([255; 11]);
+        assert_eq!(fit_horizontally(&[glyph(-1.0, &bar)], 11.0), 0.0);
+        // Overshoot on both sides at once.
+        let mut bar = vec![120];
+        bar.extend([255; 11]);
+        bar.push(120);
+        assert_eq!(fit_horizontally(&[glyph(-1.0, &bar)], 11.0), 0.0);
+        // A full-strength column outside the span is real overhang: pushed.
+        assert_eq!(fit_horizontally(&[glyph(3.0, &[255; 9])], 11.0), -1.0);
+        // Two faint columns are past the tolerance: the run is wider than the
+        // span and placed by retained coverage, which keeps the solid columns.
+        let mut bar = vec![255; 11];
+        bar.extend([120, 120]);
+        assert_eq!(fit_horizontally(&[glyph(0.0, &bar)], 11.0), 0.0);
+        // A negative-bearing italic with a solid first column is still pushed.
+        assert_eq!(fit_horizontally(&[glyph(-1.0, &[255; 9])], 11.0), 1.0);
     }
 
     #[test]
@@ -3007,6 +3286,67 @@ mod tests {
             app.world().resource::<Seen>().0.len(),
             1,
             "no event without a resize"
+        );
+    }
+
+    #[test]
+    fn terminal_remeasured_fires_when_only_logical_metrics_change() {
+        #[derive(Resource, Default)]
+        struct Seen(Vec<(UVec2, UVec2, Vec2)>);
+        let mut app = text_app();
+        app.init_resource::<Seen>().add_observer(
+            |event: On<TerminalRemeasured>, mut seen: ResMut<Seen>| {
+                seen.0
+                    .push((event.previous_size, event.size, event.cell_size));
+            },
+        );
+        let regular = app
+            .world_mut()
+            .resource_mut::<Assets<Font>>()
+            .add(Font::from_bytes(
+                include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")
+                    .to_vec(),
+            ));
+        let entity = app
+            .world_mut()
+            .spawn((
+                Terminal::new(TerminalSurface::new((4, 2))),
+                TerminalRenderConfig {
+                    cell_size: super::super::CellSizing::FROM_FONT,
+                    font_size: super::super::FontSizing::Px(20.0),
+                    font: super::super::FontFaces::regular(regular),
+                    raster: super::super::RasterConfig {
+                        scale: TerminalRenderScale::Fixed(1.0),
+                        ..default()
+                    },
+                    ..default()
+                },
+            ))
+            .id();
+        for _ in 0..3 {
+            app.update();
+        }
+        let initial = app.world().get::<TerminalTexture>(entity).unwrap().clone();
+        assert!(app.world().resource::<Seen>().0.is_empty());
+        app.world_mut()
+            .get_mut::<TerminalRenderConfig>(entity)
+            .unwrap()
+            .raster
+            .scale = TerminalRenderScale::Fixed(1.001);
+        app.update();
+        let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+        assert_eq!(texture.size, initial.size, "physical pixels remain snapped");
+        assert_ne!(texture.cell_size, initial.cell_size);
+        assert_ne!(texture.logical_size, initial.logical_size);
+        assert_eq!(
+            app.world().resource::<Seen>().0,
+            vec![(initial.size, texture.size, texture.cell_size)]
+        );
+        app.update();
+        assert_eq!(
+            app.world().resource::<Seen>().0.len(),
+            1,
+            "no repeated event on an idle frame"
         );
     }
 
@@ -3343,9 +3683,7 @@ mod tests {
     fn timed_app() -> App {
         let mut app = App::new();
         app.add_plugins((
-            MinimalPlugins
-                .build()
-                .disable::<bevy::time::TimePlugin>(),
+            MinimalPlugins.build().disable::<bevy::time::TimePlugin>(),
             bevy::asset::AssetPlugin::default(),
             bevy::text::TextPlugin,
             TerminalPlugin,
@@ -3421,8 +3759,8 @@ mod tests {
             for row in 0..3 {
                 for column in 0..4 {
                     let mut cell = TerminalCell::new(" ");
-                    cell.style = TerminalStyle::new()
-                        .bg(crate::scene::TerminalColor::Rgb(200, 30, 30));
+                    cell.style =
+                        TerminalStyle::new().bg(crate::scene::TerminalColor::Rgb(200, 30, 30));
                     update.set_cell((column, row), &cell);
                 }
             }
@@ -3480,12 +3818,16 @@ mod tests {
         append_instance_bytes(&instances, &mut bytes);
         assert_eq!(bytes.len(), 96);
         let floats: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_ne_bytes(*chunk))
             .collect();
         assert_eq!(
             &floats[..12],
-            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+            &[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0
+            ]
         );
         assert_eq!(&floats[12..16], &[42.0; 4]);
         // Appending again extends at the previous end, as the shared staging
