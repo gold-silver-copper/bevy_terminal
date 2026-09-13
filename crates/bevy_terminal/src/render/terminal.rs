@@ -78,35 +78,91 @@ pub struct TerminalTexture {
     pub status: TerminalStatus,
     /// Render-world image targeted by terminal rendering; GPU completion is separate.
     pub image: Handle<Image>,
-    /// Physical pixel dimensions of `image`.
-    pub size: UVec2,
-    /// Logical dimensions used for a Bevy UI presentation node.
-    pub logical_size: Vec2,
-    /// Physical pixels per logical pixel used to rasterize `image`.
-    pub raster_scale: f32,
-    /// Effective logical size of one cell: the physical cell (whole pixels,
-    /// possibly grown to the font's line box — see [`super::TerminalSizing`])
-    /// divided by `raster_scale`.
-    pub cell_size: Vec2,
-    /// Effective logical font size. This can differ slightly from a requested
-    /// [`super::TerminalSizing::FromFont`] size when [`super::TerminalSizing::FromFont`]
-    /// snaps the measured advance to a whole physical-pixel cell.
-    pub font_size: f32,
+    pub(super) geometry: TerminalGeometry,
 }
 
 impl TerminalTexture {
-    /// Returns authoritative geometry and its image handle, or `None` while
-    /// loading or failed. Provisional fields must not drive PTY reflow.
+    /// Returns authoritative geometry, or `None` while loading, failed, or
+    /// waiting for a shared surface resize to be measured.
     #[must_use]
-    pub fn measured(&self) -> Option<&Self> {
-        (self.status == TerminalStatus::Ready).then_some(self)
+    pub fn measured(&self) -> Option<&TerminalGeometry> {
+        (self.status == TerminalStatus::Ready && self.geometry.is_current())
+            .then_some(&self.geometry)
+    }
+}
+
+/// One coherent measurement of a particular surface and grid generation.
+///
+/// Keep the last accepted value if application layout must remain stable while
+/// a newer measurement is pending. It cannot be adopted by a backend after a
+/// resize, even when the grid later returns to the same dimensions. Different
+/// renderers may legitimately measure the same surface at different scales.
+/// Retaining geometry does not keep the source surface or its cells alive.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerminalGeometry {
+    pub(super) surface: crate::surface::WeakSurface,
+    pub(super) resize_generation: u64,
+    pub(super) grid: GridSize,
+    pub(super) size: UVec2,
+    pub(super) physical_cell_size: Vec2,
+    pub(super) physical_font_size: f32,
+    pub(super) raster_scale: f32,
+}
+
+impl TerminalGeometry {
+    /// Measured dimensions in cells.
+    #[must_use]
+    pub const fn grid(&self) -> GridSize {
+        self.grid
     }
 
-    /// Returns the grid that fits into `logical_size` (floor, at least 1×1)
-    /// at this terminal's current cell size.
+    /// Physical image dimensions in pixels.
+    #[must_use]
+    pub const fn size(&self) -> UVec2 {
+        self.size
+    }
+
+    /// Logical presentation dimensions.
+    #[must_use]
+    pub fn logical_size(&self) -> Vec2 {
+        self.size.as_vec2() / self.raster_scale
+    }
+
+    /// Physical pixels per logical pixel.
+    #[must_use]
+    pub const fn raster_scale(&self) -> f32 {
+        self.raster_scale
+    }
+
+    /// Effective logical cell dimensions, after physical-pixel snapping.
+    #[must_use]
+    pub fn cell_size(&self) -> Vec2 {
+        self.physical_cell_size / self.raster_scale
+    }
+
+    /// Effective logical font size.
+    #[must_use]
+    pub fn font_size(&self) -> f32 {
+        self.physical_font_size / self.raster_scale
+    }
+
+    /// Grid fitting the available logical space, bounded by surface limits.
     #[must_use]
     pub fn grid_for(&self, logical_size: Vec2) -> GridSize {
-        grid_for(logical_size, self.cell_size)
+        grid_for(logical_size, self.cell_size())
+    }
+
+    /// Whether this measurement belongs to this surface's current grid.
+    /// Text and cursor changes do not invalidate it.
+    #[must_use]
+    pub fn matches_surface(&self, surface: &TerminalSurface) -> bool {
+        self.surface.matches(surface) && self.is_current()
+    }
+
+    /// Whether the source surface has retained its measured grid generation.
+    #[must_use]
+    pub fn is_current(&self) -> bool {
+        self.surface.is_current(self.resize_generation)
     }
 }
 
@@ -188,7 +244,7 @@ pub struct TerminalRemeasured {
 
 /// Counters for the most recent scene update of one [`TerminalRenderer`]; all zero on
 /// frames that produced no terminal work.
-#[derive(Clone, Copy, Debug, Default, Component)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Component)]
 #[non_exhaustive]
 pub struct TerminalStats {
     /// Rows rebuilt into the latest payload.

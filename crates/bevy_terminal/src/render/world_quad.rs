@@ -129,7 +129,10 @@ fn sync_world_quads(
     quads: Query<QuadItem<'_>, QuadChanged>,
 ) {
     for (entity, quad, texture, mesh, material, geometry) in &quads {
-        let size = quad.size_for(texture.size);
+        let Some(measured) = texture.measured() else {
+            continue;
+        };
+        let size = quad.size_for(measured.size());
         match mesh.filter(|mesh| meshes.contains(&mesh.0)) {
             Some(mesh) if geometry.is_none_or(|geometry| geometry.0 != size) => {
                 if let Some(mut existing) = meshes.get_mut(&mesh.0) {
@@ -189,18 +192,23 @@ mod tests {
             .init_asset::<Mesh>()
             .init_asset::<StandardMaterial>();
         plugin(&mut app);
+        let surface = crate::surface::TerminalSurface::new((80, 40));
         let entity = app
             .world_mut()
             .spawn((
                 TerminalWorldQuad::default(),
                 TerminalTexture {
-                    status: super::super::TerminalStatus::Loading,
+                    status: super::super::TerminalStatus::Ready,
                     image: Handle::default(),
-                    size: UVec2::new(80, 40),
-                    logical_size: Vec2::new(80.0, 40.0),
-                    raster_scale: 1.0,
-                    cell_size: Vec2::ONE,
-                    font_size: 1.0,
+                    geometry: super::super::TerminalGeometry {
+                        surface: surface.downgrade(),
+                        resize_generation: 0,
+                        grid: crate::scene::GridSize::new(80, 40),
+                        size: UVec2::new(80, 40),
+                        raster_scale: 1.0,
+                        physical_cell_size: Vec2::ONE,
+                        physical_font_size: 1.0,
+                    },
                 },
             ))
             .id();
@@ -295,7 +303,7 @@ mod tests {
         assert_eq!(standard.base_color_texture, Some(texture.image.clone()));
         assert!(standard.unlit);
         let mesh = world.get::<Mesh3d>(entity).unwrap().clone();
-        let expected = TerminalWorldQuad::new(2.0).size_for(texture.size);
+        let expected = TerminalWorldQuad::new(2.0).size_for(texture.geometry.size());
         assert_eq!(expected.y, 2.0);
         let aabb = world
             .resource::<Assets<Mesh>>()
@@ -331,8 +339,13 @@ mod tests {
         assert_eq!(standard.emissive, LinearRgba::rgb(2.0, 0.5, 0.0));
         assert_eq!(standard.perceptual_roughness, 0.1);
         assert_eq!(standard.cull_mode, None);
-        let doubled = TerminalWorldQuad::new(2.0)
-            .size_for(world.get::<TerminalTexture>(entity).unwrap().size);
+        let doubled = TerminalWorldQuad::new(2.0).size_for(
+            world
+                .get::<TerminalTexture>(entity)
+                .unwrap()
+                .geometry
+                .size(),
+        );
         assert!(
             (doubled.x - expected.x * 2.0).abs() < 1e-3,
             "{doubled:?} vs {expected:?}"

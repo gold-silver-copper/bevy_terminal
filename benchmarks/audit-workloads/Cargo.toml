@@ -1,0 +1,11 @@
+[workspace]
+
+[package]
+name = "terminal-audit-workloads"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bevy_terminal = { path = "../../crates/bevy_terminal", features = ["3d"] }
+bevy = { version = "=0.19.1", default-features = false, features = ["2d", "3d", "ui", "system_font_discovery"] }

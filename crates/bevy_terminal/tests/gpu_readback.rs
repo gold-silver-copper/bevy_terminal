@@ -82,7 +82,12 @@ fn render_headless_with(
                         if *frames < 6 {
                             return;
                         }
-                        let size = textures.single().map(|t| t.size).unwrap_or_default();
+                        let size = textures
+                            .single()
+                            .ok()
+                            .and_then(TerminalTexture::measured)
+                            .map(|geometry| geometry.size())
+                            .unwrap_or_default();
                         *sink.0.lock().unwrap() = Some((done.data.clone(), size));
                         exit.write(AppExit::Success);
                     },

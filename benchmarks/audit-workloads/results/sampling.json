@@ -1,0 +1,54 @@
+{
+  "runs": [
+    {
+      "run": "baseline-1",
+      "exit": 0,
+      "compiler_processes_before": [],
+      "compiler_processes_after": [
+        "55832  13.2 /Users/kisaczka/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc",
+        "55833  10.7 /Users/kisaczka/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc"
+      ]
+    },
+    {
+      "run": "changed-1",
+      "exit": 0,
+      "compiler_processes_before": [
+        "55832  13.2 /Users/kisaczka/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc",
+        "55833  10.7 /Users/kisaczka/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc"
+      ],
+      "compiler_processes_after": [
+        "56082  56.9 /Users/kisaczka/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc"
+      ]
+    },
+    {
+      "run": "baseline-2",
+      "exit": 0,
+      "compiler_processes_before": [
+        "56082  56.9 /Users/kisaczka/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc"
+      ],
+      "compiler_processes_after": []
+    },
+    {
+      "run": "changed-2",
+      "exit": 0,
+      "compiler_processes_before": [],
+      "compiler_processes_after": []
+    },
+    {
+      "run": "baseline-3",
+      "exit": 0,
+      "compiler_processes_before": [],
+      "compiler_processes_after": []
+    },
+    {
+      "run": "changed-3",
+      "exit": 0,
+      "compiler_processes_before": [],
+      "compiler_processes_after": []
+    }
+  ],
+  "binaries": {
+    "baseline": "3ed1ed5b19ba72e122c367b31df37c2aaec94aa4c7c32531aeb1acd27dcc24e4",
+    "changed": "dbf291178d9f4a1b347a3afd6bbf283221cee1e383be3804a63eba2763d3a4fb"
+  }
+}

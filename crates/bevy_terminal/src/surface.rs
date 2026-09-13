@@ -4,7 +4,7 @@
 
 use std::{
     ops::Range,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, Weak},
 };
 
 use crate::scene::{CellOccupancy, CellPosition, GridSize, TerminalCell, TerminalSnapshot};
@@ -20,6 +20,8 @@ pub struct SurfaceInfo {
     pub cursor_visible: bool,
     /// Revision of the observed state.
     pub revision: u64,
+    /// Changes on every actual grid resize, including a resize back to an earlier size.
+    pub resize_generation: u64,
 }
 
 /// A cheap, thread-safe handle to a retained terminal surface.
@@ -32,7 +34,33 @@ pub struct TerminalSurface {
     shared: Arc<Mutex<SurfaceState>>,
 }
 
+/// Measurement identity must not keep retained terminal content alive.
+#[derive(Clone, Debug)]
+pub(crate) struct WeakSurface(Weak<Mutex<SurfaceState>>);
+
+impl PartialEq for WeakSurface {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+}
+
+impl WeakSurface {
+    pub(crate) fn matches(&self, surface: &TerminalSurface) -> bool {
+        self.0.ptr_eq(&Arc::downgrade(&surface.shared))
+    }
+
+    pub(crate) fn is_current(&self, generation: u64) -> bool {
+        self.0
+            .upgrade()
+            .is_some_and(|shared| TerminalSurface { shared }.info().resize_generation == generation)
+    }
+}
+
 impl TerminalSurface {
+    pub(crate) fn downgrade(&self) -> WeakSurface {
+        WeakSurface(Arc::downgrade(&self.shared))
+    }
+
     /// Maximum retained cells (about 48 MiB of cell storage per surface).
     /// This bounds producer-controlled allocation independently of GPU limits.
     pub const MAX_CELLS: usize = 1 << 20;
@@ -56,6 +84,7 @@ impl TerminalSurface {
                 cursor_position: CellPosition::new(0, 0),
                 cursor_visible: false,
                 revision: 0,
+                resize_generation: 0,
                 row_revisions: vec![0; usize::from(size.height)],
             })),
         }
@@ -127,7 +156,7 @@ impl TerminalSurface {
     /// snapshot's; the lock is held only while dirty cells are copied.
     pub(crate) fn update_snapshot(&self, snapshot: &mut TerminalSnapshot) -> SnapshotDelta {
         let state = self.lock();
-        if snapshot.size != state.size {
+        if snapshot.size != state.size || snapshot.resize_generation != state.resize_generation {
             let changed_cells = state.cells.len();
             let changed_rows = (0..state.size.height).collect();
             *snapshot = state.snapshot();
@@ -195,6 +224,7 @@ impl TerminalSurface {
             cursor_position: state.cursor_position,
             cursor_visible: state.cursor_visible,
             revision: state.revision,
+            resize_generation: state.resize_generation,
         }
     }
 
@@ -226,6 +256,7 @@ struct SurfaceState {
     cursor_position: CellPosition,
     cursor_visible: bool,
     revision: u64,
+    resize_generation: u64,
     // Eight bytes per row, rather than a flag or revision for every cell.
     // Readers compare cells only in rows changed since their own snapshot.
     row_revisions: Vec<u64>,
@@ -243,6 +274,7 @@ impl SurfaceState {
             cursor_position: self.cursor_position,
             cursor_visible: self.cursor_visible,
             revision: self.revision,
+            resize_generation: self.resize_generation,
         }
     }
 
@@ -299,8 +331,24 @@ impl SurfaceState {
             } else {
                 index.checked_add(offset).filter(|source| *source < last)
             };
-            let cell = source.map_or(TerminalCell::EMPTY, |source| self.cells[source].clone());
-            changed |= self.write(index, &cell);
+            let Some(source) = source else {
+                changed |= self.reset(index);
+                continue;
+            };
+            if self.cells[index] == self.cells[source] {
+                continue;
+            }
+            // Source and destination cannot overlap: count is nonzero. Borrow
+            // them separately to avoid allocating a temporary heap-backed symbol.
+            if source < index {
+                let (before, after) = self.cells.split_at_mut(index);
+                after[0].clone_from(&before[source]);
+            } else {
+                let (before, after) = self.cells.split_at_mut(source);
+                before[index].clone_from(&after[0]);
+            }
+            self.row_revisions[index / width] = self.revision.wrapping_add(1);
+            changed = true;
         }
         changed
     }
@@ -462,6 +510,7 @@ impl SurfaceUpdate<'_> {
                 .clone_from_slice(&old_cells[old_start..old_start + copied_columns]);
         }
         state.size = new_size;
+        state.resize_generation = state.resize_generation.wrapping_add(1);
         state.row_revisions = vec![state.revision.wrapping_add(1); usize::from(rows)];
         state.cursor_position.x = state.cursor_position.x.min(columns.saturating_sub(1));
         state.cursor_position.y = state.cursor_position.y.min(rows.saturating_sub(1));
@@ -564,6 +613,52 @@ mod tests {
             u.set_cell((1, 0), &TerminalCell::new("B"));
         }));
         assert_eq!(surface.snapshot().row_text(0), "AB");
+    }
+
+    #[test]
+    fn resize_generation_tracks_resizes_inside_a_single_update() {
+        let surface = TerminalSurface::new((2, 1));
+        let initial = surface.info();
+        surface.update(|u| {
+            u.set_cell((0, 0), &TerminalCell::new("A"));
+            u.resize((2, 1));
+        });
+        assert_eq!(surface.info().resize_generation, initial.resize_generation);
+        surface.update(|u| {
+            u.resize((3, 1));
+            u.resize((2, 1));
+        });
+        assert_eq!(surface.info().size, initial.size);
+        assert_eq!(
+            surface.info().resize_generation,
+            initial.resize_generation + 2
+        );
+    }
+
+    #[test]
+    fn scrolling_heap_symbols_preserves_overlap_in_both_directions() {
+        let surface = TerminalSurface::new((1, 3));
+        let first = TerminalCell::new(
+            "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}",
+        );
+        let second = TerminalCell::new(
+            "b\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}",
+        );
+        surface.update(|u| {
+            u.set_cell((0, 0), &first);
+            u.set_cell((0, 1), &second);
+            u.scroll_down(0..3, 1);
+        });
+        let snapshot = surface.snapshot();
+        assert_eq!(snapshot[(0, 1)], first);
+        assert_eq!(snapshot[(0, 2)], second);
+        surface.update(|u| {
+            u.scroll_up(0..3, 1);
+        });
+        let snapshot = surface.snapshot();
+        assert_eq!(snapshot[(0, 0)], first);
+        assert_eq!(snapshot[(0, 1)], second);
+        assert_eq!(snapshot[(0, 2)], TerminalCell::EMPTY);
     }
 
     #[test]

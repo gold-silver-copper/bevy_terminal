@@ -166,7 +166,7 @@ pub(super) fn create_pipeline(
         },
     ];
     let vertex_buffers = [RawVertexBufferLayout {
-        array_stride: 48,
+        array_stride: INSTANCE_BYTES as u64,
         step_mode: VertexStepMode::Instance,
         attributes: &ATTRIBUTES,
     }];
@@ -201,9 +201,9 @@ pub(super) fn create_pipeline(
 /// into pre-sized chunks instead of growing the vector one scalar at a time.
 pub(super) fn append_instance_bytes(instances: &[QuadInstance], bytes: &mut Vec<u8>) {
     let start = bytes.len();
-    bytes.resize(start + instances.len() * 48, 0);
+    bytes.resize(start + instances.len() * INSTANCE_BYTES, 0);
     for (chunk, instance) in bytes[start..]
-        .as_chunks_mut::<48>()
+        .as_chunks_mut::<INSTANCE_BYTES>()
         .0
         .iter_mut()
         .zip(instances)
@@ -222,6 +222,60 @@ pub(super) fn append_instance_bytes(instances: &[QuadInstance], bytes: &mut Vec<
             slot.copy_from_slice(&value.to_ne_bytes());
         }
     }
+}
+
+const INSTANCE_BYTES: usize = 48;
+
+#[derive(Debug, PartialEq, Eq)]
+struct UploadSlice {
+    scene: usize,
+    instances: std::ops::Range<usize>,
+    offset: usize,
+}
+
+#[derive(Default)]
+struct UploadChunk {
+    slices: Vec<UploadSlice>,
+    instances: usize,
+}
+
+/// Preserve scene and instance order while bounding each upload. Empty scenes
+/// still get a pass, because clearing an image does not require any instances.
+fn plan_uploads(counts: impl IntoIterator<Item = usize>, limit: usize) -> Vec<UploadChunk> {
+    assert!(limit > 0);
+    let mut chunks = Vec::new();
+    let mut chunk = UploadChunk::default();
+    for (scene, count) in counts.into_iter().enumerate() {
+        let mut start = 0;
+        loop {
+            if chunk.instances == limit {
+                chunks.push(std::mem::take(&mut chunk));
+            }
+            let len = (count - start).min(limit - chunk.instances);
+            chunk.slices.push(UploadSlice {
+                scene,
+                instances: start..start + len,
+                offset: chunk.instances,
+            });
+            chunk.instances += len;
+            start += len;
+            if start == count {
+                break;
+            }
+        }
+    }
+    if !chunk.slices.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
+}
+
+fn buffer_capacity(required: u64, limit: u64) -> u64 {
+    debug_assert!(required <= limit);
+    required
+        .checked_next_power_of_two()
+        .unwrap_or(required)
+        .min(limit)
 }
 
 pub(super) fn render_batch_scenes(
@@ -265,37 +319,6 @@ pub(super) fn render_batch_scenes(
     }
 
     gpu.ensure_pipeline(&device);
-    // Serialize every scene into one persistent staging buffer; each scene
-    // draws from its own byte offset so one buffer write, one command encoder
-    // and one submission cover all terminals.
-    let mut staging = std::mem::take(&mut gpu.staging);
-    staging.clear();
-    let mut offsets = Vec::with_capacity(renderable.len());
-    for scene in &renderable {
-        offsets.push(staging.len() as u64);
-        append_instance_bytes(&scene.instances, &mut staging);
-    }
-    if !staging.is_empty() {
-        let required = staging.len() as u64;
-        if required > gpu.vertex_capacity {
-            gpu.vertex_capacity = required.next_power_of_two();
-            gpu.vertex_buffer = Some(device.create_buffer(&BufferDescriptor {
-                label: Some("bevy_terminal terminal instances"),
-                size: gpu.vertex_capacity,
-                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-        }
-        queue.write_buffer(
-            gpu.vertex_buffer
-                .as_ref()
-                .expect("non-empty instances allocate a vertex buffer"),
-            0,
-            &staging,
-        );
-    }
-    gpu.staging = staging;
-
     for scene in &renderable {
         for batch in &scene.batches {
             let texture = batch.texture;
@@ -330,68 +353,128 @@ pub(super) fn render_batch_scenes(
         }
     }
 
-    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-        label: Some("bevy_terminal terminal batch"),
-    });
-    for (scene, offset) in renderable.iter().zip(&offsets) {
-        let target = gpu_images
-            .get(scene.destination)
-            .expect("destination readiness was checked before encoding");
-        let load = if scene.clear {
-            LoadOp::Clear(scene.clear_color.to_linear().into())
-        } else {
-            LoadOp::Load
-        };
-        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+    let buffer_limit = device.limits().max_buffer_size;
+    // WGPU's minimum supported buffer size exceeds one instance. Clamp to the
+    // host address space as well so serialization arithmetic cannot overflow.
+    let instance_limit = (buffer_limit / INSTANCE_BYTES as u64)
+        .min((usize::MAX / INSTANCE_BYTES) as u64)
+        .min(u64::from(u32::MAX)) as usize;
+    let chunks = plan_uploads(
+        renderable.iter().map(|scene| scene.instances.len()),
+        instance_limit,
+    );
+    let mut staging = std::mem::take(&mut gpu.staging);
+    for chunk in chunks {
+        staging.clear();
+        for slice in &chunk.slices {
+            append_instance_bytes(
+                &renderable[slice.scene].instances[slice.instances.clone()],
+                &mut staging,
+            );
+        }
+        if !staging.is_empty() {
+            let required = staging.len() as u64;
+            if required > gpu.vertex_capacity {
+                gpu.vertex_capacity = buffer_capacity(required, buffer_limit);
+                gpu.vertex_buffer = Some(device.create_buffer(&BufferDescriptor {
+                    label: Some("bevy_terminal terminal instances"),
+                    size: gpu.vertex_capacity,
+                    usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            }
+            queue.write_buffer(
+                gpu.vertex_buffer
+                    .as_ref()
+                    .expect("non-empty upload allocates a buffer"),
+                0,
+                &staging,
+            );
+        }
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("bevy_terminal terminal batch"),
-            color_attachments: &[Some(RenderPassColorAttachment {
-                view: &target.texture_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: Operations {
-                    load,
-                    store: StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
         });
-        if !scene.instances.is_empty()
-            && let Some(vertex_buffer) = &gpu.vertex_buffer
-        {
-            pass.set_vertex_buffer(0, *vertex_buffer.slice(*offset..));
-            let mut current_replace = None;
-            for batch in &scene.batches {
-                if current_replace != Some(batch.replace) {
-                    current_replace = Some(batch.replace);
-                    let pipeline = if batch.replace {
-                        &gpu.replace_pipeline
-                    } else {
-                        &gpu.pipeline
-                    };
-                    pass.set_pipeline(pipeline.as_ref().expect("pipeline was initialized"));
-                }
-                pass.set_bind_group(
+        for slice in &chunk.slices {
+            let scene = &renderable[slice.scene];
+            let target = gpu_images
+                .get(scene.destination)
+                .expect("destination readiness was checked before encoding");
+            let load = if scene.clear && slice.instances.start == 0 {
+                LoadOp::Clear(scene.clear_color.to_linear().into())
+            } else {
+                LoadOp::Load
+            };
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("bevy_terminal terminal batch"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &target.texture_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load,
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if !slice.instances.is_empty() {
+                let vertex_buffer = gpu
+                    .vertex_buffer
+                    .as_ref()
+                    .expect("upload allocated a buffer");
+                pass.set_vertex_buffer(
                     0,
-                    gpu.texture_bind_groups
-                        .get(&batch.texture)
-                        .map(|(_, bind_group)| bind_group)
-                        .expect("atlas bind group was prepared"),
-                    &[],
+                    *vertex_buffer.slice((slice.offset * INSTANCE_BYTES) as u64..),
                 );
-                pass.draw(0..6, batch.start..batch.start + batch.count);
+                let mut current_replace = None;
+                for batch in &scene.batches {
+                    let start = (batch.start as usize).max(slice.instances.start);
+                    let end =
+                        (batch.start as usize + batch.count as usize).min(slice.instances.end);
+                    if start >= end {
+                        continue;
+                    }
+                    if current_replace != Some(batch.replace) {
+                        current_replace = Some(batch.replace);
+                        let pipeline = if batch.replace {
+                            &gpu.replace_pipeline
+                        } else {
+                            &gpu.pipeline
+                        };
+                        pass.set_pipeline(pipeline.as_ref().expect("pipeline was initialized"));
+                    }
+                    pass.set_bind_group(
+                        0,
+                        gpu.texture_bind_groups
+                            .get(&batch.texture)
+                            .map(|(_, bind_group)| bind_group)
+                            .expect("atlas bind group was prepared"),
+                        &[],
+                    );
+                    pass.draw(
+                        0..6,
+                        (start - slice.instances.start) as u32
+                            ..(end - slice.instances.start) as u32,
+                    );
+                }
             }
         }
-        drop(pass);
-    }
-    queue.submit([encoder.finish()]);
-    for scene in renderable {
-        if let Some((submitted, generation)) = scene.submission {
-            submitted.store(generation, Ordering::Release);
+        // Queue writes take effect on submission. Submit each chunk before
+        // overwriting the retained buffer for the next chunk.
+        queue.submit([encoder.finish()]);
+        for slice in &chunk.slices {
+            let scene = &renderable[slice.scene];
+            if slice.instances.end == scene.instances.len()
+                && let Some((submitted, generation)) = &scene.submission
+            {
+                submitted.store(*generation, Ordering::Release);
+            }
         }
     }
+    gpu.staging = staging;
 }
 
 pub(super) const BATCH_SHADER: &str = r#"
@@ -438,3 +521,52 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
     return sample;
 }
 "#;
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_uploads_preserve_every_instance_and_empty_scene() {
+        let counts = [3, 0, 4, 1];
+        for limit in [1, 2, 3, 8, 16] {
+            let chunks = plan_uploads(counts, limit);
+            let mut visited = Vec::new();
+            let mut clears = [0; 4];
+            let mut completions = [0; 4];
+            for chunk in chunks {
+                assert!(chunk.instances <= limit);
+                for slice in chunk.slices {
+                    assert!(slice.offset + slice.instances.len() <= chunk.instances);
+                    clears[slice.scene] += usize::from(slice.instances.start == 0);
+                    completions[slice.scene] +=
+                        usize::from(slice.instances.end == counts[slice.scene]);
+                    visited.extend(slice.instances.map(|index| (slice.scene, index)));
+                }
+            }
+            assert_eq!(
+                visited,
+                vec![
+                    (0, 0),
+                    (0, 1),
+                    (0, 2),
+                    (2, 0),
+                    (2, 1),
+                    (2, 2),
+                    (2, 3),
+                    (3, 0)
+                ]
+            );
+            assert_eq!(clears, [1; 4]);
+            assert_eq!(completions, [1; 4]);
+        }
+    }
+
+    #[test]
+    fn buffer_growth_respects_non_power_of_two_limits_and_overflow() {
+        assert_eq!(buffer_capacity(96, 100), 100);
+        assert_eq!(buffer_capacity(48, 100), 64);
+        assert_eq!(buffer_capacity(u64::MAX - 1, u64::MAX), u64::MAX - 1);
+        assert_eq!(plan_uploads([3, 0, 4, 1], 8).len(), 1);
+    }
+}

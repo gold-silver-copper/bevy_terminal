@@ -163,8 +163,10 @@ struct AnimationClock(Timer);
 fn measured_cell(textures: &Query<&TerminalTexture>) -> Vec2 {
     textures
         .single()
-        .map_or(Vec2::new(CELL_WIDTH, CELL_HEIGHT), |texture| {
-            texture.cell_size
+        .ok()
+        .and_then(TerminalTexture::measured)
+        .map_or(Vec2::new(CELL_WIDTH, CELL_HEIGHT), |geometry| {
+            geometry.cell_size()
         })
 }
 

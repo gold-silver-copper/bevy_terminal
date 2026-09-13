@@ -17,9 +17,10 @@ pub mod prelude {
     pub use crate::{
         render::{
             BlinkConfig, CursorConfig, CursorStyle, FontFaces, RasterConfig, SmolStr,
-            TerminalFonts, TerminalPlugin, TerminalReady, TerminalRemeasured, TerminalRenderConfig,
-            TerminalRenderScale, TerminalRenderer, TerminalSizing, TerminalStats, TerminalStatus,
-            TerminalSystems, TerminalTexture, TerminalTheme, font_family,
+            TerminalFonts, TerminalGeometry, TerminalPlugin, TerminalReady, TerminalRemeasured,
+            TerminalRenderConfig, TerminalRenderScale, TerminalRenderer, TerminalSizing,
+            TerminalStats, TerminalStatus, TerminalSystems, TerminalTexture, TerminalTheme,
+            font_family,
         },
         scene::{
             CellOccupancy, CellPosition, CellSymbol, GridSize, StyleFlags, TerminalCell,

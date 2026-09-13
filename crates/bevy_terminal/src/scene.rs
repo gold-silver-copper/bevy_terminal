@@ -444,6 +444,7 @@ pub struct TerminalSnapshot {
     pub(crate) cursor_position: CellPosition,
     pub(crate) cursor_visible: bool,
     pub(crate) revision: u64,
+    pub(crate) resize_generation: u64,
 }
 
 impl TerminalSnapshot {
@@ -672,6 +673,7 @@ mod tests {
             cursor_position: CellPosition::new(0, 0),
             cursor_visible: false,
             revision: 0,
+            resize_generation: 0,
         };
         snapshot.cells[4] = TerminalCell::new("X");
         assert_eq!(snapshot[(1, 1)].symbol(), "X");

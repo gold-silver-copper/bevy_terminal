@@ -6,6 +6,10 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[features]
+# Compile the real consumer's current windowed context alongside the migration fixture.
+consumer-windowed = ["bevy_ratatui/windowed"]
+
 [dependencies]
 bevy = { version = "0.19", default-features = false }
 bevy_terminal_ratatui = { path = "../..", default-features = false, features = ["ui"] }

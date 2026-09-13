@@ -14,7 +14,9 @@ documentation = "https://docs.rs/bevy_terminal_ratatui"
 keywords = ["bevy", "ratatui", "terminal", "tui"]
 categories = ["game-development", "gui", "rendering"]
 exclude = [
-    "benchmarks/renderer-comparison/**",
+    "benchmarks/**",
+    "CODEBASE_AUDIT*.md",
+    "CODEBASE_IMPLEMENTATION_*",
     "crates/**",
     "integration/**",
     "CLEANUP_PROGRESS.md",
@@ -32,11 +34,15 @@ ui = ["bevy_terminal/ui"]
 # Discover system fonts (forwards `bevy_terminal/system_fonts`).
 system_fonts = ["bevy_terminal/system_fonts"]
 
+# Opt into Ratatui's extended backend trait; leave disabled when coexisting
+# with backends that implement only the standard trait (such as soft_ratatui).
+scrolling-regions = ["ratatui/scrolling-regions"]
+
 [dependencies]
 bevy_terminal = { version = "0.7.3", path = "crates/bevy_terminal", default-features = false }
 # Only for the `Component` derive on `RatatuiTerminal`; the version is pinned by `bevy_terminal`.
 bevy = { version = "0.19", default-features = false }
-ratatui = { version = "0.30.2", default-features = false, features = ["scrolling-regions", "std", "underline-color"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["std", "underline-color"] }
 
 [[example]]
 name = "world_quad"

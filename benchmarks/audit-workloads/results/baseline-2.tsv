@@ -1,0 +1,8 @@
+workload	steps	ns	allocations	allocated_bytes	peak_extra_live_bytes	shape_misses
+scroll_equal_ascii	200	35944833	0	0	0	0
+scroll_equal_heap	200	74636042	384000	8832000	23	0
+scroll_changing_heap	200	90626500	750160	17253680	46	0
+idle_32_fonts_16	200	165654917	6976	1354480	1904	0
+resize_font_scale_churn	48	227323084	8343	8774854	3335376	48
+unicode_cache_saturation	12	1524907833	94025	71103985	51012805	5760
+ascii_after_saturation	20	1021036708	116228	26768478	23744	9600

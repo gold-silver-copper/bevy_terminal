@@ -1,12 +1,12 @@
-use std::{convert::Infallible, ops::Range};
+use std::convert::Infallible;
 
 use bevy_terminal::bevy::{
     math::{UVec2, Vec2},
     prelude::{Component, Deref, DerefMut},
 };
 use bevy_terminal::prelude::{
-    GridSize, StyleFlags, TerminalCell, TerminalColor, TerminalRenderer, TerminalSnapshot,
-    TerminalStyle, TerminalSurface, TerminalTexture,
+    GridSize, StyleFlags, TerminalCell, TerminalColor, TerminalGeometry, TerminalRenderer,
+    TerminalSnapshot, TerminalStyle, TerminalSurface, TerminalTexture,
 };
 use ratatui::{
     backend::{Backend, ClearType, WindowSize},
@@ -22,7 +22,7 @@ use ratatui::{
 /// that handle (after adding [`bevy_terminal::prelude::TerminalPlugin`]).
 pub struct RatatuiBackend {
     surface: TerminalSurface,
-    pixel_size: Option<(GridSize, UVec2)>,
+    geometry: Option<TerminalGeometry>,
 }
 
 impl RatatuiBackend {
@@ -34,7 +34,7 @@ impl RatatuiBackend {
     pub fn new(columns: u16, rows: u16) -> Self {
         Self {
             surface: TerminalSurface::new((columns, rows)),
-            pixel_size: None,
+            geometry: None,
         }
     }
 
@@ -43,16 +43,19 @@ impl RatatuiBackend {
     pub const fn from_surface(surface: TerminalSurface) -> Self {
         Self {
             surface,
-            pixel_size: None,
+            geometry: None,
         }
     }
 
-    /// Reports the physical pixel dimensions of the presentation selected by
-    /// this backend's owner. Multiple renderers may share a surface; none can
-    /// implicitly overwrite these metrics. A grid resize makes them unknown
-    /// until the owner supplies the newly measured size.
-    pub fn set_pixel_size(&mut self, size: UVec2) {
-        self.pixel_size = Some((self.surface.size(), size));
+    /// Adopts a measurement from the presentation selected by this backend's owner.
+    /// Returns false for another surface or a stale resize generation, preserving
+    /// the last accepted measurement. Content edits do not invalidate geometry.
+    pub fn set_geometry(&mut self, geometry: &TerminalGeometry) -> bool {
+        if !geometry.matches_surface(&self.surface) {
+            return false;
+        }
+        self.geometry = Some(geometry.clone());
+        true
     }
 
     /// Returns a handle that can be passed to the Bevy renderer plugin.
@@ -70,7 +73,7 @@ impl RatatuiBackend {
     /// Panics if the grid exceeds [`TerminalSurface::MAX_CELLS`].
     pub fn resize(&mut self, columns: u16, rows: u16) {
         if self.surface.size() != GridSize::new(columns, rows) {
-            self.pixel_size = None;
+            self.geometry = None;
         }
         self.surface.update(|update| {
             update.resize((columns, rows));
@@ -329,12 +332,12 @@ impl Backend for RatatuiBackend {
     }
 
     fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
-        let grid = self.surface.size();
-        let pixels = self
-            .pixel_size
-            .filter(|(size, _)| *size == grid)
-            .map(|(_, pixels)| pixels)
-            .unwrap_or_default();
+        let (grid, pixels) = self
+            .geometry
+            .as_ref()
+            .filter(|geometry| geometry.matches_surface(&self.surface))
+            .map(|geometry| (geometry.grid(), geometry.size()))
+            .unwrap_or_else(|| (self.surface.size(), UVec2::ZERO));
         Ok(WindowSize {
             columns_rows: size_from_grid(grid),
             pixels: Size::new(
@@ -369,16 +372,22 @@ impl Backend for RatatuiBackend {
         Ok(())
     }
 
-    fn scroll_region_up(&mut self, region: Range<u16>, line_count: u16) -> Result<(), Self::Error> {
+    #[cfg(feature = "scrolling-regions")]
+    fn scroll_region_up(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
         self.surface.update(|update| {
             update.scroll_up(region, line_count);
         });
         Ok(())
     }
 
+    #[cfg(feature = "scrolling-regions")]
     fn scroll_region_down(
         &mut self,
-        region: Range<u16>,
+        region: std::ops::Range<u16>,
         line_count: u16,
     ) -> Result<(), Self::Error> {
         self.surface.update(|update| {
@@ -391,8 +400,67 @@ impl Backend for RatatuiBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy_terminal::prelude::TerminalSizing;
     use ratatui::style::Style;
+
+    pub(super) fn measure(surface: TerminalSurface, cell_size: Vec2) -> TerminalTexture {
+        use bevy_terminal::bevy::prelude::*;
+        use bevy_terminal::prelude::*;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            bevy::text::TextPlugin,
+        ))
+        .init_asset::<Image>()
+        .add_plugins(TerminalPlugin);
+        let font = app
+            .world_mut()
+            .resource_mut::<Assets<Font>>()
+            .add(Font::from_bytes(
+                include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf").to_vec(),
+            ));
+        let entity = app
+            .world_mut()
+            .spawn((
+                TerminalRenderer::new(surface),
+                TerminalRenderConfig {
+                    font: FontFaces::regular(font),
+                    sizing: TerminalSizing::Fixed {
+                        cell_size,
+                        font_size: 12.0,
+                    },
+                    ..default()
+                },
+            ))
+            .id();
+        for _ in 0..4 {
+            app.update();
+        }
+        let output = app.world().get::<TerminalTexture>(entity).unwrap().clone();
+        assert!(output.measured().is_some());
+        output
+    }
+
+    #[test]
+    fn geometry_adoption_rejects_other_surfaces_and_stale_resizes() {
+        let mut backend = RatatuiBackend::new(4, 2);
+        let measured = measure(backend.surface(), Vec2::new(10.0, 20.0));
+        let geometry = measured.measured().unwrap().clone();
+        assert!(backend.set_geometry(&geometry));
+        let mut unrelated = RatatuiBackend::new(4, 2);
+        assert!(!unrelated.set_geometry(&geometry));
+        backend.surface().update(|u| {
+            u.set_cell((0, 0), &TerminalCell::new("A"));
+        });
+        assert!(backend.set_geometry(&geometry));
+        backend.surface().update(|u| {
+            u.resize((8, 2));
+            u.resize((4, 2));
+        });
+        assert!(measured.measured().is_none());
+        assert!(!backend.set_geometry(&geometry));
+        assert_eq!(backend.window_size().unwrap().pixels, Size::default());
+    }
 
     #[test]
     fn plain_terminal_resizing_respects_viewport_policy() {
@@ -643,6 +711,7 @@ mod tests {
         assert_eq!(before.surface().snapshot()[(2, 1)].symbol(), "F");
     }
 
+    #[cfg(feature = "scrolling-regions")]
     #[test]
     fn scroll_regions_move_and_clear_rows() {
         let mut backend = RatatuiBackend::new(2, 3);
@@ -677,10 +746,18 @@ mod tests {
         assert_eq!(window_size.columns_rows, Size::new(2, 3));
         assert_eq!(window_size.pixels, Size::new(0, 0));
 
-        backend.set_pixel_size(UVec2::new(22, 60));
+        backend.set_geometry(
+            measure(backend.surface(), Vec2::new(11.0, 20.0))
+                .measured()
+                .unwrap(),
+        );
         assert_eq!(backend.window_size().unwrap().pixels, Size::new(22, 60));
         let mut other = RatatuiBackend::from_surface(backend.surface());
-        other.set_pixel_size(UVec2::new(44, 120));
+        other.set_geometry(
+            measure(other.surface(), Vec2::new(22.0, 40.0))
+                .measured()
+                .unwrap(),
+        );
         assert_eq!(backend.window_size().unwrap().pixels, Size::new(22, 60));
         assert_eq!(other.window_size().unwrap().pixels, Size::new(44, 120));
         backend.resize(3, 3);
@@ -738,30 +815,13 @@ mod tests {
 
     #[test]
     fn fit_to_resizes_the_grid_exactly_when_the_fit_changes() {
-        let (mut terminal, renderer) = RatatuiTerminal::new(4, 2).with_renderer();
-        let mut app = bevy_terminal::bevy::app::App::new();
-        app.init_resource::<bevy_terminal::bevy::asset::Assets<bevy_terminal::bevy::image::Image>>(
-        )
-        .add_plugins(bevy_terminal::prelude::TerminalPlugin);
-        let entity = app
-            .world_mut()
-            .spawn((
-                renderer,
-                bevy_terminal::prelude::TerminalRenderConfig {
-                    sizing: TerminalSizing::FitCellWidth(Vec2::new(10.0, 20.0)),
-                    ..Default::default()
-                },
-            ))
-            .id();
-        app.update();
-        let mut texture = app.world().get::<TerminalTexture>(entity).unwrap().clone();
-        assert_eq!(texture.cell_size, Vec2::new(10.0, 20.0));
-        assert!(!terminal.fit_to(&texture, Vec2::new(805.0, 245.0)));
-        // Supply authoritative geometry to exercise fitting independently of
-        // font availability; renderer measurement has its own integration tests.
-        texture.status = bevy_terminal::prelude::TerminalStatus::Ready;
+        let mut terminal = RatatuiTerminal::new(4, 2);
+        let texture = measure(terminal.surface(), Vec2::new(10.0, 20.0));
         assert!(terminal.fit_to(&texture, Vec2::new(805.0, 245.0)));
         assert_eq!(terminal.size().unwrap(), Size::new(80, 12));
+        // Old geometry is no longer authoritative after fitting resized the grid.
+        assert!(!terminal.fit_to(&texture, Vec2::new(5.0, 5.0)));
+        let texture = measure(terminal.surface(), Vec2::new(10.0, 20.0));
         assert!(!terminal.fit_to(&texture, Vec2::new(809.0, 259.0)));
         assert!(terminal.fit_to(&texture, Vec2::new(5.0, 5.0)));
         assert_eq!(terminal.size().unwrap(), Size::new(1, 1));
@@ -801,5 +861,28 @@ mod tests {
             })
             .unwrap();
         assert_eq!(surface.revision(), revision);
+    }
+}
+
+#[cfg(test)]
+mod audit_pixel_metrics {
+    use super::*;
+    #[test]
+    fn shared_resize_away_and_back_invalidates_pixels() {
+        let mut backend = RatatuiBackend::new(4, 2);
+        backend.set_geometry(
+            tests::measure(backend.surface(), Vec2::new(10.0, 20.0))
+                .measured()
+                .unwrap(),
+        );
+        let surface = backend.surface();
+        surface.update(|u| {
+            u.resize((8, 2));
+        });
+        assert_eq!(backend.window_size().unwrap().pixels, Size::new(0, 0));
+        surface.update(|u| {
+            u.resize((4, 2));
+        });
+        assert_eq!(backend.window_size().unwrap().pixels, Size::new(0, 0));
     }
 }

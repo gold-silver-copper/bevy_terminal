@@ -6,6 +6,8 @@ Backwards compatibility and breaking semver are not concerns. Recommend the best
 
 ## Establish the baseline
 
+Start in this repository: `crates/bevy_terminal` contains the core library, and the root package is `bevy_terminal_ratatui`. Verify that layout against the selected upstream revision before proceeding.
+
 Follow applicable AGENTS.md instructions. Inspect the working tree and repository layout, identify the upstream repositories for both libraries, and fetch their latest upstream `main`. Audit those revisions and record their commit hashes. If local changes exist, preserve them and use isolated checkouts for the upstream audit. Do not reset, discard, or overwrite existing work. Do not commit, push, create PRs, or comment on GitHub.
 
 Read the architecture, public APIs, implementation, tests, examples, documentation, feature flags, and benchmark adapters. Run appropriate baseline checks and distinguish existing failures from proposed improvements. Do not treat existing audit or implementation documents as established findings: validate their claims against the selected revisions.

@@ -48,7 +48,11 @@ fn main() {
     .add_observer(
         |ready: On<TerminalReady>, textures: Query<&TerminalTexture>| {
             let texture = textures.get(ready.entity).unwrap();
-            info!("terminal ready: {}x{} px", texture.size.x, texture.size.y);
+            info!(
+                "terminal ready: {}x{} px",
+                texture.measured().unwrap().size().x,
+                texture.measured().unwrap().size().y
+            );
         },
     )
     .add_observer(|event: On<TerminalRemeasured>| {

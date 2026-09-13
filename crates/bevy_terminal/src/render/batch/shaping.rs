@@ -1,7 +1,8 @@
 //! Glyph rasterization, shape lookup, and atlas storage.
+use super::metrics::column_coverage;
 use super::{
     GLYPH_ATLAS_SIZE, GLYPH_FORMAT, RasterMetrics, ResolvedStyle, TerminalRenderConfig,
-    TerminalStats, TextContext, column_coverage, text_font,
+    TerminalStats, TextContext, text_font,
 };
 use bevy::{
     platform::collections::HashMap,
@@ -11,8 +12,8 @@ use bevy::{
 use std::borrow::Cow;
 
 // Keep common terminal alphabets hot without retaining every grapheme ever
-// displayed. Excess runs are used for this draw only; no eviction machinery or
-// generation invalidation is needed because existing entries never move.
+// displayed. A full cache starts a fresh working set; individually oversized
+// runs remain uncached. No per-hit recency bookkeeping is needed.
 const MAX_SHAPE_ENTRIES: usize = 4096;
 const MAX_SHAPE_BYTES: usize = 4 * 1024 * 1024;
 
@@ -50,21 +51,25 @@ pub(super) fn shape_run(
         viewport,
         20.0,
     );
-    let shape_result = shape_result.and_then(|()| {
-        cx.text_pipeline.update_text_layout_info(
-            &mut layout,
-            cx.font_atlas_set,
-            cx.images,
-            &mut computed,
-            cx.scale_cx,
-            TextBounds::UNBOUNDED,
-            Justify::Left,
-            config.raster.hinting,
-        )
-    });
-    if let Err(error) = shape_result {
-        debug!("bevy_terminal: text shaping failed: {error}");
-        cx.failed = true;
+    let shape_result = shape_result
+        .map_err(|error| ("layout", error))
+        .and_then(|()| {
+            cx.text_pipeline
+                .update_text_layout_info(
+                    &mut layout,
+                    cx.font_atlas_set,
+                    cx.images,
+                    &mut computed,
+                    cx.scale_cx,
+                    TextBounds::UNBOUNDED,
+                    Justify::Left,
+                    config.raster.hinting,
+                )
+                .map_err(|error| ("rasterization", error))
+        });
+    if let Err((phase, error)) = shape_result {
+        cx.failure
+            .get_or_insert_with(|| format!("{phase} for {:?}: {error}", font.font));
         return None;
     }
     Some(layout)
@@ -186,6 +191,13 @@ impl UnifiedGlyphAtlas {
         };
 
         let mut atlas = images.get_mut(&self.image)?;
+        if atlas.width() != GLYPH_ATLAS_SIZE {
+            atlas.resize(bevy::render::render_resource::Extent3d {
+                width: GLYPH_ATLAS_SIZE,
+                height: GLYPH_ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            });
+        }
         let data = atlas.data.as_mut()?;
         let atlas_stride = GLYPH_ATLAS_SIZE as usize * 4;
         let row_bytes = source.width as usize * 4;
@@ -313,10 +325,14 @@ impl ShapeCaches {
                 .iter()
                 .map(|glyph| glyph.columns.capacity() * size_of::<u32>())
                 .sum::<usize>();
-        if self.entries.len() >= MAX_SHAPE_ENTRIES
-            || bytes > MAX_SHAPE_BYTES.saturating_sub(self.retained_bytes)
-        {
+        if bytes > MAX_SHAPE_BYTES {
             return Cow::Owned(glyphs);
+        }
+        if self.entries.len() >= MAX_SHAPE_ENTRIES || bytes > MAX_SHAPE_BYTES - self.retained_bytes
+        {
+            // Scene construction has already consumed earlier borrowed runs.
+            // Reset every lookup table with the entries so no index goes stale.
+            self.clear();
         }
         self.retained_bytes += bytes;
         let index = self.entries.len();
@@ -392,7 +408,7 @@ pub(super) fn cached_shape<'a>(
                 // Atlas texels must land on physical pixel boundaries. Bevy's layout positions
                 // can retain fractional shaping offsets even though the glyph bitmap is an
                 // integer-sized raster image.
-                (glyph.position - size * 0.5).map(super::super::snap),
+                (glyph.position - size * 0.5).map(super::metrics::snap),
                 size,
                 uv,
                 glyph.atlas_info.is_alpha_mask,
@@ -401,7 +417,8 @@ pub(super) fn cached_shape<'a>(
         })
         .collect::<Option<Vec<_>>>();
     let Some(cached) = cached else {
-        cx.failed = true;
+        cx.failure
+            .get_or_insert_with(|| format!("glyph atlas unavailable for {:?}", config.font));
         return Cow::Borrowed(&[]);
     };
     shapes.insert(style, text, cached)
@@ -412,7 +429,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cache_limits_preserve_existing_hits_and_return_excess_runs_uncached() {
+    fn cache_admits_new_working_sets_and_leaves_oversized_runs_uncached() {
         let style = ResolvedStyle::plain();
         let mut shapes = ShapeCaches::default();
         for index in 0..MAX_SHAPE_ENTRIES {
@@ -423,13 +440,12 @@ mod tests {
         }
         assert!(matches!(
             shapes.insert(&style, "overflow", Vec::new()),
-            Cow::Owned(_)
+            Cow::Borrowed(_)
         ));
-        assert_eq!(shapes.entries.len(), MAX_SHAPE_ENTRIES);
-        assert_eq!(shapes.lookup(&style, "symbol-0"), Some(0));
-        assert!(shapes.lookup(&style, "overflow").is_none());
+        assert_eq!(shapes.entries.len(), 1);
+        assert!(shapes.lookup(&style, "symbol-0").is_none());
+        assert_eq!(shapes.lookup(&style, "overflow"), Some(0));
 
-        shapes.clear();
         let glyph = CachedGlyph::new(
             AssetId::default(),
             Vec2::ZERO,
@@ -442,12 +458,16 @@ mod tests {
         assert!(matches!(excess, Cow::Owned(_)));
         assert_eq!(excess.len(), 1, "the run still renders in full");
         drop(excess);
-        assert!(shapes.entries.is_empty());
-        assert_eq!(shapes.retained_bytes, 0);
+        assert_eq!(
+            shapes.entries.len(),
+            1,
+            "an oversized run preserves the working set"
+        );
+        assert_eq!(shapes.lookup(&style, "overflow"), Some(0));
         assert!(matches!(
             shapes.insert(&style, "A", Vec::new()),
             Cow::Borrowed(_)
         ));
-        assert_eq!(shapes.lookup(&style, "A"), Some(0));
+        assert_eq!(shapes.lookup(&style, "A"), Some(1));
     }
 }

@@ -90,8 +90,11 @@ fn fit_to_window(
     let size = window.resolution.size();
     let mut status_width = 0.0;
     for (terminal, texture, mut node) in &mut terminals {
+        let Some(geometry) = texture.measured() else {
+            continue;
+        };
         if !terminal.surface().shares_state_with(&scenes.main) {
-            status_width = texture.logical_size.x;
+            status_width = geometry.logical_size().x;
             let left = (size.x - MARGIN - status_width).max(MARGIN);
             if node.left != px(left) {
                 node.left = px(left);
@@ -109,8 +112,11 @@ fn fit_to_window(
         size.y - MARGIN * 2.0,
     );
     for (terminal, texture, _) in &terminals {
+        let Some(geometry) = texture.measured() else {
+            continue;
+        };
         if terminal.surface().shares_state_with(&scenes.main) {
-            let grid = texture.grid_for(available);
+            let grid = geometry.grid_for(available);
             if scenes.main.size() != grid {
                 scenes.main.update(|update| {
                     update.resize(grid);

@@ -1,8 +1,9 @@
 //! CPU scene construction, glyph fitting, and quad geometry.
+use super::shaping::{CachedGlyph, ShapeCaches, UnifiedGlyphAtlas, cached_shape};
 use super::{
-    BatchScene, BlinkPhases, CachedGlyph, DrawBatch, PixelGeometry, QuadInstance, RasterMetrics,
-    ResolvedStyle, ShapeCaches, TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext,
-    UnifiedGlyphAtlas, cached_shape, cell_span, cursor_should_be_visible, terminal_pixel_size,
+    BatchScene, BlinkPhases, DrawBatch, PixelGeometry, QuadInstance, RasterMetrics, ResolvedStyle,
+    TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext, cell_span,
+    cursor_should_be_visible, terminal_pixel_size,
 };
 use bevy::prelude::*;
 
@@ -404,18 +405,18 @@ pub(super) fn fit_horizontally(glyphs: &[CachedGlyph], span: f32) -> f32 {
         0.0
     } else if right - left <= span {
         if left < 0.0 {
-            super::super::snap(-left)
+            super::metrics::snap(-left)
         } else if right > span {
-            super::super::snap(span - right)
+            super::metrics::snap(span - right)
         } else {
             0.0
         }
     } else {
         // Try every whole shift that keeps the run covering the span and keep the
         // one retaining the most coverage; ties resolve toward the centered shift.
-        let centered = super::super::snap((span - (right - left)) / 2.0 - left);
-        let lowest = super::super::snap(span - right);
-        let highest = super::super::snap(-left);
+        let centered = super::metrics::snap((span - (right - left)) / 2.0 - left);
+        let lowest = super::metrics::snap(span - right);
+        let highest = super::metrics::snap(-left);
         let retained = |shift: f32| -> u64 {
             glyphs
                 .iter()
@@ -556,10 +557,10 @@ pub(super) fn clip_glyph_to_cell(
 }
 
 pub(super) fn snap_geometry(geometry: PixelGeometry) -> PixelGeometry {
-    let left = super::super::snap(geometry.x);
-    let top = super::super::snap(geometry.y);
-    let right = super::super::snap(geometry.x + geometry.width).max(left);
-    let bottom = super::super::snap(geometry.y + geometry.height).max(top);
+    let left = super::metrics::snap(geometry.x);
+    let top = super::metrics::snap(geometry.y);
+    let right = super::metrics::snap(geometry.x + geometry.width).max(left);
+    let bottom = super::metrics::snap(geometry.y + geometry.height).max(top);
     PixelGeometry {
         x: left,
         y: top,

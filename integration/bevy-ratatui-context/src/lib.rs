@@ -66,13 +66,8 @@ mod tests {
         for _ in 0..4 {
             app.update();
         }
-        let initial = app
-            .world()
-            .get::<TerminalTexture>(entity)
-            .unwrap()
-            .measured()
-            .unwrap()
-            .clone();
+        let initial = app.world().get::<TerminalTexture>(entity).unwrap().clone();
+        let initial_size = initial.measured().unwrap().size();
         assert_eq!(surface.snapshot().row_text(0).trim_end(), "context");
         assert!(
             app.world()
@@ -91,23 +86,24 @@ mod tests {
                 .unwrap();
         }
         app.update();
-        let output = app
-            .world()
-            .get::<TerminalTexture>(entity)
-            .unwrap()
-            .measured()
-            .unwrap();
+        let output = app.world().get::<TerminalTexture>(entity).unwrap();
         assert_eq!(output.image, initial.image);
-        assert_ne!(output.size, initial.size);
+        assert_ne!(output.measured().unwrap().size(), initial_size);
+        assert!(
+            initial.measured().is_none(),
+            "a resize invalidates old output"
+        );
         assert_eq!(
             app.world().get::<ImageNode>(entity).unwrap().image,
             initial.image
         );
-        let pixels = output.size;
-        app.world_mut()
-            .resource_mut::<WindowedContext>()
-            .backend_mut()
-            .set_pixel_size(pixels);
+        let geometry = output.measured().unwrap().clone();
+        assert!(
+            app.world_mut()
+                .resource_mut::<WindowedContext>()
+                .backend_mut()
+                .set_geometry(&geometry)
+        );
         assert_eq!(surface.snapshot().row_text(0).trim_end(), "resized");
         assert!(app.world_mut().despawn(entity));
         WindowedContext::restore().unwrap();

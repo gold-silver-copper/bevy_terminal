@@ -159,7 +159,11 @@ Elements (U+2580..U+259F, shades excepted) use solid geometry to tile exactly.
 Resizing a surface (`SurfaceUpdate::resize`) preserves overlapping cells.
 The surface owns content, cursor, and revision metadata (`surface.info()`);
 presentation metrics belong to each renderer's `TerminalTexture`. Use its
-`measured()` accessor before driving layout. `status` identifies loading,
+`measured()` accessor before driving layout. It returns a `TerminalGeometry`
+with coherent logical/physical dimensions, scale, and source grid generation.
+Its accessors are `size()`, `logical_size()`, `cell_size()`, `font_size()`,
+`raster_scale()`, and `grid_for(available)`. A shared resize immediately makes
+old output unmeasured, including a resize back to the original dimensions. `status` identifies loading,
 missing resources, invalid sizing, font/shaping failures, and texture limits.
 Readiness is a measurement contract, not a GPU completion signal.
 
@@ -172,8 +176,8 @@ Readiness is a measurement contract, not a GPU completion signal.
   font_size }` specifies both sizes and clips glyphs beyond the cell.
   Values must be finite and positive. Surface grids are bounded by
   `TerminalSurface::MAX_CELLS`, and texture allocation respects device limits.
-  `TerminalTexture::cell_size` reports the
-  logical cell in use, `TerminalTexture::grid_for` / `render::grid_for` /
+  `TerminalGeometry::cell_size` reports the
+  logical cell in use, `TerminalGeometry::grid_for` / `render::grid_for` /
   `render::grid_for_window` compute the grid that fits a size, and
   `render::raster_scale_for_window` the physical/logical ratio for
   `TerminalRenderScale::Fixed`.
@@ -227,7 +231,9 @@ glyph, colors and a moving cursor) written directly through the surface API,
 using the repository's Iosevka Fixed faces when run from a checkout and the
 vendored JetBrains Mono Regular/Bold/Italic/BoldItalic faces under
 `assets/fonts/jetbrains-mono` (OFL) otherwise. `scene_export` writes the same textures
-headlessly under `target/bevy-terminal-qa/`.
+headlessly under `target/bevy-terminal-qa/`. It exits after saving one PNG for
+each static scene. The example waits for correctly sized, nonempty GPU readbacks;
+it does not assume a fixed number of frames is enough for font/image preparation.
 
 ## License
 

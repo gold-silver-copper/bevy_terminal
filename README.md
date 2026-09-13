@@ -12,9 +12,16 @@ compact Bevy renderer:
 | cell | `TerminalCell` (`CellSymbol` + `TerminalStyle` + occupancy) | one grid cell |
 | snapshot | `TerminalSnapshot` | owned copy of the grid the renderer reads incrementally |
 | terminal entity | `TerminalRenderer` + `TerminalRenderConfig` | one rendered terminal; add an `ImageNode` to show it |
-| texture | `TerminalTexture` | the renderer-owned `Rgba8UnormSrgb` image (stable handle), its size, cell size and font size |
+| texture | `TerminalTexture` | stable `Rgba8UnormSrgb` image handle, status, and validated `TerminalGeometry` through `measured()` |
 | config | `TerminalRenderConfig` | sizing (`TerminalSizing`), fonts, theme, cursor, blink, raster |
 | features | `ui`, `system_fonts` (both default), `3d` | UI `ImageNode` presentation; system font discovery; `TerminalWorldQuad` 3D presentation |
+
+Ratatui's extended scrolling-region backend methods are opt-in through the
+`scrolling-regions` feature. Leave it disabled when another backend in the
+same application implements only the standard Ratatui backend trait. Surface
+scrolling remains available independently of this feature. If the application
+needs those extended methods, enable the feature on `bevy_terminal_ratatui`
+so both the Ratatui trait and this backend's implementation enable them together.
 
 ## Compatibility
 
@@ -31,9 +38,9 @@ bevy_terminal_ratatui ──> bevy_terminal
                          └> ratatui
 ```
 
-The normal dependency list of the two crates together is only `bevy` and
-`ratatui`; there is no software framebuffer, Egui bridge, or external
-font/rendering engine in the runtime path.
+The runtime uses Bevy for rendering and Ratatui for widgets. The core also uses
+`bitflags` for style flags, `smol_str` for font-family names, and `skrifa` for
+font metrics, matching the version already used by Bevy's text pipeline.
 
 `RatatuiBackend` implements `ratatui::backend::Backend`. Each `draw` acquires
 the surface once, translates only the cells Ratatui submitted into neutral
@@ -236,7 +243,7 @@ fn setup(mut commands: Commands, window: Query<&Window>) {
 }
 
 // After renderer synchronization: fit the grid to the window at the current
-// cell size (`TerminalTexture::cell_size` is the logical cell the renderer
+// cell size (`TerminalGeometry::cell_size` is the logical cell the renderer
 // settled on), then draw as usual.
 fn fit(mut tui: Single<(&mut RatatuiTerminal, &TerminalTexture)>, window: Query<&Window>) {
     let (terminal, texture) = &mut *tui;
@@ -247,7 +254,7 @@ fn fit(mut tui: Single<(&mut RatatuiTerminal, &TerminalTexture)>, window: Query<
 ```
 
 `RatatuiTerminal::fit_to` resizes both the surface and Ratatui's
-buffers and returns whether the grid changed; `TerminalTexture::grid_for` and
+buffers and returns whether the grid changed; `TerminalGeometry::grid_for` and
 `render::grid_for_window` give the same computation without resizing.
 
 ## Windowed TUI setup
@@ -315,7 +322,7 @@ accented capitals fit when the font leaves room.
   ascender and descender pixels clip, which is the user's trade.
   Iosevka Fixed sized to an 11 px column is a 22 px font whose line box is 27
   px, so a requested 11×20 cell becomes 11×27; read the effective size from
-  `TerminalTexture::cell_size`. To keep an exact grid, choose `TerminalSizing::Fixed` (glyphs beyond it are clipped after the same fitting).
+  `TerminalGeometry::cell_size`. To keep an exact grid, choose `TerminalSizing::Fixed` (glyphs beyond it are clipped after the same fitting).
 - The font size is fitted to the *physical* cell width, so fractional raster
   scales (1.5×) do not open seams between advances.
 - Horizontally, a run wider than its cell (a fallback family with a larger
@@ -571,7 +578,7 @@ set because other Bevy text may still use it.
 | `RatatuiTerminal::new` / `from_backend` return a pair | Return `Self`; call `.with_renderer()` for the spawnable pair |
 | Infallible `draw` discards its result | Returns `ratatui::CompletedFrame` |
 | Separate `cell_size` and `font_size` sizing enums | `TerminalRenderConfig::sizing: TerminalSizing` |
-| Shared surface pixel metrics | Query the selected `TerminalTexture`; explicitly pass physical dimensions to `RatatuiBackend::set_pixel_size` when needed |
+| Shared surface pixel metrics | Pass the selected `TerminalTexture::measured()` value to `RatatuiBackend::set_geometry`; foreign surfaces and stale resize generations are rejected |
 | Readiness reconstructed from events | Query `TerminalTexture::measured()` and `status`; events remain available |
 | Wrapper required for resizing | Plain backends expose `resize`; call Ratatui `autoresize` for fullscreen/inline or `resize` for fixed viewports |
 

@@ -294,9 +294,9 @@ struct Options {
     tiles_only: bool,
 }
 
-/// Textures waiting for exporters (spawned a frame after `TerminalReady`).
+/// Measured textures queued for exporters; render-world preparation sizes buffers.
 #[derive(Resource, Default)]
-struct PendingExports(Vec<(Handle<Image>, String, u32)>);
+struct PendingExports(Vec<(Handle<Image>, String)>);
 
 /// One readback: the entity, the RGBA8 bytes (rows may be padded) and the size.
 type Capture = (Entity, Vec<u8>, UVec2);
@@ -398,6 +398,7 @@ fn main() {
     if export {
         app.add_plugins(export_plugin)
             .add_systems(Update, spawn_pending_exports);
+        common::export::gpu::install(&mut app);
     }
 
     // Spawn one primary terminal per family × scale.
@@ -477,7 +478,7 @@ static RESULT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(
 struct Drawn(RatatuiTerminal);
 
 /// The metrics the title was last drawn with, so it is redrawn only when they
-/// actually change (the texture component is written on every sync).
+/// actually change.
 #[derive(Component, Default)]
 struct TitledWith(Option<(Vec2, f32)>);
 
@@ -505,7 +506,7 @@ fn on_ready(
     let scale = case.scale;
     if options.export && !case.is_reference {
         let dir = format!("target/glyph-fidelity/{}/{}x", case.dir, scale);
-        pending.0.push((texture.image.clone(), dir, 1));
+        pending.0.push((texture.image.clone(), dir));
     }
     if options.check {
         if !case.is_reference && case.reference.is_none() {
@@ -520,8 +521,9 @@ fn on_ready(
                         renderer,
                         TerminalRenderConfig {
                             sizing: TerminalSizing::Fixed {
-                                cell_size: texture.cell_size + Vec2::new(6.0, 10.0),
-                                font_size: texture.font_size,
+                                cell_size: texture.measured().unwrap().cell_size()
+                                    + Vec2::new(6.0, 10.0),
+                                font_size: texture.measured().unwrap().font_size(),
                             },
                             font: faces,
                             raster: RasterConfig {
@@ -562,7 +564,12 @@ fn on_ready(
                     if frame.0 < 8 {
                         return;
                     }
-                    let size = textures.get(entity).map(|t| t.size).unwrap_or_default();
+                    let size = textures
+                        .get(entity)
+                        .ok()
+                        .and_then(TerminalTexture::measured)
+                        .map(|geometry| geometry.size())
+                        .unwrap_or_default();
                     let mut captures = captures.0.lock().unwrap();
                     captures.retain(|(e, ..)| *e != entity);
                     captures.push((entity, done.data.clone(), size));
@@ -583,7 +590,10 @@ fn refresh_titles(
     >,
 ) {
     for (case, texture, mut drawn, mut titled) in &mut cases {
-        let metrics = Some((texture.cell_size, texture.font_size));
+        let Some(geometry) = texture.measured() else {
+            continue;
+        };
+        let metrics = Some((geometry.cell_size(), geometry.font_size()));
         if case.is_reference || titled.0 == metrics {
             continue;
         }
@@ -597,20 +607,15 @@ fn spawn_pending_exports(
     mut pending: ResMut<PendingExports>,
     mut sources: ResMut<Assets<ImageExportSource>>,
 ) {
-    pending.0.retain_mut(|(handle, dir, frames)| {
-        if *frames > 0 {
-            *frames -= 1;
-            return true;
-        }
+    for (handle, dir) in pending.0.drain(..) {
         commands.spawn((
-            ImageExport(sources.add(handle.clone())),
+            ImageExport(sources.add(handle)),
             ImageExportSettings {
-                output_dir: dir.clone(),
+                output_dir: dir,
                 extension: "png".into(),
             },
         ));
-        false
-    });
+    }
 }
 
 /// Drives the headless run: exits after the exports/readbacks are done and
@@ -657,7 +662,11 @@ fn fit_to_window(
 ) {
     for (case, mut drawn) in &mut cases {
         if common::app::fit_grid_to_window(&mut drawn.0, &textures, &windows, MARGIN) {
-            let metrics = textures.single().ok().map(|t| (t.cell_size, t.font_size));
+            let metrics = textures
+                .single()
+                .ok()
+                .and_then(TerminalTexture::measured)
+                .map(|geometry| (geometry.cell_size(), geometry.font_size()));
             draw_harness(&mut drawn.0, case.family, case.scale, metrics);
         }
     }
@@ -911,8 +920,8 @@ fn run_checks(
         };
         let snapshot = renderer.surface().snapshot();
         let cell = UVec2::new(
-            (texture.cell_size.x * case.scale).round() as u32,
-            (texture.cell_size.y * case.scale).round() as u32,
+            (texture.measured().unwrap().cell_size().x * case.scale).round() as u32,
+            (texture.measured().unwrap().cell_size().y * case.scale).round() as u32,
         );
         let reference = case
             .reference
@@ -924,8 +933,8 @@ fn run_checks(
         // covers completely (measured on the solid tile's first cell).
         let line_box = reference.and_then(|(ref_data, ref_size, ref_texture)| {
             let ref_cell = UVec2::new(
-                (ref_texture.cell_size.x * case.scale).round() as u32,
-                (ref_texture.cell_size.y * case.scale).round() as u32,
+                (ref_texture.measured().unwrap().cell_size().x * case.scale).round() as u32,
+                (ref_texture.measured().unwrap().cell_size().y * case.scale).round() as u32,
             );
             block_rows(ref_data, *ref_size, ref_cell, tile_column(0), TILE_ROWS_A)
         });
@@ -953,8 +962,8 @@ fn run_checks(
                         continue;
                     };
                     let ref_cell = UVec2::new(
-                        (ref_texture.cell_size.x * case.scale).round() as u32,
-                        (ref_texture.cell_size.y * case.scale).round() as u32,
+                        (ref_texture.measured().unwrap().cell_size().x * case.scale).round() as u32,
+                        (ref_texture.measured().unwrap().cell_size().y * case.scale).round() as u32,
                     );
                     let expected = ink_of(ref_data, *ref_size, ref_cell, column, *row, span);
                     if ink.count == expected.count {

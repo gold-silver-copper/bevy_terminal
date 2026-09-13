@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 bevy.workspace = true
-bevy_terminal_ratatui = { path = "../../../.." }
+bevy_terminal_ratatui = { path = "../../../..", features = ["scrolling-regions"] }
 ratatui.workspace = true
 renderer-bench-sdk.workspace = true
 

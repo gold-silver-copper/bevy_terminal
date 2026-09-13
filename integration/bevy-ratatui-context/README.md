@@ -39,10 +39,10 @@ image copy. It does not test GPU completion, window events, or input forwarding.
    Configure `FontFaces` and `TerminalSizing` explicitly to select the intended
    appearance. The renderer supplies and retains the image handle.
 5. Replace bitmap `char_width`/`char_height` resizing with a query of that
-   entity's `TerminalTexture`. Use `texture.measured()` before fitting. Its
-   `cell_size` and `logical_size` are logical pixels; `size` is physical pixels
-   and `raster_scale` converts between those spaces. Compute
-   `texture.grid_for(available_logical_size)`, resize the backend when the grid
+   entity's `TerminalTexture`. Use `texture.measured()` before fitting. The returned geometry
+   has `cell_size()` and `logical_size()` in logical pixels, `size()` in physical
+   pixels, and `raster_scale()` converting between them. Compute
+   `geometry.grid_for(available_logical_size)`, resize the backend when the grid
    changes, then call the context's `autoresize()` to synchronize Ratatui's
    buffers. Fullscreen and inline viewports support this path; fixed viewports
    require an explicit `Terminal::resize` for their application-owned area.
@@ -52,7 +52,7 @@ image copy. It does not test GPU completion, window events, or input forwarding.
    that update's measurements. A resize it requests is rendered on the next
    sync; compare the grid before resizing to avoid a feedback loop.
 7. If Ratatui callers need `Backend::window_size().pixels`, pass the selected
-   renderer's measured physical `size` to `backend_mut().set_pixel_size(...)`
+   renderer's measured `TerminalGeometry` to `backend_mut().set_geometry(...)`
    after the resized output is measured. Shared content can have several
    presentations, so the backend owner chooses which one's metrics it reports.
 

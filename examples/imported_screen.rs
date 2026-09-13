@@ -91,7 +91,11 @@ fn main() {
             let Ok(texture) = textures.get(ready.entity) else {
                 return;
             };
-            info!("screen ready: {}x{} px", texture.size.x, texture.size.y);
+            info!(
+                "screen ready: {}x{} px",
+                texture.measured().unwrap().size().x,
+                texture.measured().unwrap().size().y
+            );
             let material = materials.add(StandardMaterial {
                 base_color_texture: Some(texture.image.clone()),
                 emissive_texture: Some(texture.image.clone()),

@@ -1,0 +1,460 @@
+{
+  "baseline": "0042ac5b8fbaa3871a1cf61c659769c739123d79",
+  "library": [
+    {
+      "name": "format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 0.73
+    },
+    {
+      "name": "check",
+      "command": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 10.34
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 9.18
+    },
+    {
+      "name": "tests",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--lib",
+        "--tests",
+        "--locked"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 16.0
+    },
+    {
+      "name": "doctests",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--doc",
+        "--locked"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 7.4
+    },
+    {
+      "name": "docs",
+      "command": [
+        "cargo",
+        "doc",
+        "--workspace",
+        "--all-features",
+        "--no-deps",
+        "--locked"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 136.65,
+      "environment": {
+        "RUSTDOCFLAGS": "-D warnings"
+      }
+    },
+    {
+      "name": "core-export",
+      "command": [
+        "cargo",
+        "run",
+        "-p",
+        "bevy_terminal",
+        "--all-features",
+        "--locked",
+        "--example",
+        "scene_export"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 312.04
+    },
+    {
+      "name": "gpu",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--test",
+        "gpu_readback",
+        "--test",
+        "export_readiness",
+        "--locked",
+        "--",
+        "--ignored",
+        "--test-threads=1"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 35.54
+    },
+    {
+      "name": "fidelity-fixed",
+      "command": [
+        "cargo",
+        "run",
+        "--all-features",
+        "--locked",
+        "--example",
+        "glyph_fidelity",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 1,
+      "seconds": 95.71
+    },
+    {
+      "name": "fidelity-from-font",
+      "command": [
+        "cargo",
+        "run",
+        "--all-features",
+        "--locked",
+        "--example",
+        "glyph_fidelity",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--from-font",
+        "23.0",
+        "--tiles-only"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 32.2
+    }
+  ],
+  "additional": [
+    {
+      "name": "minimal",
+      "command": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--no-default-features",
+        "--lib",
+        "--locked"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 9.38
+    },
+    {
+      "name": "ui",
+      "command": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--no-default-features",
+        "--features",
+        "ui",
+        "--lib",
+        "--locked"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 7.86
+    },
+    {
+      "name": "3d",
+      "command": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--no-default-features",
+        "--features",
+        "3d",
+        "--lib",
+        "--locked"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 7.88
+    },
+    {
+      "name": "system-fonts",
+      "command": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--no-default-features",
+        "--features",
+        "system_fonts",
+        "--lib",
+        "--locked"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 137.86
+    },
+    {
+      "name": "scrolling-regions",
+      "command": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--no-default-features",
+        "--features",
+        "scrolling-regions",
+        "--lib",
+        "--locked"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 9.01
+    },
+    {
+      "name": "context",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "integration/bevy-ratatui-context/Cargo.toml",
+        "--locked"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 12.08
+    },
+    {
+      "name": "context-windowed",
+      "command": [
+        "cargo",
+        "check",
+        "--manifest-path",
+        "integration/bevy-ratatui-context/Cargo.toml",
+        "--features",
+        "consumer-windowed",
+        "--locked"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 8.35
+    },
+    {
+      "name": "native-consumer",
+      "command": [
+        "cargo",
+        "check",
+        "--lib",
+        "--no-default-features",
+        "--features",
+        "std,crossterm",
+        "--locked"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_ratatui",
+      "exit": 0,
+      "seconds": 28.27
+    },
+    {
+      "name": "ratty-format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/ratty-terminal-main",
+      "exit": 0,
+      "seconds": 0.19
+    },
+    {
+      "name": "ratty-check",
+      "command": [
+        "cargo",
+        "check",
+        "--all-targets",
+        "--locked",
+        "--config",
+        "patch.\"https://github.com/gold-silver-copper/bevy_terminal\".bevy_terminal_ratatui.path=\"/Users/kisaczka/Desktop/code/bevy_grid\""
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/ratty-terminal-main",
+      "exit": 0,
+      "seconds": 10.19
+    },
+    {
+      "name": "ratty-tests",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--lib",
+        "--locked",
+        "--config",
+        "patch.\"https://github.com/gold-silver-copper/bevy_terminal\".bevy_terminal_ratatui.path=\"/Users/kisaczka/Desktop/code/bevy_grid\""
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/ratty-terminal-main",
+      "exit": 0,
+      "seconds": 550.82
+    },
+    {
+      "name": "benchmark-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "benchmarks/audit-workloads/Cargo.toml",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid",
+      "exit": 0,
+      "seconds": 512.81
+    }
+  ],
+  "fidelity_comparison": {
+    "fixed": {
+      "baseline_groups": 100,
+      "changed_groups": 100,
+      "baseline_failures": 66,
+      "changed_failures": 66,
+      "identical_group_results": true,
+      "new_or_changed_results": [],
+      "removed_or_changed_results": [],
+      "entire_printed_report_identical": true
+    },
+    "from-font": {
+      "baseline_groups": 24,
+      "changed_groups": 24,
+      "baseline_failures": 0,
+      "changed_failures": 0,
+      "identical_group_results": true,
+      "new_or_changed_results": [],
+      "removed_or_changed_results": [],
+      "entire_printed_report_identical": true
+    }
+  },
+  "ratty_gpu_smoke": {
+    "captures": {
+      "font-natural": {
+        "width": 1210,
+        "height": 660,
+        "stale_cells": 0
+      },
+      "font-compact": {
+        "width": 1210,
+        "height": 570,
+        "stale_cells": 0
+      },
+      "missing-family": {
+        "width": 1210,
+        "height": 600,
+        "stale_cells": 0
+      },
+      "scene-child-exit": {
+        "width": 1100,
+        "height": 760,
+        "stale_cells": 0
+      },
+      "document-inline": {
+        "width": 1100,
+        "height": 760,
+        "stale_cells": 0
+      },
+      "styles-end": {
+        "width": 1210,
+        "height": 660,
+        "stale_cells": 0
+      },
+      "scroll-30-rows": {
+        "width": 1210,
+        "height": 660,
+        "stale_cells": 0
+      }
+    },
+    "failures": [],
+    "visual_review": "All seven PNGs inspected: inline images, text styles, joins, compact line height, fallback, and final scrolled contents."
+  },
+  "extra_checks": [
+    {
+      "command": [
+        "cargo",
+        "check",
+        "--manifest-path",
+        "benchmarks/renderer-comparison/Cargo.toml",
+        "-p",
+        "bench-bevy-terminal-ratatui",
+        "--locked"
+      ],
+      "exit": 0,
+      "log": "/tmp/terminal-comparison-adapter.log"
+    },
+    {
+      "command": [
+        "cargo",
+        "package",
+        "-p",
+        "bevy_terminal",
+        "--allow-dirty",
+        "--no-verify",
+        "--offline"
+      ],
+      "exit": 0,
+      "log": "/tmp/terminal-export-final/core-package.log",
+      "inspection": "Archive contains self-contained scene_export.rs and no exporter dev-dependency."
+    },
+    {
+      "command": [
+        "cargo",
+        "package",
+        "--list",
+        "--allow-dirty",
+        "--offline"
+      ],
+      "exit": 0,
+      "log": "/tmp/terminal-root-package-list.log",
+      "inspection": "Audit documents/verification records and benchmark directories excluded."
+    }
+  ],
+  "ci": "Configured locally; no remote CI run created."
+}

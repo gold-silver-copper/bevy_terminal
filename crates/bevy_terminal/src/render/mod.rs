@@ -6,10 +6,7 @@
 use bevy::{
     ecs::schedule::SystemSet,
     prelude::*,
-    text::{
-        ComputedTextBlock, FontCx, FontHinting, FontSource, FontStyle, FontWeight, LayoutCx,
-        LetterSpacing, LineHeight, TextPipeline,
-    },
+    text::{FontHinting, FontSource, FontStyle, FontWeight},
 };
 
 use crate::scene::{StyleFlags, TerminalCell, TerminalSnapshot};
@@ -26,8 +23,8 @@ pub use color::TerminalTheme;
 use color::dim;
 pub use fonts::{SmolStr, TerminalFonts, font_family};
 pub use terminal::{
-    TerminalReady, TerminalRemeasured, TerminalRenderer, TerminalStats, TerminalStatus,
-    TerminalTexture, grid_for, grid_for_window, raster_scale_for_window,
+    TerminalGeometry, TerminalReady, TerminalRemeasured, TerminalRenderer, TerminalStats,
+    TerminalStatus, TerminalTexture, grid_for, grid_for_window, raster_scale_for_window,
 };
 #[cfg(feature = "3d")]
 pub use world_quad::TerminalWorldQuad;
@@ -259,201 +256,6 @@ impl Default for TerminalSizing {
     }
 }
 
-/// Number of probe glyphs shaped by [`measure_advance`].
-const PROBE_GLYPHS: usize = 100;
-/// Font size in logical pixels used to shape the probe run.
-pub(crate) const PROBE_FONT_SIZE: f32 = 64.0;
-/// Font size used while [`TerminalSizing::FitCellWidth`] has not been measured yet.
-const UNMEASURED_FONT_SIZE: f32 = 16.0;
-
-/// Measures the average advance of the regular font at [`PROBE_FONT_SIZE`] by
-/// shaping a run of `0` glyphs; returns `None` until the font can be shaped.
-fn measure_advance(
-    faces: &FontFaces,
-    fonts: &Assets<Font>,
-    text_pipeline: &mut TextPipeline,
-    font_cx: &mut FontCx,
-    layout_cx: &mut LayoutCx,
-) -> Option<f32> {
-    // A font asset is only usable once Bevy has registered it with the font
-    // context (which assigns its alias); measuring before that would shape a
-    // fallback font. Report "not yet" so the caller retries next frame.
-    if let FontSource::Handle(handle) = &faces.regular
-        && fonts
-            .get(handle.id())
-            .is_none_or(|font| font.alias.is_empty())
-    {
-        return None;
-    }
-    let font = TextFont {
-        font: faces.regular.clone(),
-        font_size: PROBE_FONT_SIZE.into(),
-        ..default()
-    };
-    let probe = "0".repeat(PROBE_GLYPHS);
-    let mut computed = ComputedTextBlock::default();
-    let measure = text_pipeline
-        .create_text_measure(
-            Entity::PLACEHOLDER,
-            fonts,
-            std::iter::once((
-                Entity::PLACEHOLDER,
-                0,
-                probe.as_str(),
-                &font,
-                Color::WHITE,
-                LineHeight::Px(PROBE_FONT_SIZE),
-                LetterSpacing::default(),
-            )),
-            1.0,
-            &TextLayout::new(Justify::Left, LineBreak::NoWrap),
-            &mut computed,
-            font_cx,
-            layout_cx,
-            Vec2::new(f32::MAX, f32::MAX),
-            20.0,
-        )
-        .ok()?;
-    let advance = measure.max.x / PROBE_GLYPHS as f32;
-    (advance.is_finite() && advance > 0.0).then_some(advance)
-}
-
-/// Logical metrics resolved from a configuration and a measured advance.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct LogicalMetrics {
-    /// Logical font size to rasterize with.
-    pub(crate) font_size: f32,
-    /// Logical cell size.
-    pub(crate) cell_size: Vec2,
-}
-
-/// Resolves the logical font and cell size for `config`.
-///
-/// `measured_advance` is the regular font's advance at [`PROBE_FONT_SIZE`]
-/// (`None` until it could be measured).
-fn resolve_metrics(config: &TerminalRenderConfig, measured_advance: Option<f32>) -> LogicalMetrics {
-    let advance_per_px = measured_advance.map(|advance| advance / PROBE_FONT_SIZE);
-    match config.sizing {
-        TerminalSizing::Fixed {
-            cell_size,
-            font_size,
-        } => LogicalMetrics {
-            font_size: font_size.max(1.0),
-            cell_size,
-        },
-        TerminalSizing::FitCellWidth(cell_size) => LogicalMetrics {
-            font_size: advance_per_px
-                .map_or(UNMEASURED_FONT_SIZE, |ratio| (cell_size.x / ratio).max(1.0)),
-            cell_size,
-        },
-        TerminalSizing::FromFont { font_size, .. } => {
-            let font_size = font_size.max(1.0);
-            let cell_size = advance_per_px.map_or(Vec2::ONE, |ratio| {
-                Vec2::new((ratio * font_size).max(1.0), 1.0)
-            });
-            LogicalMetrics {
-                font_size,
-                cell_size,
-            }
-        }
-    }
-}
-
-/// Vertical ink extents of a shaped probe run, in physical pixels measured
-/// from the top of a cell-height line box (`top` may be negative and `bottom`
-/// may exceed the cell height when the run does not fit).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct GlyphBox {
-    pub(crate) top: f32,
-    pub(crate) bottom: f32,
-}
-
-impl GlyphBox {
-    /// Height of the box in pixels.
-    pub(crate) fn height(self) -> f32 {
-        self.bottom - self.top
-    }
-
-    /// Union of two boxes.
-    pub(crate) fn union(self, other: GlyphBox) -> GlyphBox {
-        GlyphBox {
-            top: self.top.min(other.top),
-            bottom: self.bottom.max(other.bottom),
-        }
-    }
-}
-
-/// Cell height (whole physical pixels) that shows the primary font's line
-/// box: the configured height, grown to the full block glyph's box when that
-/// is taller. Font-driven cells start from the font's own line box (ascent +
-/// descent + leading, read from its metrics tables), so a font whose block
-/// glyph is shorter than its line box (DejaVu Sans Mono, Menlo) still gets a
-/// row tall enough for its ascenders and descenders.
-pub(crate) fn fitted_cell_height(cell_height: f32, block: Option<GlyphBox>) -> f32 {
-    block
-        .map(|block| block.height().ceil())
-        .filter(|height| *height > cell_height)
-        .unwrap_or(cell_height)
-}
-
-/// Uniform vertical shift (whole physical pixels) applied to every glyph of a
-/// terminal, chosen from measured boxes in priority order:
-///
-/// 1. a full block that is at least cell-high keeps covering the cell (tiles of
-///    blocks stay seamless);
-/// 2. the `core` ink box (ASCII ascenders, descenders and brackets) stays
-///    inside the cell;
-/// 3. the `accents` ink box (accented capitals) stays inside the cell.
-///
-/// Within the freedom left by higher priorities the core box is centered. A
-/// box that cannot fit at all is skipped, so an accent designed to overshoot
-/// the line box clips at the top rather than pushing descenders out.
-pub(crate) fn vertical_offset(
-    cell_height: f32,
-    block: Option<GlyphBox>,
-    core: Option<GlyphBox>,
-    accents: Option<GlyphBox>,
-) -> f32 {
-    let mut low = f32::NEG_INFINITY;
-    let mut high = f32::INFINITY;
-    let mut narrow = |range_low: f32, range_high: f32| {
-        if range_low <= high && range_high >= low {
-            low = low.max(range_low);
-            high = high.min(range_high);
-        }
-    };
-    if let Some(block) = block
-        && block.height() >= cell_height
-    {
-        narrow(cell_height - block.bottom, -block.top);
-    }
-    for ink in [core, accents].into_iter().flatten() {
-        if ink.height() <= cell_height {
-            narrow(-ink.top, cell_height - ink.bottom);
-        }
-    }
-    let target = core
-        .or(accents)
-        .map_or(0.0, |ink| (cell_height - ink.height()) / 2.0 - ink.top);
-    if low.is_finite() && high.is_finite() {
-        snap(target.clamp(low, high))
-    } else if low.is_finite() {
-        snap(target.max(low))
-    } else if high.is_finite() {
-        snap(target.min(high))
-    } else {
-        snap(target)
-    }
-}
-
-/// Rounds to the nearest whole pixel, halves toward +∞ — unlike
-/// `f32::round`, which rounds halves away from zero and would shift a glyph
-/// at `-0.5` and one at `+0.5` in opposite directions, so an integer
-/// translation of a whole layout stays an integer translation of every glyph.
-pub(crate) fn snap(value: f32) -> f32 {
-    (value + 0.5).floor()
-}
-
 /// Selects the physical resolution used by the renderer.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum TerminalRenderScale {
@@ -640,6 +442,9 @@ impl ResolvedStyle {
 
 #[cfg(test)]
 mod tests {
+    use super::batch::metrics::{
+        GlyphBox, fitted_cell_height, resolve_metrics, snap, vertical_offset,
+    };
     use super::*;
     use crate::scene::{TerminalColor, TerminalStyle};
 
@@ -861,10 +666,7 @@ mod tests {
         let fitted = resolve_metrics(&config, Some(38.4));
         assert!((fitted.font_size - 11.0 / 0.6).abs() < 1e-3);
         assert_eq!(fitted.cell_size, Vec2::new(11.0, 20.0));
-        assert_eq!(
-            resolve_metrics(&config, None).font_size,
-            UNMEASURED_FONT_SIZE
-        );
+        assert_eq!(resolve_metrics(&config, None).font_size, 16.0);
         let explicit = TerminalRenderConfig {
             sizing: TerminalSizing::Fixed {
                 cell_size: Vec2::new(11.0, 20.0),
