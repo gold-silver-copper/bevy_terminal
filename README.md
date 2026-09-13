@@ -12,9 +12,12 @@ it does not emulate a terminal, manage a PTY, or forward input.
 | `bevy_terminal` | Shared terminal surface, font measurement, rendering, output geometry |
 | `bevy_terminal_ratatui` | Ratatui backend and optional ergonomic terminal wrapper |
 
-This checkout targets Bevy 0.19, Ratatui 0.30.2, and Rust 1.95 or newer. The API
-below describes this checkout; a matching published release is required before
-using it from crates.io.
+Version 0.7.4 targets Bevy 0.19, Ratatui 0.30.2, and Rust 1.95 or newer.
+
+```toml
+[dependencies]
+bevy_terminal_ratatui = "0.7.4"
+```
 
 ## Drawing and rendering
 
@@ -197,6 +200,9 @@ cargo run --example multiple_terminals_export
 `colors_rgb` ports Ratatui's animated RGB example and redraws every cell on
 every frame, making it a live renderer-throughput stress test. Its title bar
 reports the fitted grid size and per-frame renderer statistics.
+
+The fidelity harnesses and their multi-font fixtures are repository-only; run
+the commands below from a Git checkout. They are excluded from the crates.io package.
 
 `glyph_fidelity` is the clipping/seam harness: full printable ASCII in four
 faces, Latin-1/Extended-A, Greek, Cyrillic, combining-mark stacks, all box
