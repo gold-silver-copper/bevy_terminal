@@ -6,7 +6,7 @@ use super::{
     shaping::*,
 };
 use crate::render::TerminalSizing;
-use crate::render::{grid_for, grid_for_window, raster_scale_for_window};
+use crate::render::grid_for;
 use crate::scene::{GridSize, TerminalCell, TerminalStyle};
 
 fn quad(value: f32) -> QuadInstance {
@@ -329,7 +329,7 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
 }
 
 #[test]
-fn idle_output_does_not_report_changes_and_late_ui_is_presented() {
+fn idle_output_is_stable_and_application_ui_is_untouched() {
     #[derive(Resource, Default)]
     struct Changes(usize);
     let mut app = text_app();
@@ -352,36 +352,31 @@ fn idle_output_does_not_report_changes_and_late_ui_is_presented() {
         app.update();
     }
     assert_eq!(app.world().resource::<Changes>().0, 0);
-    #[cfg(feature = "ui")]
-    {
-        app.world_mut()
-            .entity_mut(entity)
-            .insert((Node::default(), ImageNode::default()));
-        app.update();
-        let output = app.world().get::<TerminalTexture>(entity).unwrap();
-        let image = app.world().get::<ImageNode>(entity).unwrap();
-        let node = app.world().get::<Node>(entity).unwrap();
-        assert_eq!(image.image, output.image);
-        assert_eq!(node.width, px(output.geometry.logical_size().x));
-
-        #[derive(Resource, Default)]
-        struct UiChanges(usize);
-        type UiChanged = Or<(Changed<Node>, Changed<ImageNode>)>;
-        app.init_resource::<UiChanges>().add_systems(
-            Update,
-            (|changed: Query<Entity, UiChanged>, mut changes: ResMut<UiChanges>| {
-                changes.0 += changed.iter().count();
-            })
-            .after(super::super::TerminalSystems::Sync),
-        );
-        app.update();
-        app.world_mut().resource_mut::<UiChanges>().0 = 0;
-        for _ in 0..2 {
-            app.update();
-        }
-        assert_eq!(app.world().resource::<UiChanges>().0, 0);
-    }
-    let _ = entity;
+    // UI is application-owned even if its components share the renderer entity.
+    let image_node = ImageNode::default();
+    let image_handle = image_node.image.clone();
+    app.world_mut().entity_mut(entity).insert((
+        Node {
+            width: px(123.0),
+            height: px(45.0),
+            ..default()
+        },
+        image_node,
+    ));
+    app.update();
+    assert!(
+        app.world()
+            .get::<TerminalTexture>(entity)
+            .unwrap()
+            .measured()
+            .is_some()
+    );
+    assert_eq!(app.world().get::<Node>(entity).unwrap().width, px(123.0));
+    assert_eq!(app.world().get::<Node>(entity).unwrap().height, px(45.0));
+    assert_eq!(
+        app.world().get::<ImageNode>(entity).unwrap().image,
+        image_handle
+    );
 }
 
 #[test]
@@ -649,7 +644,7 @@ fn config_changes_rebuild_but_unrelated_changes_keep_the_shape_cache() {
 }
 
 #[test]
-fn resizing_keeps_the_texture_handle_and_updates_the_ui_node() {
+fn resizing_keeps_the_texture_handle_without_modifying_application_layout() {
     let mut app = text_app();
     let surface = TerminalSurface::new((4, 2));
     write_text(&surface, "abcd");
@@ -671,11 +666,11 @@ fn resizing_keeps_the_texture_handle_and_updates_the_ui_node() {
     let texture = app.world().get::<TerminalTexture>(entity).unwrap().clone();
     assert_eq!(texture.geometry.size(), UVec2::new(40, 40));
     let node = app.world().get::<Node>(entity).unwrap();
-    assert_eq!(node.width, px(40.0));
-    assert_eq!(node.height, px(40.0));
+    assert_eq!(node.width, Val::Auto);
+    assert_eq!(node.height, Val::Auto);
     assert_eq!(
         app.world().get::<ImageNode>(entity).unwrap().image,
-        texture.image
+        ImageNode::default().image
     );
 
     surface.update(|update| {
@@ -693,8 +688,8 @@ fn resizing_keeps_the_texture_handle_and_updates_the_ui_node() {
     assert_eq!(image.width(), 80);
     assert_eq!(image.height(), 60);
     let node = app.world().get::<Node>(entity).unwrap();
-    assert_eq!(node.width, px(80.0));
-    assert_eq!(node.height, px(60.0));
+    assert_eq!(node.width, Val::Auto);
+    assert_eq!(node.height, Val::Auto);
 
     surface.update(|update| {
         update.resize((2, 1));
@@ -797,12 +792,7 @@ fn font_driven_cells_measure_the_embedded_font() {
 
 #[test]
 fn font_driven_cells_wait_for_a_loading_handle_before_ready() {
-    #[derive(Resource, Default)]
-    struct Ready(usize);
-
     let mut app = text_app();
-    app.init_resource::<Ready>()
-        .add_observer(|_: On<TerminalReady>, mut ready: ResMut<Ready>| ready.0 += 1);
     let regular = Handle::<Font>::from(bevy::asset::uuid::Uuid::from_u128(0x5241_5454_5901));
     let entity = app
         .world_mut()
@@ -822,7 +812,13 @@ fn font_driven_cells_wait_for_a_loading_handle_before_ready() {
     for _ in 0..2 {
         app.update();
     }
-    assert_eq!(app.world().resource::<Ready>().0, 0);
+    assert!(
+        app.world()
+            .get::<TerminalTexture>(entity)
+            .unwrap()
+            .measured()
+            .is_none()
+    );
     let state = app.world().get::<BatchMainState>(entity).unwrap();
     assert!(state.measured_advance.is_none());
     assert!(
@@ -844,7 +840,13 @@ fn font_driven_cells_wait_for_a_loading_handle_before_ready() {
         app.update();
     }
 
-    assert_eq!(app.world().resource::<Ready>().0, 1);
+    assert!(
+        app.world()
+            .get::<TerminalTexture>(entity)
+            .unwrap()
+            .measured()
+            .is_some()
+    );
     let texture = app.world().get::<TerminalTexture>(entity).unwrap();
     assert!((texture.geometry.cell_size().x - 12.0).abs() < 0.05);
     assert!((texture.geometry.cell_size().y - 27.0).abs() < 0.05);
@@ -1171,17 +1173,6 @@ fn grid_and_scale_helpers() {
         grid_for(Vec2::ZERO, Vec2::new(10.0, 20.0)),
         GridSize::new(1, 1)
     );
-    let mut window = Window::default();
-    window.resolution.set_scale_factor(2.0);
-    window.resolution.set(1200.0, 800.0);
-    assert_eq!(window.resolution.size(), Vec2::new(1200.0, 800.0));
-    assert_eq!(
-        grid_for_window(&window, Vec2::new(10.0, 20.0)),
-        GridSize::new(120, 40)
-    );
-    assert!((raster_scale_for_window(&window) - 2.0).abs() < 1e-4);
-    window.resolution.set_scale_factor(0.5);
-    assert!((raster_scale_for_window(&window) - 1.0).abs() < 1e-4);
 }
 
 #[test]
@@ -1195,12 +1186,6 @@ fn missing_text_resources_never_report_measured_geometry() {
     let output = app.world().get::<TerminalTexture>(entity).unwrap();
     assert_eq!(output.status, TerminalStatus::MissingTextResources);
     assert!(output.measured().is_none());
-    assert!(
-        !app.world()
-            .get::<BatchMainState>(entity)
-            .unwrap()
-            .ready_sent
-    );
 }
 
 #[test]
@@ -1262,89 +1247,40 @@ fn invalid_and_oversized_geometry_is_observable_and_can_recover() {
 }
 
 #[test]
-fn terminal_ready_fires_once_per_terminal() {
-    #[derive(Resource, Default)]
-    struct Ready(Vec<(Entity, UVec2)>);
+fn late_consumer_observes_current_geometry_and_resizes_keep_the_image() {
     let mut app = text_app();
-    app.init_resource::<Ready>().add_observer(
-        |ready: On<TerminalReady>, mut seen: ResMut<Ready>, textures: Query<&TerminalTexture>| {
-            let size = textures
-                .get(ready.entity)
-                .map_or(UVec2::ZERO, |t| t.geometry.size());
-            seen.0.push((ready.entity, size));
-        },
-    );
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(TerminalSurface::new((4, 2))))
-        .id();
-    app.update();
-    app.update();
-    app.update();
-    let seen = &app.world().resource::<Ready>().0;
-    assert_eq!(seen.len(), 1);
-    assert_eq!(seen[0].0, entity);
-    let texture = app.world().get::<TerminalTexture>(entity).unwrap();
-    assert_eq!(texture.geometry.size(), seen[0].1);
-    assert!(texture.measured().is_some());
-}
-
-#[test]
-fn terminal_remeasured_fires_on_resizes_after_ready() {
-    #[derive(Resource, Default)]
-    struct Seen(Vec<(UVec2, UVec2)>);
-    let mut app = text_app();
-    app.init_resource::<Seen>().add_observer(
-        |event: On<TerminalRemeasured>, mut seen: ResMut<Seen>| {
-            seen.0.push((event.previous_size, event.size));
-        },
-    );
     let surface = TerminalSurface::new((4, 2));
     let entity = app
         .world_mut()
         .spawn(TerminalRenderer::new(surface.clone()))
         .id();
-    app.update();
-    app.update();
-    assert!(
-        app.world().resource::<Seen>().0.is_empty(),
-        "settling is not a re-measure"
-    );
-    let initial = app
-        .world()
-        .get::<TerminalTexture>(entity)
-        .unwrap()
-        .geometry
-        .size();
+    for _ in 0..4 {
+        app.update();
+    }
+    let initial = app.world().get::<TerminalTexture>(entity).unwrap().clone();
+    assert!(initial.measured().is_some());
     surface.update(|update| {
         update.resize((8, 3));
     });
-    app.update();
-    let texture = app.world().get::<TerminalTexture>(entity).unwrap();
-    assert_ne!(texture.geometry.size(), initial);
-    assert_eq!(
-        app.world().resource::<Seen>().0,
-        vec![(initial, texture.geometry.size())]
+    assert!(
+        initial.measured().is_none(),
+        "a resize immediately invalidates old geometry"
     );
     app.update();
+    let resized = app.world().get::<TerminalTexture>(entity).unwrap().clone();
+    assert_eq!(resized.image, initial.image);
+    assert_eq!(resized.measured().unwrap().grid(), GridSize::new(8, 3));
+    assert_ne!(resized.geometry.size(), initial.geometry.size());
+    app.update();
     assert_eq!(
-        app.world().resource::<Seen>().0.len(),
-        1,
-        "no event without a resize"
+        app.world().get::<TerminalTexture>(entity).unwrap(),
+        &resized
     );
 }
 
 #[test]
-fn terminal_remeasured_fires_when_only_logical_metrics_change() {
-    #[derive(Resource, Default)]
-    struct Seen(Vec<(UVec2, UVec2, Vec2)>);
+fn measured_output_changes_when_only_logical_metrics_change() {
     let mut app = text_app();
-    app.init_resource::<Seen>().add_observer(
-        |event: On<TerminalRemeasured>, mut seen: ResMut<Seen>| {
-            seen.0
-                .push((event.previous_size, event.size, event.cell_size));
-        },
-    );
     let regular = app
         .world_mut()
         .resource_mut::<Assets<Font>>()
@@ -1363,7 +1299,7 @@ fn terminal_remeasured_fires_when_only_logical_metrics_change() {
                 },
                 font: super::super::FontFaces::regular(regular),
                 raster: super::super::RasterConfig {
-                    scale: TerminalRenderScale::Fixed(1.0),
+                    scale: 1.0,
                     ..default()
                 },
                 ..default()
@@ -1374,12 +1310,11 @@ fn terminal_remeasured_fires_when_only_logical_metrics_change() {
         app.update();
     }
     let initial = app.world().get::<TerminalTexture>(entity).unwrap().clone();
-    assert!(app.world().resource::<Seen>().0.is_empty());
     app.world_mut()
         .get_mut::<TerminalRenderConfig>(entity)
         .unwrap()
         .raster
-        .scale = TerminalRenderScale::Fixed(1.001);
+        .scale = 1.001;
     app.update();
     let texture = app.world().get::<TerminalTexture>(entity).unwrap();
     assert_eq!(
@@ -1392,58 +1327,12 @@ fn terminal_remeasured_fires_when_only_logical_metrics_change() {
         texture.geometry.logical_size(),
         initial.geometry.logical_size()
     );
-    assert_eq!(
-        app.world().resource::<Seen>().0,
-        vec![(
-            initial.geometry.size(),
-            texture.geometry.size(),
-            texture.geometry.cell_size()
-        )]
-    );
+    let changed = texture.clone();
     app.update();
     assert_eq!(
-        app.world().resource::<Seen>().0.len(),
-        1,
-        "no repeated event on an idle frame"
+        app.world().get::<TerminalTexture>(entity).unwrap(),
+        &changed
     );
-}
-
-#[test]
-fn user_ui_node_receives_the_texture_and_headless_terminals_use_scale_one() {
-    assert_eq!(
-        resolve_raster_scale(TerminalRenderScale::Automatic, true, Some(2.0)),
-        2.0
-    );
-    assert_eq!(
-        resolve_raster_scale(TerminalRenderScale::Automatic, false, Some(2.0)),
-        1.0
-    );
-    let node = Node {
-        position_type: PositionType::Absolute,
-        left: px(12.0),
-        top: px(8.0),
-        ..default()
-    };
-    let mut world = World::new();
-    world.spawn((node, ImageNode::default()));
-    let mut query = world.query::<(&mut Node, &mut ImageNode)>();
-    let (mut node, mut image_node) = query.single_mut(&mut world).unwrap();
-    let handle = Handle::<Image>::default();
-    apply_ui_node(
-        &mut node,
-        &mut image_node,
-        &handle,
-        UVec2::new(220, 400),
-        2.0,
-    );
-    assert_eq!(node.width, px(110.0));
-    assert_eq!(node.height, px(200.0));
-    assert_eq!(node.left, px(12.0));
-    assert_eq!(node.top, px(8.0));
-    assert_eq!(image_node.image, handle);
-    let stats = TerminalStats::default();
-    assert_eq!(stats.changed_rows, 0);
-    assert!(stats.to_string().contains("rows 0"));
 }
 
 #[test]
@@ -1479,23 +1368,13 @@ fn terminal_target_uses_nearest_sampling() {
 }
 
 #[test]
-fn automatic_scale_tracks_ui_windows_but_not_headless_rendering() {
-    assert_eq!(
-        resolve_raster_scale(TerminalRenderScale::Automatic, true, Some(2.0),),
-        2.0
-    );
-    assert_eq!(
-        resolve_raster_scale(TerminalRenderScale::Automatic, false, Some(2.0),),
-        1.0
-    );
-    assert_eq!(
-        resolve_raster_scale(TerminalRenderScale::Fixed(1.5), false, None,),
-        1.5
-    );
-    assert_eq!(
-        resolve_raster_scale(TerminalRenderScale::Fixed(f32::NAN), true, None,),
-        1.0
-    );
+fn explicit_raster_scale_is_bounded_and_invalid_values_fall_back() {
+    assert_eq!(resolve_raster_scale(1.5), 1.5);
+    assert_eq!(resolve_raster_scale(0.5), 1.0);
+    assert_eq!(resolve_raster_scale(16.0), 8.0);
+    for scale in [f32::NAN, f32::INFINITY, 0.0, -1.0] {
+        assert_eq!(resolve_raster_scale(scale), 1.0);
+    }
 }
 
 #[test]
@@ -2018,10 +1897,7 @@ fn invalid_scale_settles_without_idle_redraws() {
             .spawn((
                 TerminalRenderer::new(surface),
                 TerminalRenderConfig {
-                    raster: super::super::RasterConfig {
-                        scale: TerminalRenderScale::Fixed(scale),
-                        ..default()
-                    },
+                    raster: super::super::RasterConfig { scale, ..default() },
                     blink: super::super::BlinkConfig {
                         slow_hz: Some(f32::NAN),
                         rapid_hz: Some(f32::INFINITY),

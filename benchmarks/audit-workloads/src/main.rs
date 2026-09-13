@@ -184,7 +184,7 @@ fn main() {
             .get_mut::<TerminalRenderConfig>(*entity)
             .unwrap();
         config.font = FontFaces::regular(fonts[step % 2].clone());
-        config.raster.scale = TerminalRenderScale::Fixed(if step % 3 == 0 { 2.0 } else { 1.0 });
+        config.raster.scale = if step % 3 == 0 { 2.0 } else { 1.0 };
         app.update();
         u64::from(
             app.world()

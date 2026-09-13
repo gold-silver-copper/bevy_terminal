@@ -33,6 +33,7 @@ fn main() {
     let fonts = common::fonts::load(&mut app);
     let config = fonts.configure(config);
     app.add_plugins(TerminalPlugin)
+        .add_plugins((common::app::presentation, common::app::window_scale))
         .insert_resource(Demo(terminal))
         .add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(Camera2d);

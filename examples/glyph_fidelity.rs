@@ -46,8 +46,8 @@ use bevy::{
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::prelude::{
-    CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalReady, TerminalRenderConfig,
-    TerminalRenderScale, TerminalSizing, TerminalSnapshot, TerminalSystems, TerminalTexture,
+    CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
+    TerminalSnapshot, TerminalSystems, TerminalTexture,
 };
 use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 use ratatui::{
@@ -385,6 +385,7 @@ fn main() {
         std::process::exit(2);
     }
     app.add_plugins(TerminalPlugin)
+        .add_plugins(common::app::presentation)
         .insert_resource(Options {
             export,
             check,
@@ -393,7 +394,7 @@ fn main() {
         .init_resource::<PendingExports>()
         .init_resource::<Captures>()
         .init_resource::<Frame>()
-        .add_observer(on_ready)
+        .add_systems(Update, on_ready.after(TerminalSystems::Sync))
         .add_systems(Update, (refresh_titles, tick));
     if export {
         app.add_plugins(export_plugin)
@@ -417,7 +418,7 @@ fn main() {
                 sizing: from_font.map_or(TerminalSizing::FitCellWidth(CELL), TerminalSizing::font),
                 font: family.faces.clone(),
                 raster: RasterConfig {
-                    scale: scale.map_or(TerminalRenderScale::Automatic, TerminalRenderScale::Fixed),
+                    scale: scale.unwrap_or(1.0),
                     ..default()
                 },
                 cursor: CursorConfig {
@@ -452,6 +453,9 @@ fn main() {
         }
     });
     if !headless {
+        if scale_argument.is_none() {
+            app.add_plugins(common::app::window_scale);
+        }
         app.insert_resource(FontCycle {
             families: families.clone(),
             current: 0,
@@ -494,92 +498,96 @@ struct FontCycle {
 /// Once a primary terminal is measured: redraw its title with the metrics,
 /// queue its exporter, and (for `--check`) spawn its roomy reference twin.
 fn on_ready(
-    ready: On<TerminalReady>,
     mut commands: Commands,
     options: Res<Options>,
-    mut cases: Query<(&mut Case, &TerminalTexture, &TerminalRenderConfig)>,
+    mut cases: Query<
+        (Entity, &mut Case, &TerminalTexture, &TerminalRenderConfig),
+        Without<CaptureStarted>,
+    >,
     mut pending: ResMut<PendingExports>,
 ) {
-    let Ok((mut case, texture, config)) = cases.get_mut(ready.entity) else {
-        return;
-    };
-    let scale = case.scale;
-    if options.export && !case.is_reference {
-        let dir = format!("target/glyph-fidelity/{}/{}x", case.dir, scale);
-        pending.0.push((texture.image.clone(), dir));
-    }
-    if options.check {
-        if !case.is_reference && case.reference.is_none() {
-            // Same font size and content in a cell 6 px wider and 10 px taller: the
-            // oracle for "was anything clipped".
-            let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS).with_renderer();
-            draw_harness(&mut terminal, case.family, scale, None);
-            let faces = config.font.clone();
-            let reference = commands
-                .spawn((
-                    common::app::headless_terminal(
-                        renderer,
-                        TerminalRenderConfig {
-                            sizing: TerminalSizing::Fixed {
-                                cell_size: texture.measured().unwrap().cell_size()
-                                    + Vec2::new(6.0, 10.0),
-                                font_size: texture.measured().unwrap().font_size(),
-                            },
-                            font: faces,
-                            raster: RasterConfig {
-                                scale: TerminalRenderScale::Fixed(scale),
-                                ..default()
-                            },
-                            cursor: CursorConfig {
-                                blink_hz: None,
-                                ..default()
-                            },
-                            ..default()
-                        },
-                    ),
-                    Case {
-                        family: case.family,
-                        dir: case.dir,
-                        scale,
-                        reference: None,
-                        is_reference: true,
-                    },
-                    Drawn(terminal),
-                    TitledWith::default(),
-                ))
-                .id();
-            case.reference = Some(reference);
+    for (entity, mut case, texture, config) in &mut cases {
+        if texture.measured().is_none() {
+            continue;
         }
-        let entity = ready.entity;
-        commands
-            .spawn(Readback::texture(texture.image.clone()))
-            .observe(
-                move |done: On<ReadbackComplete>,
-                      textures: Query<&TerminalTexture>,
-                      captures: Res<Captures>,
-                      frame: Res<Frame>,
-                      mut commands: Commands| {
-                    // Give the scene a few frames to reach the GPU, keep the latest
-                    // readback for a while, then stop reading back.
-                    if frame.0 < 8 {
-                        return;
-                    }
-                    let size = textures
-                        .get(entity)
-                        .ok()
-                        .and_then(TerminalTexture::measured)
-                        .map(|geometry| geometry.size())
-                        .unwrap_or_default();
-                    let mut captures = captures.0.lock().unwrap();
-                    captures.retain(|(e, ..)| *e != entity);
-                    captures.push((entity, done.data.clone(), size));
-                    if frame.0 >= 24 {
-                        commands.entity(done.entity).despawn();
-                    }
-                },
-            );
+        commands.entity(entity).insert(CaptureStarted);
+        let scale = case.scale;
+        if options.export && !case.is_reference {
+            let dir = format!("target/glyph-fidelity/{}/{}x", case.dir, scale);
+            pending.0.push((texture.image.clone(), dir));
+        }
+        if options.check {
+            if !case.is_reference && case.reference.is_none() {
+                // Same font size and content in a cell 6 px wider and 10 px taller: the
+                // oracle for "was anything clipped".
+                let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS).with_renderer();
+                draw_harness(&mut terminal, case.family, scale, None);
+                let faces = config.font.clone();
+                let reference = commands
+                    .spawn((
+                        common::app::headless_terminal(
+                            renderer,
+                            TerminalRenderConfig {
+                                sizing: TerminalSizing::Fixed {
+                                    cell_size: texture.measured().unwrap().cell_size()
+                                        + Vec2::new(6.0, 10.0),
+                                    font_size: texture.measured().unwrap().font_size(),
+                                },
+                                font: faces,
+                                raster: RasterConfig { scale, ..default() },
+                                cursor: CursorConfig {
+                                    blink_hz: None,
+                                    ..default()
+                                },
+                                ..default()
+                            },
+                        ),
+                        Case {
+                            family: case.family,
+                            dir: case.dir,
+                            scale,
+                            reference: None,
+                            is_reference: true,
+                        },
+                        Drawn(terminal),
+                        TitledWith::default(),
+                    ))
+                    .id();
+                case.reference = Some(reference);
+            }
+            commands
+                .spawn(Readback::texture(texture.image.clone()))
+                .observe(
+                    move |done: On<ReadbackComplete>,
+                          textures: Query<&TerminalTexture>,
+                          captures: Res<Captures>,
+                          frame: Res<Frame>,
+                          mut commands: Commands| {
+                        // Give the scene a few frames to reach the GPU, keep the latest
+                        // readback for a while, then stop reading back.
+                        if frame.0 < 8 {
+                            return;
+                        }
+                        let size = textures
+                            .get(entity)
+                            .ok()
+                            .and_then(TerminalTexture::measured)
+                            .map(|geometry| geometry.size())
+                            .unwrap_or_default();
+                        let mut captures = captures.0.lock().unwrap();
+                        captures.retain(|(e, ..)| *e != entity);
+                        captures.push((entity, done.data.clone(), size));
+                        if frame.0 >= 24 {
+                            commands.entity(done.entity).despawn();
+                        }
+                    },
+                );
+        }
     }
 }
+
+#[derive(Component)]
+struct CaptureStarted;
 
 /// Redraws a primary terminal's title with its measured metrics whenever they
 /// change (first measurement, or a font change in the windowed mode).

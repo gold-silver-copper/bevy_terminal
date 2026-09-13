@@ -3,11 +3,11 @@
 #![allow(dead_code)]
 
 use bevy::{prelude::*, window::PrimaryWindow};
-use bevy_terminal_ratatui::prelude::{TerminalRenderConfig, TerminalTexture};
+use bevy_terminal_ratatui::prelude::{TerminalRenderConfig, TerminalSystems, TerminalTexture};
 use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 
 /// A terminal presented through a Bevy UI image node positioned absolutely at
-/// `origin` (logical pixels). The renderer sizes the node; place it however
+/// `origin` (logical pixels). The example presentation system sizes the node; place it however
 /// you like — this helper just uses absolute positioning.
 pub fn ui_terminal(
     renderer: TerminalRenderer,
@@ -50,4 +50,48 @@ pub fn fit_grid_to_window(
         return false;
     }
     terminal.fit_to(texture, available)
+}
+
+/// Installs application-owned UI layout without changing the requested raster scale.
+pub fn presentation(app: &mut App) {
+    app.add_systems(Update, present_ui.after(TerminalSystems::Sync));
+}
+
+/// Opts these single-window examples into following window DPI and UI scale.
+pub fn window_scale(app: &mut App) {
+    app.add_systems(Update, set_ui_scale.before(TerminalSystems::Sync));
+}
+
+fn set_ui_scale(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    ui_scale: Option<Res<UiScale>>,
+    mut terminals: Query<&mut TerminalRenderConfig, With<ImageNode>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let scale = window.scale_factor() * ui_scale.as_ref().map_or(1.0, |scale| scale.0);
+    for mut config in &mut terminals {
+        if config.raster.scale != scale {
+            config.raster.scale = scale;
+        }
+    }
+}
+
+fn present_ui(mut terminals: Query<(&TerminalTexture, &mut Node, &mut ImageNode)>) {
+    for (texture, mut node, mut image) in &mut terminals {
+        let Some(geometry) = texture.measured() else {
+            continue;
+        };
+        let size = geometry.logical_size();
+        if node.width != px(size.x) {
+            node.width = px(size.x);
+        }
+        if node.height != px(size.y) {
+            node.height = px(size.y);
+        }
+        if image.image != texture.image {
+            image.image = texture.image.clone();
+        }
+    }
 }

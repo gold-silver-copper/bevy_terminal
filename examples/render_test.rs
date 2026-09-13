@@ -30,8 +30,8 @@ use bevy::{
 use bevy_image_export::ImageExportPlugin;
 use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::prelude::{
-    CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalRenderConfig,
-    TerminalRenderScale, TerminalSizing, TerminalSystems, TerminalTexture, TerminalTheme,
+    CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
+    TerminalSystems, TerminalTexture, TerminalTheme,
 };
 use ratatui::{
     layout::Position,
@@ -209,11 +209,7 @@ fn main() {
         theme,
         sizing: TerminalSizing::FitCellWidth(CELL),
         raster: RasterConfig {
-            scale: if export {
-                TerminalRenderScale::Fixed(1.0)
-            } else {
-                TerminalRenderScale::Automatic
-            },
+            scale: 1.0,
             ..default()
         },
         cursor: CursorConfig {
@@ -270,11 +266,13 @@ fn main() {
     families[initial].apply(&mut config);
     draw_render_test(&mut terminal, families[initial].name);
     let output_dir = format!("target/render-test/{}", FAMILIES[initial].1);
-    app.add_plugins(TerminalPlugin).insert_resource(FontCycle {
-        families,
-        current: initial,
-        terminal,
-    });
+    app.add_plugins(TerminalPlugin)
+        .add_plugins((common::app::presentation, common::app::window_scale))
+        .insert_resource(FontCycle {
+            families,
+            current: initial,
+            terminal,
+        });
     if export {
         common::export::export_terminals_on_ready(&mut app, output_dir);
         app.add_plugins(export_plugin)

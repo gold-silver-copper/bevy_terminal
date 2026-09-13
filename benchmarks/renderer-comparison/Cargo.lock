@@ -1579,7 +1579,6 @@ dependencies = [
  "bevy",
  "bitflags 2.13.1",
  "skrifa 0.42.1",
- "smol_str",
 ]
 
 [[package]]

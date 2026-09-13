@@ -26,11 +26,7 @@ exclude = [
 ]
 
 [features]
-default = ["ui", "system_fonts"]
-# Present terminals through Bevy UI `ImageNode`s (forwards `bevy_terminal/ui`).
-ui = ["bevy_terminal/ui"]
-# Present terminals on world-space quads (forwards `bevy_terminal/3d`).
-3d = ["bevy_terminal/3d"]
+default = ["system_fonts"]
 # Discover system fonts (forwards `bevy_terminal/system_fonts`).
 system_fonts = ["bevy_terminal/system_fonts"]
 
@@ -38,19 +34,14 @@ system_fonts = ["bevy_terminal/system_fonts"]
 # with backends that implement only the standard trait (such as soft_ratatui).
 scrolling-regions = ["ratatui/scrolling-regions"]
 
+# Measure CPU snapshot and scene construction time; counters remain available without this.
+timings = ["bevy_terminal/timings"]
+
 [dependencies]
 bevy_terminal = { version = "0.7.3", path = "crates/bevy_terminal", default-features = false }
 # Only for the `Component` derive on `RatatuiTerminal`; the version is pinned by `bevy_terminal`.
 bevy = { version = "0.19", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["std", "underline-color"] }
-
-[[example]]
-name = "world_quad"
-required-features = ["3d"]
-
-[[example]]
-name = "imported_screen"
-required-features = ["3d"]
 
 [dev-dependencies]
 ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets"] }

@@ -63,6 +63,7 @@ fn main() {
     let fonts = fonts::load(&mut app);
     let config = fonts.configure(config);
     app.add_plugins(TerminalPlugin)
+        .add_plugins((app::presentation, app::window_scale))
         .insert_resource(gallery)
         .insert_resource(AnimationClock(Timer::from_seconds(
             0.1,
@@ -336,8 +337,10 @@ fn terminal_position(position: Vec2, terminal_size: Size, cell: Vec2) -> Option<
 /// The grid that fits the window minus its margin, clamped to the minimum
 /// gallery size; uses the renderer's `grid_for` helper for the fit itself.
 fn terminal_grid_size(window_size: Vec2, cell: Vec2) -> Size {
-    let grid =
-        bevy_terminal_ratatui::render::grid_for(window_size - Vec2::splat(MARGIN * 2.0), cell);
+    let grid = bevy_terminal_ratatui::bevy_terminal::render::grid_for(
+        window_size - Vec2::splat(MARGIN * 2.0),
+        cell,
+    );
     Size::new(grid.width.max(MIN_COLUMNS), grid.height.max(MIN_ROWS))
 }
 

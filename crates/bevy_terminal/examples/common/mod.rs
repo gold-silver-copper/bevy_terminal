@@ -15,25 +15,6 @@ const ITALIC: &[u8] = include_bytes!("../../assets/fonts/jetbrains-mono/JetBrain
 const BOLD_ITALIC: &[u8] =
     include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-BoldItalic.ttf");
 
-/// A terminal presented through a UI image node absolutely positioned at `origin`.
-pub fn ui_terminal(
-    surface: TerminalSurface,
-    config: TerminalRenderConfig,
-    origin: Vec2,
-) -> impl Bundle {
-    (
-        TerminalRenderer::new(surface),
-        config,
-        ImageNode::default(),
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(origin.x),
-            top: px(origin.y),
-            ..default()
-        },
-    )
-}
-
 pub const COLUMNS: u16 = 48;
 pub const ROWS: u16 = 14;
 pub const CELL_SIZE: Vec2 = Vec2::new(11.0, 20.0);

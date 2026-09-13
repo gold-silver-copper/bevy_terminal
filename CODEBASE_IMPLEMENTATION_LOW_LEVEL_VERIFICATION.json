@@ -1,0 +1,527 @@
+{
+  "generated_utc": "2026-09-13T17:14:11.772605+00:00",
+  "objective": "execute LOW_LEVEL_CLEANUP_PROMPT.md",
+  "status": "complete",
+  "library_head": "409b7f29a78a1805c045d353096846c82d2b2c5e",
+  "ratty_head": "9815dd63d3b4094cca03acc1ae53592c9f8742a2",
+  "platform": "macOS / Apple M2 Max / Metal",
+  "workspace_checks": [
+    {
+      "name": "format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 1.32
+    },
+    {
+      "name": "check",
+      "command": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked"
+      ],
+      "exit": 0,
+      "seconds": 281.79
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 2.28
+    },
+    {
+      "name": "tests",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--lib",
+        "--tests",
+        "--locked"
+      ],
+      "exit": 0,
+      "seconds": 13.11
+    },
+    {
+      "name": "doctests",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--doc",
+        "--locked"
+      ],
+      "exit": 0,
+      "seconds": 3.8
+    },
+    {
+      "name": "docs",
+      "command": [
+        "cargo",
+        "doc",
+        "--workspace",
+        "--all-features",
+        "--no-deps",
+        "--locked"
+      ],
+      "exit": 0,
+      "seconds": 9.93
+    },
+    {
+      "name": "gpu",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--test",
+        "gpu_readback",
+        "--test",
+        "export_readiness",
+        "--locked",
+        "--",
+        "--ignored",
+        "--test-threads=1"
+      ],
+      "exit": 0,
+      "seconds": 13.23
+    }
+  ],
+  "workspace_environment": {
+    "WGPU_BACKEND": "metal",
+    "docs_RUSTDOCFLAGS": "-D warnings"
+  },
+  "exports": [
+    {
+      "name": "minimal-gpu-final",
+      "command": [
+        "cargo",
+        "run",
+        "--manifest-path",
+        "/tmp/terminal-minimal-gpu/Cargo.toml",
+        "--locked"
+      ],
+      "exit": 0,
+      "seconds": 12.11
+    },
+    {
+      "name": "core-export",
+      "command": [
+        "cargo",
+        "run",
+        "-p",
+        "bevy_terminal",
+        "--all-features",
+        "--locked",
+        "--example",
+        "scene_export"
+      ],
+      "exit": 0,
+      "seconds": 17.36
+    },
+    {
+      "name": "ui-export",
+      "command": [
+        "cargo",
+        "run",
+        "--all-features",
+        "--locked",
+        "--example",
+        "image_export"
+      ],
+      "exit": 0,
+      "seconds": 22.98
+    },
+    {
+      "name": "dpi-export",
+      "command": [
+        "cargo",
+        "run",
+        "--all-features",
+        "--locked",
+        "--example",
+        "high_dpi_export"
+      ],
+      "exit": 0,
+      "seconds": 6.44
+    },
+    {
+      "name": "fidelity-fixed",
+      "command": [
+        "cargo",
+        "run",
+        "--all-features",
+        "--locked",
+        "--example",
+        "glyph_fidelity",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all"
+      ],
+      "exit": 1,
+      "seconds": 34.28
+    },
+    {
+      "name": "fidelity-from-font",
+      "command": [
+        "cargo",
+        "run",
+        "--all-features",
+        "--locked",
+        "--example",
+        "glyph_fidelity",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--from-font",
+        "23.0",
+        "--tiles-only"
+      ],
+      "exit": 0,
+      "seconds": 23.63
+    }
+  ],
+  "fidelity_baseline_comparison": {
+    "fixed": {
+      "baseline_groups": 100,
+      "current_groups": 100,
+      "baseline_failures": 66,
+      "current_failures": 66,
+      "identical_group_results": true,
+      "identical_glyph_diagnostics": true
+    },
+    "from-font": {
+      "baseline_groups": 24,
+      "current_groups": 24,
+      "baseline_failures": 0,
+      "current_failures": 0,
+      "identical_group_results": true,
+      "identical_glyph_diagnostics": true
+    }
+  },
+  "ratty_smoke": {
+    "captures": {
+      "font-natural": {
+        "width": 1210,
+        "height": 660,
+        "stale_cells": 0
+      },
+      "font-compact": {
+        "width": 1210,
+        "height": 570,
+        "stale_cells": 0
+      },
+      "missing-family": {
+        "width": 1210,
+        "height": 600,
+        "stale_cells": 0
+      },
+      "scene-child-exit": {
+        "width": 1100,
+        "height": 760,
+        "stale_cells": 0
+      },
+      "document-inline": {
+        "width": 1100,
+        "height": 760,
+        "stale_cells": 0
+      },
+      "styles-end": {
+        "width": 1210,
+        "height": 660,
+        "stale_cells": 0
+      },
+      "scroll-30-rows": {
+        "width": 1210,
+        "height": 660,
+        "stale_cells": 0
+      }
+    },
+    "failures": [],
+    "visual_review": "Inspect inline images, box joins, and text styles in the PNG artifacts."
+  },
+  "test_totals": {
+    "core": 82,
+    "adapter": 18,
+    "workspace_doctests": 10,
+    "gpu_regressions": 6,
+    "ratty": 211,
+    "ratty_doctests": 1,
+    "ratty_preexisting_ignored": 3,
+    "real_context": 1
+  },
+  "review": {
+    "scope": "Full working diff against recorded HEADs, staged state, untracked deliverables, and lockfile package sets",
+    "reviewer": "Implementing agent, separate full-diff pass; no independent reviewer",
+    "remaining_findings": [],
+    "fixed": [
+      "Foreign-surface fit_to geometry rejection",
+      "Obsolete UI mutation assertions",
+      "Ratty snapshot no-op change detection"
+    ]
+  },
+  "requirement_audit": {
+    "1": "Core world_quad module and both 3d features removed; example owns mesh/material and compiles",
+    "2": "Production core has no UI mutation or presentation detection; untouched-UI tests pass",
+    "3": "Explicit numeric scale; fractional geometry and Ratty framebuffer ratio tests pass",
+    "4": "Persistent measured output after Sync; late, stale, pending/failure and image stability tests pass; GPU verified separately",
+    "5": "Font discovery wrappers and window helpers removed; explicit prelude, direct FontCx doctest, optional timings and benchmark checks pass",
+    "preservation": "Existing surface, geometry, font, style, cursor, cache and GPU tests pass; fidelity results match baseline",
+    "consumers": "Isolated Ratty migration verified with local patch; real bevy_ratatui context and windowed/native checks pass",
+    "supporting_files": "Docs/examples/tests/benchmarks/fixture migrated; strict checks pass",
+    "publication": "No commits, pushes, or GitHub changes"
+  },
+  "limitations": [
+    "Fixed-cell fidelity: 66 pre-existing failing groups, identical diagnostics to baseline",
+    "GPU verification local Metal only; unpublished diff has no new external CI",
+    "Owned 3D example compiled, not interactively exercised",
+    "Ratty Git pin awaits library publication; tested local lock stored separately",
+    "No runtime benchmark speedup claim"
+  ],
+  "logs": {
+    "/tmp/terminal-low-level-verify/final-gpu.log": {
+      "sha256": "723fc9599ca67604f6f18eacf328bb0a0324013d5e2a1f13d18cfa535a708d6f"
+    },
+    "/tmp/terminal-low-level-verify/final-doctests.log": {
+      "sha256": "1a3805f18f24edc707ef9aabd9f2c2cffed4fd01649af41e63bc2508c9f6f79f"
+    },
+    "/tmp/terminal-low-level-verify/final-docs.log": {
+      "sha256": "06e851dcd4e47b83757022accc3fefd54cc12727ba9b6563f29403cbb4c624c4"
+    },
+    "/tmp/terminal-low-level-verify/final-clippy.log": {
+      "sha256": "2ab3de45a457e5d8df2ff2b762469d576bfe8c1c6db4b52002f81e5fdc4d869b"
+    },
+    "/tmp/terminal-low-level-verify/final-check.log": {
+      "sha256": "6f69c0d5a7759445c7b2959e626e6b58344532ad281d98a43793b3e254e1099c"
+    },
+    "/tmp/terminal-low-level-verify/final-format.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/tmp/terminal-low-level-verify/final-tests.log": {
+      "sha256": "25fd5bb77e560b2434b2a83fdba6338a936e9ceef6ca1233a8b4ed93db1a585e"
+    },
+    "/tmp/terminal-low-level-verify/minimal-gpu-final.log": {
+      "sha256": "2df8285ecf249fbdaefd0f3022fb107c244787bf1b8d91f1602ad163f1f8b755"
+    },
+    "/tmp/terminal-low-level-verify/core-export.log": {
+      "sha256": "cff7996c15dea5a21edf4abd121f78e9c0070cc57d6fe320f0ebeb5cb81bba5b"
+    },
+    "/tmp/terminal-low-level-verify/ui-export.log": {
+      "sha256": "199810326e7f271a85c8f520f108e4cdd35fbedbe19caaf127609dc3c9a65c95"
+    },
+    "/tmp/terminal-low-level-verify/dpi-export.log": {
+      "sha256": "83bc2605fa58b3c4edca7d66d917f7df776a73a57f5aa0fe0b0c9616d6e8eaec"
+    },
+    "/tmp/terminal-low-level-verify/fidelity-fixed.log": {
+      "sha256": "38f980cfc5eef5717602a85b4ad6d68dd9872a1fe4f5ccfa06540ce8895a8bf3"
+    },
+    "/tmp/terminal-low-level-verify/fidelity-from-font.log": {
+      "sha256": "af03b4a9e9dee968fbda37de25e15f5376aa73a19286306bc1dd0a5e10ed6a53"
+    },
+    "/tmp/ratty-low-level/check.log": {
+      "sha256": "6a5d60700aba8cbc24c64e55596fe47a1afbd38550c3938b454ea309058e81df"
+    },
+    "/tmp/ratty-low-level/clippy-final.log": {
+      "sha256": "47045c7fa4594f2d43f641a47588be54e9e95fbb32f0af0996b0588197c0f19b"
+    },
+    "/tmp/ratty-low-level/test-final.log": {
+      "sha256": "7d83b6e557db4e3eadfa2160d9a4c863037e435e1e7bb586d5ffbdf6d381729e"
+    },
+    "/tmp/ratty-low-level/build-final.log": {
+      "sha256": "0f1e6a1752ad9a77ffe1d3c33d45a1052476c3bb1f332fee8713cdea964e9589"
+    },
+    "/tmp/ratty-low-level/gpu-final.log": {
+      "sha256": "6f78f6ddaf2278a528462b907df2a8bd24aada7b27045414dcbfcbe0c3ea855d"
+    },
+    "/tmp/terminal-low-level-context.log": {
+      "sha256": "dc428d8ca1cca48cb8f2693ecd83ce4a762e6a2bcb7b38c85694844696cb765f"
+    },
+    "/tmp/terminal-low-level-context-windowed.log": {
+      "sha256": "8bf4ea0d7e1e0c935cef8b7ad8a26cb9724b28be583671c59240b6ea4aad5a11"
+    },
+    "/tmp/terminal-low-level-consumer-native.log": {
+      "sha256": "02c881a6c03f0b6d58a338494269db1591dbb4615c568cb145a8f4329a496374"
+    },
+    "/tmp/terminal-low-level-benchmark.log": {
+      "sha256": "ab49d23a798090a32002a6a37e1e88268d292198151f4f949b88bf70f49104d8"
+    },
+    "/tmp/terminal-low-level-benchmark-clippy.log": {
+      "sha256": "1ad8a710542ce2bc6320c3e72b5c8afb72aafc188e075cf31b5d58aaf6342d4e"
+    },
+    "/tmp/terminal-low-level-comparison.log": {
+      "sha256": "f5d2f0e47beaca6d77f4ac357c8df398666dd42fcda93b389bd1366de4c38b08"
+    },
+    "/tmp/terminal-low-level-comparison-clippy.log": {
+      "sha256": "b53a4867b66735b8ee987fb460fd1f40801bbcc107e3ec19a3f5e2842151ba9d"
+    }
+  },
+  "current_changed_files": {
+    "/Users/kisaczka/Desktop/code/bevy_grid/Cargo.lock": {
+      "sha256": "88df6e5febdb7bbc689972d35152d89c264244392d0fd469e67592de5b0db692"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/Cargo.toml": {
+      "sha256": "040398072107f43bb7b3d4eaba6a95754f14349fb752b54216222d2bc741cd58"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/README.md": {
+      "sha256": "08ca09fb6d4abe2f8cea1f9ab40503cab969bb0e628955e7bf6ac46d663cd3da"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/benchmarks/audit-workloads/Cargo.lock": {
+      "sha256": "a77a85b583d8dae09112dfd16292a9450aadf477ea2d9838f4ee1027a8e849fb"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/benchmarks/audit-workloads/Cargo.toml": {
+      "sha256": "5891bc190212edd11a07680f801fc0f5a8b6c686089759d7fb9bb2639addd4e3"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/benchmarks/audit-workloads/README.md": {
+      "sha256": "7c9b7634f45bbaf5a48ea6ebaae7869b6152685152e8c120d74bd1a75e9e97de"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/benchmarks/audit-workloads/src/main.rs": {
+      "sha256": "24e359bb2aa86d248ceaf5f6ce44b53b389559fb8dd419d2920f7ed80ad0727f"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/benchmarks/renderer-comparison/Cargo.lock": {
+      "sha256": "740d9e00b94943e36b297007386058bfc38b857115b1d5880e1883780f9d05a1"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/benchmarks/renderer-comparison/adapters/bevy-terminal-ratatui/Cargo.toml": {
+      "sha256": "1c6fa9bf9c9931f90e421b98fac0636809fa0e2f37c8791c3a4db6fd7518e281"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/Cargo.toml": {
+      "sha256": "3654b29eb10287ed2bff6ff490464a0a7c63497e5ebfb9e919765f0b28e39b2c"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/README.md": {
+      "sha256": "5e7210549d84b525462fa8c42f1750682f7523e6556f315228cbee71945225cd"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/examples/common/mod.rs": {
+      "sha256": "56f9fc50fa3522d5bebbd6f38f6f04498586efac42add9f9f42a465ecf9486a6"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/examples/scene.rs": {
+      "deleted": true
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/examples/scene_export.rs": {
+      "sha256": "84dc70c4c720b7e4b6380258dcf5ec0ee354d572c15fff4beff2e908461defaa"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/src/lib.rs": {
+      "sha256": "3636cb51bc43994f3c1a89623ef4fa30a373d42f1611fc051a1ac08c7762dc35"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/src/render/batch.rs": {
+      "sha256": "2692b1df8eed3c30df5d43f7d384e67e98b13235e8f701e70f2037cabd48d823"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/src/render/batch/tests.rs": {
+      "sha256": "10bddec98088ba3657a083ff8e9cabcd7b27d87c6b1d330fa38ddd9ec5879076"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/src/render/fonts.rs": {
+      "sha256": "58396a27ba168642b2f36fc8ad53aa401ea71c25066bd75ce1f40dbb4e710e6f"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/src/render/mod.rs": {
+      "sha256": "14d4ed7152093020229cdff948cede7514bdf47e0e8dc5f6d20a4e22b4f9541f"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/src/render/terminal.rs": {
+      "sha256": "f420c46455099d9a84cdcec1d01abb5c299da3806c8b9a32dac2487093df015c"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/src/render/world_quad.rs": {
+      "deleted": true
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/crates/bevy_terminal/tests/gpu_readback.rs": {
+      "sha256": "b0401a5b6dfa75c5be014fdedc3614d89e303dca5c36371a8ce09d81e733cd4f"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/colors_rgb.rs": {
+      "sha256": "d6fc8358c826d655903e0451fb62dd904aa76426898c845149f4951bdff4ce57"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/common/app.rs": {
+      "sha256": "5f10c86b965b7828922e9a49582c958f41cd2452cd9aad2035515def61726854"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/common/export.rs": {
+      "sha256": "5b1e91d905a9a571335814979e61832b3538c0df465e9914aa3691da8e4083ea"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/demo.rs": {
+      "sha256": "c0443d30ad61bc747e9c06930fa972bdcbcb07a3a8ddb2850778794607fb9d28"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/glyph_fidelity.rs": {
+      "sha256": "4788234d8e294b46623a238b292ff683e44922ccc5946720c895603963b5a69d"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/high_dpi_export.rs": {
+      "sha256": "e7491b2aeecc15514cbcb8c1069605ca0b88792573bf25699488eb721000c1a7"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/image_export.rs": {
+      "sha256": "036200febda914578c009d7cdcf4d0e84c960c5b4fa5a77e94158f1b3146fcda"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/imported_screen.rs": {
+      "deleted": true
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/multiple_terminals.rs": {
+      "sha256": "70778f4a96bc34dab51acd7cec74875963fcf2d2d5481c046d8f0bc1807a9f3a"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/multiple_terminals_export.rs": {
+      "sha256": "81c681162c465047cc1e78aa3d90afb0d66d6c637b05214f9727d2466295ecd3"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/ratatui_examples.rs": {
+      "sha256": "ed4152332ff09e4bda848e76b350f1b22fce421a9d7dce086d5f88500f21755a"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/ratatui_examples_export.rs": {
+      "sha256": "d5a4bd1458b2f295f09e388e807670268ed77b371000f9b8b421aefcb9fa5203"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/render_test.rs": {
+      "sha256": "760cb22c38e9b7a13b3315e49a9b006f2d361ee0a0c29b77f12d417f8528ad32"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/examples/world_quad.rs": {
+      "sha256": "10f05deb4794335367efcda03a44a3c89a3cac85ec5124c71f345b49e51a96a1"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/integration/bevy-ratatui-context/Cargo.lock": {
+      "sha256": "0b04e80abc1eb48b0feea621aede0e3638b499789225fae42c7e0a30f334123e"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/integration/bevy-ratatui-context/Cargo.toml": {
+      "sha256": "60e497710507982825c421394b858e521c406a021e389f8fd7e90b980eda0f2c"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/integration/bevy-ratatui-context/README.md": {
+      "sha256": "d930bc8bbb2134aa3923847ae24e7174bda0b5123c04f2c8bf9ebb44cb4fbae7"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/integration/bevy-ratatui-context/src/lib.rs": {
+      "sha256": "bfe485ef265e7a776fb1d66f1b99bfb4d3808bd1e24643cbafb54faa8bde35bc"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/src/backend.rs": {
+      "sha256": "2218fccf08bf0c18fc2782acb3351eb24b353c34ec69dc02bc6091e6e6cb2fd3"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/src/lib.rs": {
+      "sha256": "b94fdfa8afd98801ebe67c8d7492e95b0c57cac714f22ec7210df12c830ce150"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/CODEBASE_IMPLEMENTATION_LOW_LEVEL_REPORT.md": {
+      "sha256": "513cb826aa03db5362e963bd81d1e4a642b3d132e370a9cc46de9080ee7ab3c1"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/LOW_LEVEL_CLEANUP_PROMPT.md": {
+      "sha256": "efb1a23e11ea13730c21c1860c3b373b0fafcda572d9ff0764ccce4e09c0035c"
+    },
+    "/Users/kisaczka/Desktop/code/bevy_grid/benchmarks/audit-workloads/.gitignore": {
+      "sha256": "306fd52e74fca6746e12acc750f232de15e71da917756a1270d74c91f5eb7368"
+    },
+    "/Users/kisaczka/Desktop/code/ratty-low-level/examples/headless_snapshot.rs": {
+      "sha256": "d2a34ae2103ef0bbbc5e6aa53054888552c478964f35e19d8b7a857436c90072"
+    },
+    "/Users/kisaczka/Desktop/code/ratty-low-level/src/terminal.rs": {
+      "sha256": "80bce8efb4bb90bed601b09ad982772f12e54cbf307604d9faa53aca343e6df1"
+    }
+  }
+}

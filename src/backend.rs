@@ -95,7 +95,7 @@ impl RatatuiBackend {
 /// use ratatui::widgets::Paragraph;
 ///
 /// fn setup(mut commands: Commands) {
-///     commands.spawn((RatatuiTerminal::new(80, 24).with_renderer(), ImageNode::default(), Node::default()));
+///     commands.spawn(RatatuiTerminal::new(80, 24).with_renderer());
 /// }
 ///
 /// fn draw(mut terminal: Single<&mut RatatuiTerminal>) {
@@ -156,11 +156,14 @@ impl RatatuiTerminal {
 
     /// Resizes the grid to fill `logical_size` (e.g. the window size) at the
     /// terminal's measured cell size; returns whether the grid changed.
-    /// Does nothing while the texture's geometry is provisional or failed.
+    /// Rejects provisional, failed, stale, or foreign-surface geometry.
     pub fn fit_to(&mut self, texture: &TerminalTexture, logical_size: Vec2) -> bool {
         let Some(texture) = texture.measured() else {
             return false;
         };
+        if !texture.matches_surface(&self.surface()) {
+            return false;
+        }
         let grid = texture.grid_for(logical_size);
         if self.surface().size() == grid {
             return false;
@@ -816,6 +819,10 @@ mod tests {
     #[test]
     fn fit_to_resizes_the_grid_exactly_when_the_fit_changes() {
         let mut terminal = RatatuiTerminal::new(4, 2);
+        let other = RatatuiTerminal::new(4, 2);
+        let foreign = measure(other.surface(), Vec2::new(10.0, 20.0));
+        assert!(!terminal.fit_to(&foreign, Vec2::new(805.0, 245.0)));
+        assert_eq!(terminal.size().unwrap(), Size::new(4, 2));
         let texture = measure(terminal.surface(), Vec2::new(10.0, 20.0));
         assert!(terminal.fit_to(&texture, Vec2::new(805.0, 245.0)));
         assert_eq!(terminal.size().unwrap(), Size::new(80, 12));

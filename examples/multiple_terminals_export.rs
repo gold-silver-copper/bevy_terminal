@@ -18,8 +18,8 @@ use bevy::{
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::prelude::{
-    CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale,
-    TerminalSizing, TerminalSystems,
+    CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
+    TerminalSystems,
 };
 use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 use ratatui::{
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = fonts.configure(TerminalRenderConfig {
         sizing: TerminalSizing::FitCellWidth(Vec2::new(10.0, 18.0)),
         raster: RasterConfig {
-            scale: TerminalRenderScale::Fixed(1.0),
+            scale: 1.0,
             ..default()
         },
         cursor: CursorConfig {
@@ -80,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..default()
     });
     app.insert_resource(fonts)
-        .add_plugins((export_plugin, TerminalPlugin))
+        .add_plugins((export_plugin, TerminalPlugin, app::presentation))
         .insert_resource(terminals)
         .add_systems(Startup, move |mut commands: Commands| {
             for (surface, origin) in [

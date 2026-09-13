@@ -19,8 +19,7 @@ image copy. It does not test GPU completion, window events, or input forwarding.
 ## Migration steps
 
 1. In bevy_ratatui's windowed feature, replace the optional `soft_ratatui`
-   dependency with `bevy_terminal_ratatui` using `default-features = false` and
-   `features = ["ui"]`. Activate it only from the windowed feature. Keep the
+   dependency with `bevy_terminal_ratatui` using `default-features = false`. Activate it only from the windowed feature. Keep the
    native backend and its terminal restoration path unchanged. Select the
    `system_fonts` feature only if the application intends to use host fonts;
    otherwise load an explicit bundled Bevy `Font` asset.
@@ -36,6 +35,8 @@ image copy. It does not test GPU completion, window events, or input forwarding.
    `render_terminal_to_handle` with one renderer entity. Obtain the context's
    `backend().surface()` and spawn `TerminalRenderer::new(surface)` with
    `TerminalRenderConfig`, `ImageNode::default()`, and the desired layout `Node`.
+   Add an application system after `TerminalSystems::Sync` to bind the image
+   and manage node dimensions. The fixture demonstrates this ownership.
    Configure `FontFaces` and `TerminalSizing` explicitly to select the intended
    appearance. The renderer supplies and retains the image handle.
 5. Replace bitmap `char_width`/`char_height` resizing with a query of that
@@ -46,9 +47,10 @@ image copy. It does not test GPU completion, window events, or input forwarding.
    changes, then call the context's `autoresize()` to synchronize Ratatui's
    buffers. Fullscreen and inline viewports support this path; fixed viewports
    require an explicit `Terminal::resize` for their application-owned area.
-6. Reevaluate fitting after window size, DPI, or measured geometry changes.
-   Query the persistent state rather than relying exclusively on the initial
-   `TerminalReady` event. A system running after `TerminalSystems::Sync` sees
+6. Supply an explicit `RasterConfig.scale` from the windowed consumer's DPI
+   policy before renderer sync. Reevaluate fitting after window size, DPI, or
+   measured geometry changes.
+   Query the persistent state directly. A system running after `TerminalSystems::Sync` sees
    that update's measurements. A resize it requests is rendered on the next
    sync; compare the grid before resizing to avoid a feedback loop.
 7. If Ratatui callers need `Backend::window_size().pixels`, pass the selected

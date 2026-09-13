@@ -21,8 +21,8 @@ use bevy::{
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::TerminalRenderer;
 use bevy_terminal_ratatui::prelude::{
-    BlinkConfig, CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig,
-    TerminalRenderScale, TerminalSizing, TerminalSystems,
+    BlinkConfig, CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
+    TerminalSystems,
 };
 
 const CELL_WIDTH: f32 = 10.0;
@@ -51,7 +51,7 @@ fn main() {
     let config = TerminalRenderConfig {
         sizing: TerminalSizing::FitCellWidth(Vec2::new(CELL_WIDTH, CELL_HEIGHT)),
         raster: RasterConfig {
-            scale: TerminalRenderScale::Fixed(1.0),
+            scale: 1.0,
             ..default()
         },
         cursor: CursorConfig {
@@ -86,7 +86,7 @@ fn main() {
         example_index: 0,
         frames_on_example: 0,
     })
-    .add_plugins((export_plugin, TerminalPlugin))
+    .add_plugins((export_plugin, TerminalPlugin, app::presentation))
     .add_systems(Startup, {
         let config = fonts.configure(config);
         move |mut commands: Commands| {

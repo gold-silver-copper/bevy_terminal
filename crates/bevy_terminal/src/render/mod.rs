@@ -1,7 +1,7 @@
 //! Rendering: the [`TerminalPlugin`], the [`TerminalRenderer`] component and its
 //! configuration, the renderer-owned [`TerminalTexture`], per-terminal
 //! [`TerminalStats`], and the [`TerminalTheme`]. Add the plugin once and spawn
-//! a `TerminalRenderer` (plus an `ImageNode` to show it) per rendered surface.
+//! a `TerminalRenderer` per rendered surface; applications present its image.
 
 use bevy::{
     ecs::schedule::SystemSet,
@@ -15,19 +15,14 @@ mod batch;
 mod color;
 mod fonts;
 mod terminal;
-#[cfg(feature = "3d")]
-mod world_quad;
 
 pub use batch::TerminalPlugin;
 pub use color::TerminalTheme;
 use color::dim;
-pub use fonts::{SmolStr, TerminalFonts, font_family};
+pub use fonts::font_family;
 pub use terminal::{
-    TerminalGeometry, TerminalReady, TerminalRemeasured, TerminalRenderer, TerminalStats,
-    TerminalStatus, TerminalTexture, grid_for, grid_for_window, raster_scale_for_window,
+    TerminalGeometry, TerminalRenderer, TerminalStats, TerminalStatus, TerminalTexture, grid_for,
 };
-#[cfg(feature = "3d")]
-pub use world_quad::TerminalWorldQuad;
 
 /// Visual shape used for the terminal cursor.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -256,22 +251,6 @@ impl Default for TerminalSizing {
     }
 }
 
-/// Selects the physical resolution used by the renderer.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum TerminalRenderScale {
-    /// Match the primary window's physical-to-logical scale factor when the
-    /// terminal is presented through Bevy UI. Headless rendering uses `1.0`.
-    #[default]
-    Automatic,
-    /// Rasterize at an explicit physical-to-logical scale factor.
-    ///
-    /// Values that are non-finite or less than or equal to zero fall back to
-    /// `1.0`; valid values are clamped to `1.0..=8.0`. A custom UI or camera
-    /// should use the same scale factor so the resulting texture maps
-    /// one-to-one onto physical display pixels.
-    Fixed(f32),
-}
-
 /// Configuration for converting terminal cells into rendered geometry and text.
 ///
 /// [`TerminalSizing`] selects font-driven or explicit cell geometry. Bevy can shape several fallback fonts
@@ -300,8 +279,12 @@ pub struct TerminalRenderConfig {
 /// Physical rasterization settings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RasterConfig {
-    /// Physical raster scale.
-    pub scale: TerminalRenderScale,
+    /// Explicit physical-to-logical pixel ratio, independent of presentation.
+    ///
+    /// Defaults to `1.0`. Non-finite and non-positive values fall back to `1.0`;
+    /// valid values are clamped to `1.0..=8.0`. Applications choose the scale
+    /// for their window, camera, UI, or offscreen target.
+    pub scale: f32,
     /// Glyph rasterization hinting.
     ///
     /// Defaults to [`FontHinting::Disabled`]: hinted rasterization snaps the
@@ -316,7 +299,7 @@ pub struct RasterConfig {
 impl Default for RasterConfig {
     fn default() -> Self {
         Self {
-            scale: TerminalRenderScale::Automatic,
+            scale: 1.0,
             hinting: FontHinting::Disabled,
         }
     }

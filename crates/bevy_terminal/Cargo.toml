@@ -3,7 +3,7 @@ name = "bevy_terminal"
 version = "0.7.3"
 edition = "2024"
 rust-version = "1.95"
-description = "A terminal scene model and renderer built on Bevy text, UI, and the render world"
+description = "A low-level terminal cell renderer built on Bevy text and the render world"
 license = "MIT"
 repository = "https://github.com/gold-silver-copper/bevy_terminal"
 documentation = "https://docs.rs/bevy_terminal"
@@ -11,13 +11,12 @@ keywords = ["bevy", "terminal", "tui", "rendering"]
 categories = ["game-development", "gui", "rendering"]
 
 [features]
-default = ["ui", "system_fonts"]
-# Present terminals through Bevy UI `ImageNode`s and follow the UI scale.
-ui = ["bevy/bevy_ui", "bevy/bevy_ui_render"]
-# Present terminals on world-space quads (`TerminalWorldQuad`) through `bevy_pbr`.
-3d = ["bevy/bevy_pbr", "bevy/bevy_mesh"]
+default = ["system_fonts"]
 # Discover system fonts so generic families such as `FontSource::Monospace` resolve.
 system_fonts = ["bevy/system_font_discovery"]
+
+# Measure CPU snapshot and scene construction time; counters remain available without this.
+timings = []
 
 [dependencies]
 bitflags = "2"
@@ -28,20 +27,15 @@ bevy = { version = "0.19", default-features = false, features = [
     "bevy_asset",
     "bevy_log",
     "bevy_render",
-    "bevy_core_pipeline",
     "bevy_image",
     "bevy_text",
-    "bevy_window",
 ] }
 
-# The string type of `FontSource::Family`, re-exported so it needs no extra dependency.
-smol_str = "0.2"
 # Font line metrics (ascent, descent, leading) for font-driven cell heights.
-# This matches the version used by `bevy_text`, so no second copy is compiled.
 skrifa = { version = "0.42", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-bevy = { version = "0.19", default-features = false, features = ["2d", "3d", "ui", "system_font_discovery"] }
+bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
 
 [lints.rust]
 missing_docs = "warn"

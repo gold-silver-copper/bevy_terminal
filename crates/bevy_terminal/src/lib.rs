@@ -12,15 +12,11 @@ pub use bevy;
 pub mod prelude {
     pub use bevy::text::{FontHinting, FontSource};
 
-    #[cfg(feature = "3d")]
-    pub use crate::render::TerminalWorldQuad;
     pub use crate::{
         render::{
-            BlinkConfig, CursorConfig, CursorStyle, FontFaces, RasterConfig, SmolStr,
-            TerminalFonts, TerminalGeometry, TerminalPlugin, TerminalReady, TerminalRemeasured,
-            TerminalRenderConfig, TerminalRenderScale, TerminalRenderer, TerminalSizing,
-            TerminalStats, TerminalStatus, TerminalSystems, TerminalTexture, TerminalTheme,
-            font_family,
+            BlinkConfig, CursorConfig, CursorStyle, FontFaces, RasterConfig, TerminalGeometry,
+            TerminalPlugin, TerminalRenderConfig, TerminalRenderer, TerminalSizing, TerminalStats,
+            TerminalStatus, TerminalSystems, TerminalTexture, TerminalTheme, font_family,
         },
         scene::{
             CellOccupancy, CellPosition, CellSymbol, GridSize, StyleFlags, TerminalCell,

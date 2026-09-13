@@ -65,9 +65,19 @@ fn render_headless_with(
             commands.spawn((TerminalRenderer::new(surface.clone()), config));
         },
     )
-    .add_observer(
-        |ready: On<TerminalReady>, mut commands: Commands, textures: Query<&TerminalTexture>| {
-            let texture = textures.get(ready.entity).unwrap();
+    .add_systems(
+        Update,
+        (|mut commands: Commands, textures: Query<&TerminalTexture>, mut started: Local<bool>| {
+            if *started {
+                return;
+            }
+            let Ok(texture) = textures.single() else {
+                return;
+            };
+            if texture.measured().is_none() {
+                return;
+            }
+            *started = true;
             commands
                 .spawn(Readback::texture(texture.image.clone()))
                 .observe(
@@ -92,7 +102,8 @@ fn render_headless_with(
                         exit.write(AppExit::Success);
                     },
                 );
-        },
+        })
+        .after(TerminalSystems::Sync),
     );
     app.run();
     let captured = sink.0.lock().unwrap().take();

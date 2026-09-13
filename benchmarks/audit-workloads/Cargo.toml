@@ -7,5 +7,5 @@ edition = "2024"
 publish = false
 
 [dependencies]
-bevy_terminal = { path = "../../crates/bevy_terminal", features = ["3d"] }
-bevy = { version = "=0.19.1", default-features = false, features = ["2d", "3d", "ui", "system_font_discovery"] }
+bevy_terminal = { path = "../../crates/bevy_terminal", features = ["timings"] }
+bevy = { version = "=0.19.1", default-features = false, features = ["system_font_discovery"] }

@@ -15,13 +15,13 @@ use metrics::{
 use scene::{SceneScratch, build_scene};
 use shaping::{ShapeCaches, UnifiedGlyphAtlas};
 
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Instant,
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
+
+#[cfg(feature = "timings")]
+use std::time::Instant;
 
 use bevy::{
     asset::{AssetId, RenderAssetUsages},
@@ -34,13 +34,11 @@ use bevy::{
         renderer::RenderDevice,
     },
     text::{FontAtlasSet, FontCx, LayoutCx, ScaleCx, TextPipeline},
-    window::PrimaryWindow,
 };
 
 use super::{
-    PixelGeometry, ResolvedStyle, TerminalGeometry, TerminalReady, TerminalRemeasured,
-    TerminalRenderConfig, TerminalRenderScale, TerminalRenderer, TerminalStats, TerminalStatus,
-    TerminalTexture, cell_span, cursor_should_be_visible, text_font,
+    PixelGeometry, ResolvedStyle, TerminalGeometry, TerminalRenderConfig, TerminalRenderer,
+    TerminalStats, TerminalStatus, TerminalTexture, cell_span, cursor_should_be_visible, text_font,
 };
 use crate::{
     scene::{GridSize, StyleFlags, TerminalSnapshot},
@@ -65,8 +63,6 @@ pub struct TerminalPlugin;
 
 impl Plugin for TerminalPlugin {
     fn build(&self, app: &mut App) {
-        #[cfg(feature = "3d")]
-        app.add_plugins(super::world_quad::plugin);
         app.init_resource::<FontCatalog>().add_systems(
             Update,
             (
@@ -114,51 +110,7 @@ type TerminalQuery<'w> = (
     &'w mut BatchMainState,
     &'w mut TerminalTexture,
     &'w mut TerminalStats,
-    UiNode<'w>,
 );
-
-/// The user-owned UI presentation of a terminal, when the `ui` feature is on
-/// and the entity has an `ImageNode`.
-#[cfg(feature = "ui")]
-type UiNode<'w> = Option<(&'w mut Node, &'w mut ImageNode)>;
-#[cfg(not(feature = "ui"))]
-type UiNode<'w> = ();
-
-/// The fetched item of [`UiNode`].
-#[cfg(feature = "ui")]
-type UiNodeItem<'w> = Option<(Mut<'w, Node>, Mut<'w, ImageNode>)>;
-#[cfg(not(feature = "ui"))]
-type UiNodeItem<'w> = ();
-
-/// Whether a terminal entity is presented through Bevy UI.
-#[cfg(feature = "ui")]
-type Presented = Has<ImageNode>;
-#[cfg(not(feature = "ui"))]
-type Presented = ();
-
-#[cfg(feature = "ui")]
-const fn is_presented(presented: bool) -> bool {
-    presented
-}
-#[cfg(not(feature = "ui"))]
-const fn is_presented((): ()) -> bool {
-    false
-}
-
-/// The UI scale resource, when the `ui` feature is on.
-#[cfg(feature = "ui")]
-type UiScaleRes<'w> = Option<Res<'w, UiScale>>;
-#[cfg(not(feature = "ui"))]
-type UiScaleRes<'w> = ();
-
-#[cfg(feature = "ui")]
-fn ui_scale_value(ui_scale: &UiScaleRes<'_>) -> f32 {
-    ui_scale.as_ref().map_or(1.0, |scale| scale.0)
-}
-#[cfg(not(feature = "ui"))]
-fn ui_scale_value((): &UiScaleRes<'_>) -> f32 {
-    1.0
-}
 
 /// Bevy's text resources, required for shaping and measurement.
 #[derive(bevy::ecs::system::SystemParam)]
@@ -199,16 +151,13 @@ impl TextResources<'_> {
 
 fn initialize_terminals(
     mut commands: Commands,
-    added: Query<
-        (Entity, &TerminalRenderer, &TerminalRenderConfig, Presented),
-        Without<BatchMainState>,
-    >,
+    added: Query<(Entity, &TerminalRenderer, &TerminalRenderConfig), Without<BatchMainState>>,
     mut images: ResMut<Assets<Image>>,
     device: Option<Res<RenderDevice>>,
 ) {
     let limit = texture_limit(device.as_deref());
-    for (entity, terminal, config, presented) in &added {
-        let raster_scale = resolve_raster_scale(config.raster.scale, is_presented(presented), None);
+    for (entity, terminal, config) in &added {
+        let raster_scale = resolve_raster_scale(config.raster.scale);
         let metrics = if config.sizing.is_valid() {
             resolve_metrics(config, None)
         } else {
@@ -298,58 +247,7 @@ fn make_glyph_atlas_image() -> Image {
     image
 }
 
-/// Sizes a user-owned UI node to the terminal's logical dimensions and points
-/// its image at the texture. Placement (`position_type`, `left`, `top`, or a
-/// parent layout) is left to the user.
-#[cfg(feature = "ui")]
-fn apply_ui_node(
-    node: &mut Mut<'_, Node>,
-    image_node: &mut Mut<'_, ImageNode>,
-    image: &Handle<Image>,
-    size: UVec2,
-    raster_scale: f32,
-) {
-    let width = px(size.x as f32 / raster_scale);
-    let height = px(size.y as f32 / raster_scale);
-    if node.width != width {
-        node.width = width;
-    }
-    if node.height != height {
-        node.height = height;
-    }
-    if image_node.image != *image {
-        image_node.image = image.clone();
-    }
-}
-
-#[cfg(feature = "ui")]
-fn present(ui: UiNodeItem<'_>, image: &Handle<Image>, size: UVec2, raster_scale: f32) {
-    if let Some((mut node, mut image_node)) = ui {
-        apply_ui_node(&mut node, &mut image_node, image, size, raster_scale);
-    }
-}
-#[cfg(not(feature = "ui"))]
-fn present((): UiNodeItem<'_>, _: &Handle<Image>, _: UVec2, _: f32) {}
-
-#[cfg(feature = "ui")]
-fn ui_present(ui: &UiNodeItem<'_>) -> bool {
-    ui.is_some()
-}
-#[cfg(not(feature = "ui"))]
-fn ui_present((): &UiNodeItem<'_>) -> bool {
-    false
-}
-
-fn resolve_raster_scale(
-    configured: TerminalRenderScale,
-    presented: bool,
-    window_scale: Option<f32>,
-) -> f32 {
-    let requested = match configured {
-        TerminalRenderScale::Automatic if presented => window_scale.unwrap_or(1.0),
-        TerminalRenderScale::Automatic => 1.0,
-        TerminalRenderScale::Fixed(scale) => scale,
-    };
+fn resolve_raster_scale(requested: f32) -> f32 {
     if requested.is_finite() && requested > 0.0 {
         requested.clamp(1.0, 8.0)
     } else {
@@ -364,8 +262,6 @@ struct BatchMainState {
     font_ids: [Option<AssetId<Font>>; 4],
     /// Whether every handle font above is registered with the font context.
     fonts_ready: bool,
-    /// Whether [`TerminalReady`] has been triggered for this terminal.
-    ready_sent: bool,
     last_failure: Option<String>,
     raster_scale: f32,
     raster_config: RasterMetrics,
@@ -404,7 +300,6 @@ impl BatchMainState {
             output,
             font_ids: [None; 4],
             fonts_ready: false,
-            ready_sent: false,
             last_failure: None,
             raster_scale,
             raster_config,
@@ -518,13 +413,10 @@ impl FontCatalog {
 
 #[allow(clippy::too_many_arguments)]
 fn sync_batch_terminals(
-    mut commands: Commands,
     mut terminals: Query<TerminalQuery>,
     text: Option<TextResources>,
     mut images: ResMut<Assets<Image>>,
     font_events: Option<MessageReader<AssetEvent<Font>>>,
-    primary_window: Query<&Window, With<PrimaryWindow>>,
-    ui_scale: UiScaleRes,
     time: Option<Res<Time>>,
     asset_server: Option<Res<AssetServer>>,
     device: Option<Res<RenderDevice>>,
@@ -540,7 +432,7 @@ fn sync_batch_terminals(
             "bevy_terminal: Bevy's text resources are missing (add DefaultPlugins or TextPlugin); \
              terminals will not render"
         );
-        for (_, _, _, mut state, mut output, mut stats, _) in &mut terminals {
+        for (_, _, _, mut state, mut output, mut stats) in &mut terminals {
             stats.set_if_neq(TerminalStats::default());
             suspend_terminal(
                 &mut state,
@@ -550,11 +442,6 @@ fn sync_batch_terminals(
         }
         return;
     };
-    let ui_scale = ui_scale_value(&ui_scale);
-    let window_scale = primary_window
-        .iter()
-        .next()
-        .map(|window| window.scale_factor() * ui_scale);
     let elapsed = time.as_ref().map_or(0.0, |time| time.elapsed_secs());
     // Retain event storage and rebuild registration only after asset changes.
     catalog.changed.clear();
@@ -572,7 +459,7 @@ fn sync_batch_terminals(
     let catalog_changed = catalog.refresh(&text.fonts, &mut text.font_cx, text.fonts.is_changed());
     let registered_fonts = &catalog.registered;
     let changed_fonts = &catalog.changed;
-    for (entity, terminal, config, mut state, mut output, mut stats, ui) in &mut terminals {
+    for (entity, terminal, config, mut state, mut output, mut stats) in &mut terminals {
         stats.set_if_neq(TerminalStats::default());
         if !config.sizing.is_valid() {
             suspend_terminal(&mut state, &mut output, TerminalStatus::InvalidSizing);
@@ -584,13 +471,7 @@ fn sync_batch_terminals(
         let mut shaping_changed = false;
         if config.is_changed() || state.last_config.is_none() {
             let mut effective = (*config).clone();
-            if matches!(effective.raster.scale, TerminalRenderScale::Fixed(_)) {
-                effective.raster.scale = TerminalRenderScale::Fixed(resolve_raster_scale(
-                    effective.raster.scale,
-                    false,
-                    None,
-                ));
-            }
+            effective.raster.scale = resolve_raster_scale(effective.raster.scale);
             for frequency in [
                 &mut effective.blink.slow_hz,
                 &mut effective.blink.rapid_hz,
@@ -655,9 +536,6 @@ fn sync_batch_terminals(
             suspend_terminal(&mut state, &mut output, status);
             continue;
         }
-        // A resize during the sync that first reports readiness is part of settling,
-        // not a re-measure; only terminals that were already ready get the event.
-        let was_ready = state.ready_sent;
         let mut next_output = output.clone();
         let mut next_stats = TerminalStats::default();
         let mut context = text.context(&mut images);
@@ -668,11 +546,7 @@ fn sync_batch_terminals(
                 config_changed,
                 shaping_changed,
                 fonts_changed,
-                raster_scale: resolve_raster_scale(
-                    config.raster.scale,
-                    ui_present(&ui),
-                    window_scale,
-                ),
+                raster_scale: resolve_raster_scale(config.raster.scale),
                 elapsed,
                 texture_limit: texture_limit(device.as_deref()),
             },
@@ -681,11 +555,10 @@ fn sync_batch_terminals(
             &mut next_stats,
             &mut context,
         );
-        let previous_size = match result {
-            Ok(previous_size) => {
+        match result {
+            Ok(()) => {
                 state.last_failure = None;
                 next_output.status = TerminalStatus::Ready;
-                previous_size
             }
             Err(status) => {
                 if let Some(failure) = context.failure.take()
@@ -702,30 +575,6 @@ fn sync_batch_terminals(
         };
         stats.set_if_neq(next_stats);
         output.set_if_neq(next_output);
-        present(
-            ui,
-            &output.image,
-            output.geometry.size,
-            output.geometry.raster_scale,
-        );
-        let metrics_ready = !needs_measured_advance(config) || state.measured_advance.is_some();
-        if output.status == TerminalStatus::Ready && metrics_ready && !state.ready_sent {
-            // The first sync with usable fonts settles the measured cell size, so the
-            // texture is now at its final size for this configuration.
-            state.ready_sent = true;
-            commands.trigger(TerminalReady { entity });
-        }
-        if let Some(previous_size) = previous_size
-            && was_ready
-            && output.status == TerminalStatus::Ready
-        {
-            commands.trigger(TerminalRemeasured {
-                entity,
-                previous_size,
-                size: output.geometry.size,
-                cell_size: output.geometry.cell_size(),
-            });
-        }
     }
 }
 
@@ -786,7 +635,7 @@ fn sync_batch_terminal(
     output: &mut TerminalTexture,
     stats: &mut TerminalStats,
     cx: &mut TextContext<'_>,
-) -> Result<Option<UVec2>, TerminalStatus> {
+) -> Result<(), TerminalStatus> {
     let SyncInput {
         config,
         config_changed,
@@ -830,7 +679,7 @@ fn sync_batch_terminal(
         };
     }
     // An unmeasured cell is not geometry. Keep the provisional component and
-    // do not publish a scene or readiness event until the selected face shapes.
+    // do not publish a scene or measured geometry until the selected face shapes.
     if needs_measured_advance && state.measured_advance.is_none() {
         return Err(TerminalStatus::ShapingFailed);
     }
@@ -845,7 +694,6 @@ fn sync_batch_terminal(
     state.metrics = Some(metrics);
     let text_assets_changed =
         shaping_changed || fonts_changed || scale_changed || font_size_changed;
-    let previous_cell_size = output.geometry.cell_size();
     if text_assets_changed {
         state.raster_config = refine_metrics(
             config,
@@ -884,9 +732,10 @@ fn sync_batch_terminal(
         // Keep the recorded phases current so an irrelevant flip is not
         // mistaken for a change once blinking content appears later.
         state.blink = blink;
-        return Ok(None);
+        return Ok(());
     }
 
+    #[cfg(feature = "timings")]
     let snapshot_start = Instant::now();
     let (snapshot, changed_rows, mut full) = if let Some(mut snapshot) = state.last_snapshot.take()
     {
@@ -921,13 +770,16 @@ fn sync_batch_terminal(
         (snapshot, rows, true)
     };
 
-    stats.snapshot_ns = snapshot_start
-        .elapsed()
-        .as_nanos()
-        .min(u128::from(u64::MAX)) as u64;
+    #[cfg(feature = "timings")]
+    {
+        stats.snapshot_ns = snapshot_start
+            .elapsed()
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+    }
     if changed_rows.is_empty() && !full && !blink_changed {
         state.last_snapshot = Some(snapshot);
-        return Ok(None);
+        return Ok(());
     }
     // Extraction can be delayed while a newly created output or glyph atlas reaches the render
     // world. If a newer payload is already waiting in the main world, make its replacement a
@@ -944,11 +796,6 @@ fn sync_batch_terminal(
     output.geometry.resize_generation = snapshot.resize_generation;
     let output_resized = output.geometry.size != new_size;
     let logical_size = new_size.as_vec2() / raster_scale;
-    let geometry_changed = output_resized
-        || output.geometry.cell_size() != previous_cell_size
-        || output.geometry.logical_size() != logical_size
-        || output.geometry.raster_scale != raster_scale;
-    let previous_size = geometry_changed.then_some(output.geometry.size);
     if output_resized {
         // Reallocate the image in place so the handle stays stable; the render world
         // recreates the GPU texture for the modified asset.
@@ -974,6 +821,7 @@ fn sync_batch_terminal(
     } else {
         changed_rows
     };
+    #[cfg(feature = "timings")]
     let scene_start = Instant::now();
     let destination = state.output.id();
     let BatchMainState {
@@ -1004,7 +852,10 @@ fn sync_batch_terminal(
     // resize or shape miss can create/modify an Image this frame, so those scenes use the later
     // submission point after RenderAsset preparation instead.
     scene.requires_prepared_assets = output_resized || stats.shape_misses != 0;
-    stats.scene_ns = scene_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+    #[cfg(feature = "timings")]
+    {
+        stats.scene_ns = scene_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+    }
     stats.changed_rows = u32::try_from(rows.len()).unwrap_or(u32::MAX);
     stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
     state.generation = state.generation.wrapping_add(1);
@@ -1014,7 +865,7 @@ fn sync_batch_terminal(
     state.last_snapshot = Some(snapshot);
     state.blink = blink;
     state.raster_scale = raster_scale;
-    Ok(previous_size)
+    Ok(())
 }
 
 #[cfg(test)]

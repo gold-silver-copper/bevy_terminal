@@ -20,7 +20,20 @@ impl TerminalContext<RatatuiBackend> for WindowedContext {
         _group: &RatatuiPlugins,
         builder: PluginGroupBuilder,
     ) -> PluginGroupBuilder {
-        builder.add(TerminalPlugin)
+        builder.add(TerminalPlugin).add(presentation)
+    }
+}
+
+// Presentation belongs to the windowed consumer, not the renderer.
+fn presentation(app: &mut App) {
+    app.add_systems(Update, present.after(TerminalSystems::Sync));
+}
+
+fn present(mut images: Query<(&TerminalTexture, &mut ImageNode)>) {
+    for (texture, mut image) in &mut images {
+        if texture.measured().is_some() && image.image != texture.image {
+            image.image = texture.image.clone();
+        }
     }
 }
 

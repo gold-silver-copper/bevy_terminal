@@ -4,6 +4,8 @@
 
 #[path = "common/fonts.rs"]
 mod fonts;
+#[path = "common/app.rs"]
+mod presentation;
 
 use std::time::Duration;
 
@@ -62,6 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     app.insert_resource(fonts)
         .add_plugins(TerminalPlugin)
+        .add_plugins((presentation::presentation, presentation::window_scale))
         .insert_resource(terminals)
         .insert_resource(PendingRight {
             surface: Some(right_surface),

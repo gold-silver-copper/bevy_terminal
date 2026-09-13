@@ -6,8 +6,7 @@ use bevy::{prelude::*, render::RenderPlugin, window::WindowResolution};
 use bevy_image_export::ImageExportPlugin;
 use bevy_terminal_ratatui::TerminalRenderer;
 use bevy_terminal_ratatui::prelude::{
-    CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale,
-    TerminalSizing,
+    CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
 };
 
 const EXPORT_FRAMES: u32 = 8;
@@ -16,7 +15,7 @@ fn main() {
     let config = TerminalRenderConfig {
         sizing: TerminalSizing::FitCellWidth(Vec2::new(11.0, 20.0)),
         raster: RasterConfig {
-            scale: TerminalRenderScale::Fixed(2.0),
+            scale: 2.0,
             ..default()
         },
         cursor: CursorConfig {

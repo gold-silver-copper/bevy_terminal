@@ -2,22 +2,29 @@
 
 use bevy::prelude::*;
 use bevy_image_export::{ImageExport, ImageExportSettings, ImageExportSource};
-use bevy_terminal_ratatui::prelude::{TerminalReady, TerminalTexture};
+use bevy_terminal_ratatui::prelude::{TerminalSystems, TerminalTexture};
 
 #[path = "export_gpu.rs"]
 pub mod gpu;
+
+#[derive(Component)]
+struct ExportStarted;
 
 /// Exports terminal textures once measured, writing PNG frames under `output_dir`.
 /// GPU availability and resizing are handled in the render world.
 pub fn export_terminals_on_ready(app: &mut App, output_dir: impl Into<String>) {
     let output_dir = output_dir.into();
     gpu::install(app);
-    app.add_observer(
-        move |ready: On<TerminalReady>,
-              textures: Query<&TerminalTexture>,
-              mut commands: Commands,
-              mut sources: ResMut<Assets<ImageExportSource>>| {
-            if let Ok(texture) = textures.get(ready.entity) {
+    app.add_systems(
+        Update,
+        (move |textures: Query<(Entity, &TerminalTexture), Without<ExportStarted>>,
+               mut commands: Commands,
+               mut sources: ResMut<Assets<ImageExportSource>>| {
+            for (entity, texture) in &textures {
+                if texture.measured().is_none() {
+                    continue;
+                }
+                commands.entity(entity).insert(ExportStarted);
                 commands.spawn((
                     ImageExport(sources.add(texture.image.clone())),
                     ImageExportSettings {
@@ -26,7 +33,8 @@ pub fn export_terminals_on_ready(app: &mut App, output_dir: impl Into<String>) {
                     },
                 ));
             }
-        },
+        })
+        .after(TerminalSystems::Sync),
     );
 }
 

@@ -50,7 +50,7 @@ fn main() {
         TerminalRenderConfig {
             sizing: TerminalSizing::FitCellWidth(common::CELL_SIZE),
             raster: RasterConfig {
-                scale: TerminalRenderScale::Fixed(1.0),
+                scale: 1.0,
                 ..default()
             },
             cursor: CursorConfig {
@@ -71,7 +71,7 @@ fn main() {
             }
         })
         .init_resource::<ExportsFinished>()
-        .add_observer(export_when_ready)
+        .add_systems(Update, export_when_ready.after(TerminalSystems::Sync))
         .add_systems(Update, |time: Res<Time>| {
             assert!(time.elapsed_secs() < 60.0, "terminal export timed out");
         });
@@ -84,65 +84,72 @@ fn main() {
 /// asset preparation may take any number of frames. This check is specific to
 /// this example, not a completion signal for arbitrary changing terminals.
 fn export_when_ready(
-    ready: On<TerminalReady>,
     surfaces: Res<Surfaces>,
-    terminals: Query<(&TerminalRenderer, &TerminalTexture)>,
+    terminals: Query<(Entity, &TerminalRenderer, &TerminalTexture), Without<ExportStarted>>,
     mut commands: Commands,
 ) {
-    let (terminal, texture) = terminals.get(ready.entity).unwrap();
-    let name = if terminal.surface().shares_state_with(&surfaces.main) {
-        "scene"
-    } else if terminal.surface().shares_state_with(&surfaces.status) {
-        "status"
-    } else {
-        return;
-    };
-    let size = texture.measured().unwrap().size();
-    let row_bytes = size.x as usize * 4;
-    let stride = row_bytes.next_multiple_of(256);
-    commands
-        .spawn(Readback::texture(texture.image.clone()))
-        .observe(
-            move |done: On<ReadbackComplete>,
-                  mut commands: Commands,
-                  mut saved: Local<bool>,
-                  mut finished: ResMut<ExportsFinished>,
-                  mut exit: MessageWriter<AppExit>| {
-                if *saved || done.data.len() != stride * size.y as usize {
-                    return;
-                }
-                let pixels: Vec<u8> = done
-                    .data
-                    .chunks_exact(stride)
-                    .flat_map(|row| row[..row_bytes].iter().copied())
-                    .collect();
-                if !pixels.as_chunks::<4>().0.iter().any(|rgba| rgba[3] != 0) {
-                    return;
-                }
-                let image = Image::new(
-                    Extent3d {
-                        width: size.x,
-                        height: size.y,
-                        depth_or_array_layers: 1,
-                    },
-                    TextureDimension::D2,
-                    pixels,
-                    TextureFormat::Rgba8UnormSrgb,
-                    RenderAssetUsages::MAIN_WORLD,
-                );
-                let directory = format!("target/bevy-terminal-qa/{name}");
-                std::fs::create_dir_all(&directory).expect("create export directory");
-                image
-                    .try_into_dynamic()
-                    .expect("RGBA8 image")
-                    .save(format!("{directory}/00000.png"))
-                    .expect("save PNG");
-                *saved = true;
-                commands.entity(done.entity).despawn();
-                finished.0 += 1;
-                if finished.0 == 2 {
-                    exit.write(AppExit::Success);
-                }
-            },
-        );
+    for (entity, terminal, texture) in &terminals {
+        let Some(geometry) = texture.measured() else {
+            continue;
+        };
+        commands.entity(entity).insert(ExportStarted);
+        let name = if terminal.surface().shares_state_with(&surfaces.main) {
+            "scene"
+        } else if terminal.surface().shares_state_with(&surfaces.status) {
+            "status"
+        } else {
+            return;
+        };
+        let size = geometry.size();
+        let row_bytes = size.x as usize * 4;
+        let stride = row_bytes.next_multiple_of(256);
+        commands
+            .spawn(Readback::texture(texture.image.clone()))
+            .observe(
+                move |done: On<ReadbackComplete>,
+                      mut commands: Commands,
+                      mut saved: Local<bool>,
+                      mut finished: ResMut<ExportsFinished>,
+                      mut exit: MessageWriter<AppExit>| {
+                    if *saved || done.data.len() != stride * size.y as usize {
+                        return;
+                    }
+                    let pixels: Vec<u8> = done
+                        .data
+                        .chunks_exact(stride)
+                        .flat_map(|row| row[..row_bytes].iter().copied())
+                        .collect();
+                    if !pixels.as_chunks::<4>().0.iter().any(|rgba| rgba[3] != 0) {
+                        return;
+                    }
+                    let image = Image::new(
+                        Extent3d {
+                            width: size.x,
+                            height: size.y,
+                            depth_or_array_layers: 1,
+                        },
+                        TextureDimension::D2,
+                        pixels,
+                        TextureFormat::Rgba8UnormSrgb,
+                        RenderAssetUsages::MAIN_WORLD,
+                    );
+                    let directory = format!("target/bevy-terminal-qa/{name}");
+                    std::fs::create_dir_all(&directory).expect("create export directory");
+                    image
+                        .try_into_dynamic()
+                        .expect("RGBA8 image")
+                        .save(format!("{directory}/00000.png"))
+                        .expect("save PNG");
+                    *saved = true;
+                    commands.entity(done.entity).despawn();
+                    finished.0 += 1;
+                    if finished.0 == 2 {
+                        exit.write(AppExit::Success);
+                    }
+                },
+            );
+    }
 }
+
+#[derive(Component)]
+struct ExportStarted;

@@ -87,6 +87,7 @@ fn main() {
     let fonts = fonts::load(&mut bevy);
     let config = fonts.configure(config);
     bevy.add_plugins(TerminalPlugin)
+        .add_plugins((app::presentation, app::window_scale))
         // Winit's default reactive pacing would idle the app between events.
         .insert_resource(WinitSettings {
             focused_mode: UpdateMode::Continuous,

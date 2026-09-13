@@ -1,7 +1,8 @@
 # Audit CPU and allocation workloads
 
 This standalone executable measures the retained surface and main-world text
-pipeline. It creates no window or GPU renderer. It complements the renderer
+pipeline. It creates no window or GPU renderer. CPU timing instrumentation is
+enabled explicitly through the library's `timings` feature. It complements the renderer
 comparison suite with library-specific lifecycle and cache workloads:
 
 - Scrolling equal ASCII, equal heap-backed graphemes, and changing heap-backed graphemes.
