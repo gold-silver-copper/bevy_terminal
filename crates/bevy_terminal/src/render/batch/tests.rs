@@ -956,7 +956,7 @@ fn late_family_registration_invalidates_previously_shaped_fallbacks() {
     let regular = app.world().resource::<Assets<Font>>().reserve_handle();
     // Bevy registers assets under both their embedded family and this unique
     // alias. The alias makes the test independent of installed system fonts.
-    let family = super::super::font_family(format!("asset_id:{:?}", regular.id()));
+    let family = bevy::text::FontSource::Family(format!("asset_id:{:?}", regular.id()).into());
     let surface = TerminalSurface::new((4, 1));
     write_text(&surface, "text");
     let entity = app

@@ -76,10 +76,27 @@ impl Rasterizer<'_> {
     ) -> Result<Reference, String> {
         let bold = cell.style.has(StyleFlags::BOLD);
         let italic = cell.style.has(StyleFlags::ITALIC);
-        // Harness cases supply all four explicit faces; no synthetic-face
-        // resolution policy is duplicated here.
+        // Fixtures use either four explicit faces or one regular source with
+        // synthesis enabled. Reject partial face chains instead of reproducing
+        // the renderer's font-resolution policy in the oracle.
+        let faces = &config.font;
+        let explicit = [&faces.bold, &faces.italic, &faces.bold_italic];
+        let source = if explicit.iter().all(|face| face.is_none()) && faces.synthesize {
+            &faces.regular
+        } else if explicit.iter().all(|face| face.is_some()) {
+            match (bold, italic) {
+                (false, false) => &faces.regular,
+                (true, false) => faces.bold.as_ref().unwrap(),
+                (false, true) => faces.italic.as_ref().unwrap(),
+                (true, true) => faces.bold_italic.as_ref().unwrap(),
+            }
+        } else {
+            return Err(
+                "oracle requires four explicit faces or a regular-only synthesized fixture".into(),
+            );
+        };
         let font = TextFont {
-            font: config.font.select(bold, italic).clone(),
+            font: source.clone(),
             font_size: font_size.into(),
             weight: if bold {
                 FontWeight::BOLD
@@ -472,6 +489,27 @@ mod tests {
         assert_ne!(glyph.pixel(IVec2::ZERO, [0, 0, 255]), [128, 0, 128]);
         assert_eq!(glyph.pixel(IVec2::ONE, [4, 8, 12]), [4, 8, 12]);
         assert!(glyph.differences(&[[188, 188, 255]], UVec2::ONE, IVec2::ZERO, [0, 0, 255]) > 0);
+    }
+
+    #[test]
+    fn partial_face_chains_are_rejected_instead_of_emulating_production_resolution() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            bevy::text::TextPlugin,
+        ))
+        .init_asset::<Image>();
+        let mut config = TerminalRenderConfig::default();
+        config.font.bold = Some(bevy::text::FontSource::Monospace);
+        let mut state = bevy::ecs::system::SystemState::<Rasterizer>::new(app.world_mut());
+        let mut rasterizer = state.get_mut(app.world_mut()).unwrap();
+        assert!(
+            rasterizer
+                .shape(&TerminalCell::new("W"), &config, 18.0, 24.0)
+                .err()
+                .is_some_and(|error| error.contains("four explicit faces"))
+        );
     }
 
     #[test]

@@ -32,6 +32,27 @@ pub fn headless_terminal(renderer: TerminalRenderer, config: TerminalRenderConfi
     (renderer, config)
 }
 
+/// Adopts current pixel geometry and fits the example's grid to logical space.
+/// Returns whether the grid changed, so callers can redraw only when needed.
+pub fn fit_grid(
+    terminal: &mut RatatuiTerminal,
+    texture: &TerminalTexture,
+    available: Vec2,
+) -> bool {
+    let Some(geometry) = texture.measured() else {
+        return false;
+    };
+    if !terminal.backend_mut().set_geometry(geometry) {
+        return false;
+    }
+    let grid = geometry.grid_for(available);
+    if terminal.surface().size() == grid {
+        return false;
+    }
+    terminal.resize_grid(grid.width, grid.height);
+    true
+}
+
 /// Fits `terminal`'s grid to the primary window (minus `margin` on every
 /// side) at the renderer's measured cell size. Returns whether the grid
 /// changed, in which case the caller should redraw. Does nothing until the
@@ -49,7 +70,7 @@ pub fn fit_grid_to_window(
     if available.x <= 0.0 || available.y <= 0.0 {
         return false;
     }
-    terminal.fit_to(texture, available)
+    fit_grid(terminal, texture, available)
 }
 
 /// Installs application-owned UI layout without changing the requested raster scale.

@@ -267,10 +267,11 @@ pub fn find(slug: &str) -> Option<&'static ExampleSpec> {
 }
 
 pub fn draw_surface(spec: &ExampleSpec) -> TerminalSurface {
-    RatatuiTerminal::drawn(COLUMNS, ROWS, |frame| {
+    let mut terminal = RatatuiTerminal::new(COLUMNS, ROWS);
+    terminal.draw(|frame| {
         (spec.render)(frame, &ExampleState::canonical(spec.slug));
-    })
-    .surface()
+    });
+    terminal.surface()
 }
 
 pub fn redraw_surface(surface: &TerminalSurface, spec: &ExampleSpec) {

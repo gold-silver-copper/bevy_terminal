@@ -13,13 +13,11 @@ use crate::scene::{StyleFlags, TerminalCell, TerminalSnapshot};
 
 mod batch;
 mod color;
-mod fonts;
 mod terminal;
 
 pub use batch::TerminalPlugin;
 pub use color::TerminalTheme;
 use color::dim;
-pub use fonts::font_family;
 pub use terminal::{
     TerminalGeometry, TerminalRenderer, TerminalStats, TerminalStatus, TerminalTexture, grid_for,
 };
@@ -121,13 +119,6 @@ impl FontFaces {
         }
     }
 
-    /// Sets whether missing faces are synthesized (see the type docs).
-    #[must_use]
-    pub const fn with_synthesis(mut self, synthesize: bool) -> Self {
-        self.synthesize = synthesize;
-        self
-    }
-
     /// Returns the face for a style together with the weight and style to
     /// request from it.
     fn resolve(&self, bold: bool, italic: bool) -> (&FontSource, FontWeight, FontStyle) {
@@ -155,12 +146,6 @@ impl FontFaces {
             FontStyle::Normal
         };
         (face, weight, style)
-    }
-
-    /// Returns the face used for the given weight and style.
-    #[must_use]
-    pub fn select(&self, bold: bool, italic: bool) -> &FontSource {
-        self.resolve(bold, italic).0
     }
 }
 
@@ -572,22 +557,22 @@ mod tests {
         let bold_italic = FontSource::from("bold italic");
 
         let only_regular = FontFaces::regular(regular.clone());
-        assert_eq!(only_regular.select(true, true), &regular);
+        assert_eq!(only_regular.resolve(true, true).0, &regular);
         assert_eq!(FontFaces::from(regular.clone()), only_regular);
 
         let with_bold = FontFaces {
             bold: Some(bold.clone()),
             ..only_regular.clone()
         };
-        assert_eq!(with_bold.select(true, false), &bold);
-        assert_eq!(with_bold.select(true, true), &bold);
-        assert_eq!(with_bold.select(false, true), &regular);
+        assert_eq!(with_bold.resolve(true, false).0, &bold);
+        assert_eq!(with_bold.resolve(true, true).0, &bold);
+        assert_eq!(with_bold.resolve(false, true).0, &regular);
 
         let with_italic = FontFaces {
             italic: Some(italic.clone()),
             ..only_regular.clone()
         };
-        assert_eq!(with_italic.select(true, true), &italic);
+        assert_eq!(with_italic.resolve(true, true).0, &italic);
 
         let complete = FontFaces {
             regular: regular.clone(),
@@ -596,10 +581,10 @@ mod tests {
             bold_italic: Some(bold_italic.clone()),
             synthesize: true,
         };
-        assert_eq!(complete.select(false, false), &regular);
-        assert_eq!(complete.select(true, false), &bold);
-        assert_eq!(complete.select(false, true), &italic);
-        assert_eq!(complete.select(true, true), &bold_italic);
+        assert_eq!(complete.resolve(false, false).0, &regular);
+        assert_eq!(complete.resolve(true, false).0, &bold);
+        assert_eq!(complete.resolve(false, true).0, &italic);
+        assert_eq!(complete.resolve(true, true).0, &bold_italic);
 
         let theme = TerminalTheme::default();
         let cell = TerminalCell::new("X")
@@ -621,7 +606,10 @@ mod tests {
         assert_eq!(synthesized.font, regular);
         assert_eq!(synthesized.style, FontStyle::Italic);
         let plain = text_font(
-            &bold_only.clone().with_synthesis(false),
+            &FontFaces {
+                synthesize: false,
+                ..bold_only.clone()
+            },
             18.0,
             &ResolvedStyle::new(&italic_cell, &theme),
         );
@@ -631,7 +619,10 @@ mod tests {
         let bold_cell =
             TerminalCell::new("X").with_style(TerminalStyle::new().with(StyleFlags::BOLD));
         let exact = text_font(
-            &bold_only.with_synthesis(false),
+            &FontFaces {
+                synthesize: false,
+                ..bold_only
+            },
             18.0,
             &ResolvedStyle::new(&bold_cell, &theme),
         );

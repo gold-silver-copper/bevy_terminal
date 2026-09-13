@@ -16,11 +16,11 @@ pub mod prelude {
         render::{
             BlinkConfig, CursorConfig, CursorStyle, FontFaces, RasterConfig, TerminalGeometry,
             TerminalPlugin, TerminalRenderConfig, TerminalRenderer, TerminalSizing, TerminalStats,
-            TerminalStatus, TerminalSystems, TerminalTexture, TerminalTheme, font_family,
+            TerminalStatus, TerminalSystems, TerminalTexture, TerminalTheme,
         },
         scene::{
-            CellOccupancy, CellPosition, CellSymbol, GridSize, StyleFlags, TerminalCell,
-            TerminalColor, TerminalSnapshot, TerminalStyle,
+            CellOccupancy, CellPosition, GridSize, StyleFlags, TerminalCell, TerminalColor,
+            TerminalSnapshot, TerminalStyle,
         },
         surface::{SurfaceInfo, SurfaceUpdate, TerminalSurface},
     };

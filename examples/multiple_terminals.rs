@@ -173,7 +173,7 @@ fn fit_to_window(
                 .surface()
                 .shares_state_with(&terminal.backend().surface())
             {
-                changed |= terminal.fit_to(texture, half);
+                changed |= presentation::fit_grid(terminal, texture, half);
             }
         }
     }

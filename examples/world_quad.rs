@@ -15,8 +15,9 @@ struct Screen {
 }
 
 fn main() {
-    let (terminal, renderer) =
-        RatatuiTerminal::drawn(60, 18, common::draw_demo_frame).with_renderer();
+    let mut terminal = RatatuiTerminal::new(60, 18);
+    terminal.draw(common::draw_demo_frame);
+    let (terminal, renderer) = terminal.with_renderer();
     let mut app = App::new();
     app.add_plugins((DefaultPlugins, TerminalPlugin));
     let fonts = common::fonts::load(&mut app);

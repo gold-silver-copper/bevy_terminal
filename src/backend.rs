@@ -1,12 +1,12 @@
 use std::convert::Infallible;
 
 use bevy_terminal::bevy::{
-    math::{UVec2, Vec2},
+    math::UVec2,
     prelude::{Component, Deref, DerefMut},
 };
 use bevy_terminal::prelude::{
     GridSize, StyleFlags, TerminalCell, TerminalColor, TerminalGeometry, TerminalRenderer,
-    TerminalSnapshot, TerminalStyle, TerminalSurface, TerminalTexture,
+    TerminalStyle, TerminalSurface,
 };
 use ratatui::{
     backend::{Backend, ClearType, WindowSize},
@@ -113,16 +113,6 @@ impl RatatuiTerminal {
         Self::from_backend(RatatuiBackend::new(columns, rows))
     }
 
-    /// Like [`new`](Self::new), but draws one frame with `draw` first so the
-    /// very first presented frame already shows content instead of the empty
-    /// theme background.
-    #[must_use]
-    pub fn drawn(columns: u16, rows: u16, draw: impl FnOnce(&mut ratatui::Frame<'_>)) -> Self {
-        let mut terminal = Self::new(columns, rows);
-        terminal.draw(draw);
-        terminal
-    }
-
     /// Wraps an existing backend in a fullscreen Ratatui terminal.
     #[must_use]
     pub fn from_backend(backend: RatatuiBackend) -> Self {
@@ -154,35 +144,10 @@ impl RatatuiTerminal {
         let Ok(()) = self.0.autoresize();
     }
 
-    /// Resizes the grid to fill `logical_size` (e.g. the window size) at the
-    /// terminal's measured cell size; returns whether the grid changed.
-    /// Rejects provisional, failed, stale, or foreign-surface geometry.
-    pub fn fit_to(&mut self, texture: &TerminalTexture, logical_size: Vec2) -> bool {
-        let Some(texture) = texture.measured() else {
-            return false;
-        };
-        if !texture.matches_surface(&self.surface()) {
-            return false;
-        }
-        let grid = texture.grid_for(logical_size);
-        if self.surface().size() == grid {
-            return false;
-        }
-        self.resize_grid(grid.width, grid.height);
-        true
-    }
-
     /// The surface this terminal draws into.
     #[must_use]
     pub fn surface(&self) -> TerminalSurface {
         self.0.backend().surface()
-    }
-
-    /// A snapshot of what is currently drawn, for assertions
-    /// ([`TerminalSnapshot::to_text`], [`TerminalSnapshot::iter`]).
-    #[must_use]
-    pub fn snapshot(&self) -> TerminalSnapshot {
-        self.0.backend().surface.snapshot()
     }
 }
 
@@ -401,49 +366,16 @@ impl Backend for RatatuiBackend {
 }
 
 #[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod test_support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use bevy_terminal::bevy::math::Vec2;
     use ratatui::style::Style;
 
-    pub(super) fn measure(surface: TerminalSurface, cell_size: Vec2) -> TerminalTexture {
-        use bevy_terminal::bevy::prelude::*;
-        use bevy_terminal::prelude::*;
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            bevy::asset::AssetPlugin::default(),
-            bevy::text::TextPlugin,
-        ))
-        .init_asset::<Image>()
-        .add_plugins(TerminalPlugin);
-        let font = app
-            .world_mut()
-            .resource_mut::<Assets<Font>>()
-            .add(Font::from_bytes(
-                include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf").to_vec(),
-            ));
-        let entity = app
-            .world_mut()
-            .spawn((
-                TerminalRenderer::new(surface),
-                TerminalRenderConfig {
-                    font: FontFaces::regular(font),
-                    sizing: TerminalSizing::Fixed {
-                        cell_size,
-                        font_size: 12.0,
-                    },
-                    ..default()
-                },
-            ))
-            .id();
-        for _ in 0..4 {
-            app.update();
-        }
-        let output = app.world().get::<TerminalTexture>(entity).unwrap().clone();
-        assert!(output.measured().is_some());
-        output
-    }
-
+    use super::test_support::measure;
     #[test]
     fn geometry_adoption_rejects_other_surfaces_and_stale_resizes() {
         let mut backend = RatatuiBackend::new(4, 2);
@@ -779,8 +711,11 @@ mod tests {
         assert_eq!(surface.size(), GridSize::new(6, 3));
         terminal.draw(|frame| frame.render_widget("wide now", frame.area()));
         assert_eq!(surface.snapshot()[(5, 0)].symbol(), "n");
-        assert_eq!(terminal.snapshot().row_text(0), "wide n");
-        assert_eq!(terminal.snapshot().to_text(), "wide n\n      \n      ");
+        assert_eq!(terminal.surface().snapshot().row_text(0), "wide n");
+        assert_eq!(
+            terminal.surface().snapshot().to_text(),
+            "wide n\n      \n      "
+        );
     }
 
     #[test]
@@ -803,35 +738,18 @@ mod tests {
     }
 
     #[test]
-    fn new_pairs_a_terminal_with_its_renderer_and_drawn_draws_first() {
+    fn new_pairs_a_terminal_with_its_renderer() {
         let (terminal, renderer) = RatatuiTerminal::new(5, 2).with_renderer();
         assert!(terminal.surface().shares_state_with(renderer.surface()));
         assert_eq!(terminal.surface().size(), GridSize::new(5, 2));
 
-        let (terminal, renderer) = RatatuiTerminal::drawn(5, 2, |frame| {
+        let mut terminal = RatatuiTerminal::new(5, 2);
+        terminal.draw(|frame| {
             frame.render_widget("Hello", frame.area());
-        })
-        .with_renderer();
+        });
+        let (terminal, renderer) = terminal.with_renderer();
         assert_eq!(renderer.surface().snapshot().row_text(0), "Hello");
-        assert_eq!(terminal.snapshot().to_text(), "Hello\n     ");
-    }
-
-    #[test]
-    fn fit_to_resizes_the_grid_exactly_when_the_fit_changes() {
-        let mut terminal = RatatuiTerminal::new(4, 2);
-        let other = RatatuiTerminal::new(4, 2);
-        let foreign = measure(other.surface(), Vec2::new(10.0, 20.0));
-        assert!(!terminal.fit_to(&foreign, Vec2::new(805.0, 245.0)));
-        assert_eq!(terminal.size().unwrap(), Size::new(4, 2));
-        let texture = measure(terminal.surface(), Vec2::new(10.0, 20.0));
-        assert!(terminal.fit_to(&texture, Vec2::new(805.0, 245.0)));
-        assert_eq!(terminal.size().unwrap(), Size::new(80, 12));
-        // Old geometry is no longer authoritative after fitting resized the grid.
-        assert!(!terminal.fit_to(&texture, Vec2::new(5.0, 5.0)));
-        let texture = measure(terminal.surface(), Vec2::new(10.0, 20.0));
-        assert!(!terminal.fit_to(&texture, Vec2::new(809.0, 259.0)));
-        assert!(terminal.fit_to(&texture, Vec2::new(5.0, 5.0)));
-        assert_eq!(terminal.size().unwrap(), Size::new(1, 1));
+        assert_eq!(terminal.surface().snapshot().to_text(), "Hello\n     ");
     }
 
     #[test]
@@ -874,11 +792,12 @@ mod tests {
 #[cfg(test)]
 mod audit_pixel_metrics {
     use super::*;
+    use bevy_terminal::bevy::math::Vec2;
     #[test]
     fn shared_resize_away_and_back_invalidates_pixels() {
         let mut backend = RatatuiBackend::new(4, 2);
         backend.set_geometry(
-            tests::measure(backend.surface(), Vec2::new(10.0, 20.0))
+            test_support::measure(backend.surface(), Vec2::new(10.0, 20.0))
                 .measured()
                 .unwrap(),
         );

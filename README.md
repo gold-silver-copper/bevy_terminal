@@ -32,7 +32,8 @@ fn main() {
 
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
-    let terminal = RatatuiTerminal::drawn(80, 24, |frame| {
+    let mut terminal = RatatuiTerminal::new(80, 24);
+    terminal.draw(|frame| {
         frame.render_widget("Hello from Ratatui", frame.area());
     });
     commands.spawn((
@@ -94,9 +95,11 @@ to its source surface and resize generation. Its image handle remains stable
 across remeasurement; applications retain their last useful presentation while
 replacement geometry is unavailable.
 
-The wrapper's `fit_to(&texture, available_logical_size)` uses valid geometry from its own surface and
-resizes the grid and Ratatui buffers together. With a raw backend, compute
-`geometry.grid_for(available_logical_size)`, resize the backend, and call
+Applications choose available space and when to resize. Read `texture.measured()`
+and adopt it with `backend.set_geometry(geometry)`, which rejects stale or foreign
+measurements and updates Ratatui pixel dimensions even when the grid stays the same.
+Compute `geometry.grid_for(available_logical_size)` and use the wrapper's
+`resize_grid` when dimensions change. With a raw backend, resize it and call
 `Terminal::autoresize()` for fullscreen/inline viewports. Fixed viewports require
 an explicit `Terminal::resize()` for the application-owned area. Compare sizes
 before resizing to avoid a feedback loop.
@@ -141,7 +144,7 @@ The output is `Rgba8UnormSrgb` with straight alpha, suitable for Bevy UI, sprite
 and materials. Transparent backgrounds are supported.
 
 `FontFaces` accepts explicit regular/bold/italic/bold-italic assets or Bevy font
-sources. `font_family("JetBrains Mono")` constructs a named source. Query Bevy's
+sources. `FontSource::Family("JetBrains Mono".into())` constructs a named source. Query Bevy's
 font collection directly when implementing an application font selector:
 
 ```rust,no_run
@@ -150,7 +153,7 @@ use bevy_terminal_ratatui::prelude::*;
 
 fn choose_font(mut fonts: ResMut<FontCx>, mut config: Single<&mut TerminalRenderConfig>) {
     if fonts.collection.family_by_name("JetBrains Mono").is_some() {
-        config.font = FontFaces::regular(font_family("JetBrains Mono"));
+        config.font = FontFaces::regular(FontSource::Family("JetBrains Mono".into()));
     }
 }
 ```
@@ -242,7 +245,7 @@ Test-font subset provenance, licensing, and reproduction instructions are in
 [`assets/fonts/fidelity/README.md`](assets/fonts/fidelity/README.md).
 
 The interactive UI examples are resizable: their grids follow the window at the
-renderer's measured cell size (`RatatuiTerminal::fit_to`, see
+renderer's measured cell size (see the application-owned fitting helper in
 `examples/common/app.rs::fit_grid_to_window`) instead of the window being sized
 from a fixed column × row count.
 

@@ -111,7 +111,7 @@ outer ink intentionally. Fixed geometry fits/clips glyphs to the specified cells
 
 `FontFaces` selects regular, bold, italic, and bold-italic sources. Missing faces
 can request weight/style from fallback faces. Supply Bevy `Font` assets, generic
-font sources, or a named source through `font_family`. Bevy performs font
+font sources, or a named `FontSource::Family`. Bevy performs font
 registration and fallback. Applications implementing family selection should
 query `FontCx.collection` directly after registration.
 

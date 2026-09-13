@@ -263,7 +263,7 @@ const ASCII_SYMBOLS: [&str; 128] = [
 /// is 24 bytes and never allocates for ASCII, box drawing, CJK, combining
 /// sequences or most emoji.
 #[derive(Clone, Eq, Hash, PartialEq)]
-pub struct CellSymbol(SymbolRepr);
+struct CellSymbol(SymbolRepr);
 
 #[derive(Clone, Eq, Hash, PartialEq)]
 enum SymbolRepr {
@@ -354,13 +354,13 @@ impl std::ops::Deref for CellSymbol {
 /// One terminal cell: a symbol, its style and its column occupancy.
 ///
 /// The occupancy is set by the constructors ([`TerminalCell::new`],
-/// [`TerminalCell::wide`], [`TerminalCell::continuation_of`]) and read through
+/// [`TerminalCell::wide`]) and read through
 /// [`TerminalCell::occupancy`]; it cannot be edited in place, so a cell can
-/// never claim a span it was not created with.
+/// never claim a span it was not created with. Surface writes generate continuation cells.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct TerminalCell {
     /// The grapheme cluster shown in this cell.
-    pub symbol: CellSymbol,
+    symbol: CellSymbol,
     /// Colors and attributes.
     pub style: TerminalStyle,
     occupancy: CellOccupancy,
@@ -396,7 +396,7 @@ impl TerminalCell {
 
     /// Creates the continuation cell that follows a wide anchor.
     #[must_use]
-    pub const fn continuation_of(anchor: &Self) -> Self {
+    pub(crate) const fn continuation_of(anchor: &Self) -> Self {
         Self {
             symbol: CellSymbol::SPACE,
             style: anchor.style,
