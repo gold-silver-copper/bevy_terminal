@@ -414,7 +414,7 @@ fn check(
         // GPU row padding is not part of the image and need not stay identical.
         case.last = Some((texture.image.clone(), geometry.clone(), raw.clone()));
         assert!(
-            raw.chunks_exact(4).all(|pixel| pixel[3] == 255),
+            raw.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255),
             "opaque backgrounds remain opaque"
         );
         fidelity_oracle::save_png(
