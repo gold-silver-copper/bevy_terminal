@@ -116,7 +116,7 @@ fn export_when_ready(
                     .chunks_exact(stride)
                     .flat_map(|row| row[..row_bytes].iter().copied())
                     .collect();
-                if !pixels.chunks_exact(4).any(|rgba| rgba[3] != 0) {
+                if !pixels.as_chunks::<4>().0.iter().any(|rgba| rgba[3] != 0) {
                     return;
                 }
                 let image = Image::new(
