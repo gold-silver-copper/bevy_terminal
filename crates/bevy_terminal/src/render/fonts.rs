@@ -95,8 +95,7 @@ mod tests {
             bevy::asset::AssetPlugin::default(),
             bevy::text::TextPlugin,
         ));
-        let bytes =
-            include_bytes!("../../../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf");
+        let bytes = include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf");
         let font = bevy::text::Font::from_bytes(bytes.to_vec());
         let handle = app.world_mut().resource_mut::<Assets<Font>>().add(font);
         app.update();

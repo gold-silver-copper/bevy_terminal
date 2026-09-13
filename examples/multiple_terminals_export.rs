@@ -19,7 +19,7 @@ use bevy::{
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::prelude::{
     CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale,
-    TerminalSystems,
+    TerminalSizing, TerminalSystems,
 };
 use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 use ratatui::{
@@ -40,8 +40,8 @@ struct QaTerminals {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminals = QaTerminals {
-        left: RatatuiTerminal::new(37, 12).0,
-        right: RatatuiTerminal::new(32, 10).0,
+        left: RatatuiTerminal::new(37, 12),
+        right: RatatuiTerminal::new(32, 10),
     };
     draw_terminals(&mut terminals, 0);
     let left_surface = terminals.left.surface();
@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let fonts = fonts::load(&mut app);
     let config = fonts.configure(TerminalRenderConfig {
-        cell_size: Vec2::new(10.0, 18.0).into(),
+        sizing: TerminalSizing::FitCellWidth(Vec2::new(10.0, 18.0)),
         raster: RasterConfig {
             scale: TerminalRenderScale::Fixed(1.0),
             ..default()

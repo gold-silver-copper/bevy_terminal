@@ -112,122 +112,28 @@ impl TerminalColor {
     pub const WHITE: Self = Self::Indexed(15);
 }
 
-/// A compact set of text attribute flags.
-///
-/// The set is a plain `u16` bit field so style comparison on the render hot
-/// path is a couple of integer compares. The bit layout is a stable contract:
-/// bit 0 `BOLD`, 1 `DIM`, 2 `ITALIC`, 3 `UNDERLINED`, 4 `SLOW_BLINK`,
-/// 5 `RAPID_BLINK`, 6 `REVERSED`, 7 `HIDDEN`, 8 `CROSSED_OUT` — the same order
-/// as Ratatui's `Modifier`, so adapters can translate with a mask.
-#[derive(Clone, Copy, Default, Eq, Hash, PartialEq)]
-pub struct StyleFlags(u16);
-
-impl StyleFlags {
-    /// No attributes.
-    pub const NONE: Self = Self(0);
-    /// Bold weight; selects the bold font face when configured.
-    pub const BOLD: Self = Self(1 << 0);
-    /// Reduced-contrast foreground.
-    pub const DIM: Self = Self(1 << 1);
-    /// Italic style; selects the italic font face when configured.
-    pub const ITALIC: Self = Self(1 << 2);
-    /// Underline decoration in the underline color.
-    pub const UNDERLINED: Self = Self(1 << 3);
-    /// Slow text blink.
-    pub const SLOW_BLINK: Self = Self(1 << 4);
-    /// Rapid text blink.
-    pub const RAPID_BLINK: Self = Self(1 << 5);
-    /// Swap foreground and background.
-    pub const REVERSED: Self = Self(1 << 6);
-    /// Paint the foreground in the background color.
-    pub const HIDDEN: Self = Self(1 << 7);
-    /// Strike-through decoration in the foreground color.
-    pub const CROSSED_OUT: Self = Self(1 << 8);
-
-    const ALL_NAMED: [(Self, &'static str); 9] = [
-        (Self::BOLD, "BOLD"),
-        (Self::DIM, "DIM"),
-        (Self::ITALIC, "ITALIC"),
-        (Self::UNDERLINED, "UNDERLINED"),
-        (Self::SLOW_BLINK, "SLOW_BLINK"),
-        (Self::RAPID_BLINK, "RAPID_BLINK"),
-        (Self::REVERSED, "REVERSED"),
-        (Self::HIDDEN, "HIDDEN"),
-        (Self::CROSSED_OUT, "CROSSED_OUT"),
-    ];
-
-    /// Creates a flag set from raw bits; unknown bits are discarded.
-    #[must_use]
-    pub const fn from_bits(bits: u16) -> Self {
-        Self(bits & 0x1ff)
-    }
-
-    /// Returns the raw bits.
-    #[must_use]
-    pub const fn bits(self) -> u16 {
-        self.0
-    }
-
-    /// Returns whether every flag in `other` is set.
-    #[must_use]
-    pub const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
-
-    /// Returns whether no flag is set.
-    #[must_use]
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// Returns the union of both sets.
-    #[must_use]
-    pub const fn union(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-
-    /// Adds `other` to the set.
-    pub const fn insert(&mut self, other: Self) {
-        self.0 |= other.0;
-    }
-
-    /// Removes `other` from the set.
-    pub const fn remove(&mut self, other: Self) {
-        self.0 &= !other.0;
-    }
-}
-
-impl std::ops::BitOr for StyleFlags {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self {
-        self.union(rhs)
-    }
-}
-
-impl std::ops::BitOrAssign for StyleFlags {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.insert(rhs);
-    }
-}
-
-impl fmt::Debug for StyleFlags {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_empty() {
-            return f.write_str("StyleFlags(NONE)");
-        }
-        f.write_str("StyleFlags(")?;
-        let mut first = true;
-        for (flag, name) in Self::ALL_NAMED {
-            if self.contains(flag) {
-                if !first {
-                    f.write_str(" | ")?;
-                }
-                first = false;
-                f.write_str(name)?;
-            }
-        }
-        f.write_str(")")
+bitflags::bitflags! {
+    /// Compact text attributes. The bit positions match Ratatui's modifiers.
+    #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+    pub struct StyleFlags: u16 {
+        /// Bold font weight.
+        const BOLD = 1 << 0;
+        /// Reduced contrast.
+        const DIM = 1 << 1;
+        /// Italic font style.
+        const ITALIC = 1 << 2;
+        /// Underline decoration.
+        const UNDERLINED = 1 << 3;
+        /// Slow text blink.
+        const SLOW_BLINK = 1 << 4;
+        /// Rapid text blink.
+        const RAPID_BLINK = 1 << 5;
+        /// Swap foreground and background.
+        const REVERSED = 1 << 6;
+        /// Hide foreground content.
+        const HIDDEN = 1 << 7;
+        /// Strike-through decoration.
+        const CROSSED_OUT = 1 << 8;
     }
 }
 
@@ -250,7 +156,7 @@ impl TerminalStyle {
         foreground: TerminalColor::Default,
         background: TerminalColor::Default,
         underline: TerminalColor::Default,
-        flags: StyleFlags::NONE,
+        flags: StyleFlags::empty(),
     };
 
     /// Creates the default style.
@@ -623,11 +529,10 @@ impl TerminalSnapshot {
     /// empty.
     #[must_use]
     pub fn row_text(&self, row: u16) -> String {
-        self.row(row)
-            .iter()
-            .filter(|cell| !cell.is_continuation())
-            .map(TerminalCell::symbol)
-            .collect()
+        let mut text = String::new();
+        self.write_row(row, &mut text)
+            .expect("writing to a String cannot fail");
+        text
     }
 
     /// Returns the whole grid as plain text, rows joined with `'\n'` — the
@@ -649,10 +554,14 @@ impl TerminalSnapshot {
     /// [`TerminalSnapshot`] also implements [`fmt::Display`] with this output.
     #[must_use]
     pub fn to_text(&self) -> String {
-        (0..self.size.height)
-            .map(|row| self.row_text(row))
-            .collect::<Vec<_>>()
-            .join("\n")
+        self.to_string()
+    }
+
+    fn write_row(&self, row: u16, writer: &mut impl fmt::Write) -> fmt::Result {
+        for cell in self.row(row).iter().filter(|cell| !cell.is_continuation()) {
+            writer.write_str(cell.symbol())?;
+        }
+        Ok(())
     }
 }
 
@@ -662,7 +571,7 @@ impl fmt::Display for TerminalSnapshot {
             if row > 0 {
                 f.write_str("\n")?;
             }
-            f.write_str(&self.row_text(row))?;
+            self.write_row(row, f)?;
         }
         Ok(())
     }
@@ -737,7 +646,7 @@ mod tests {
         assert_eq!(flags, StyleFlags::ITALIC);
         flags.insert(StyleFlags::HIDDEN);
         assert_eq!(format!("{flags:?}"), "StyleFlags(ITALIC | HIDDEN)");
-        assert_eq!(StyleFlags::from_bits(0xffff).bits(), 0x1ff);
+        assert_eq!(StyleFlags::from_bits_truncate(0xffff).bits(), 0x1ff);
     }
 
     #[test]

@@ -62,7 +62,7 @@ fn render_headless_with(
         Startup,
         move |mut commands: Commands, mut fonts: ResMut<Assets<Font>>| {
             let config = config.take().expect("startup runs once")(&mut fonts);
-            commands.spawn((Terminal::new(surface.clone()), config));
+            commands.spawn((TerminalRenderer::new(surface.clone()), config));
         },
     )
     .add_observer(
@@ -125,8 +125,10 @@ fn translucent_background_and_srgb_texture() {
         ..default()
     };
     let config = TerminalRenderConfig {
-        cell_size: Vec2::new(10.0, 20.0).into(),
-        font_size: FontSizing::Px(18.0),
+        sizing: TerminalSizing::Fixed {
+            cell_size: Vec2::new(10.0, 20.0),
+            font_size: 18.0,
+        },
         theme,
         cursor: CursorConfig {
             blink_hz: None,
@@ -179,9 +181,11 @@ fn box_drawing_overshoot_keeps_stems_aligned() {
         let bytes = include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf");
         let handle = fonts.add(Font::from_bytes(bytes.to_vec()));
         TerminalRenderConfig {
-            cell_size: CellSizing::FROM_FONT,
+            sizing: TerminalSizing::FromFont {
+                font_size: 24.0,
+                line_height: 1.0,
+            },
             font: FontFaces::regular(FontSource::Handle(handle)),
-            font_size: FontSizing::Px(24.0),
             theme: TerminalTheme {
                 foreground: Color::WHITE,
                 background: Color::BLACK,
@@ -219,9 +223,11 @@ fn box_drawing_overshoot_keeps_stems_aligned() {
 /// Builds the font-driven config used by the metrics tests.
 fn font_driven_config(handle: Handle<Font>, font_size: f32) -> TerminalRenderConfig {
     TerminalRenderConfig {
-        cell_size: CellSizing::FROM_FONT,
+        sizing: TerminalSizing::FromFont {
+            font_size,
+            line_height: 1.0,
+        },
         font: FontFaces::regular(FontSource::Handle(handle)),
-        font_size: FontSizing::Px(font_size),
         theme: TerminalTheme {
             foreground: Color::WHITE,
             background: Color::BLACK,
@@ -323,7 +329,13 @@ fn line_height_scales_the_font_driven_cell() {
         let (data, size) = render_headless_with(surface, move |fonts| {
             let bytes = include_bytes!("../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
             let mut config = font_driven_config(fonts.add(Font::from_bytes(bytes.to_vec())), 24.0);
-            config.cell_size = CellSizing::FromFont { line_height };
+            if let TerminalSizing::FromFont {
+                line_height: multiplier,
+                ..
+            } = &mut config.sizing
+            {
+                *multiplier = line_height;
+            }
             config
         });
         assert_eq!(size.y / 2, expected_rows, "line_height {line_height}");

@@ -7,9 +7,20 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use bevy::math::{UVec2, Vec2};
-
 use crate::scene::{CellOccupancy, CellPosition, GridSize, TerminalCell, TerminalSnapshot};
+
+/// A coherent observation of surface metadata, independent of its renderers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SurfaceInfo {
+    /// Current dimensions in cells.
+    pub size: GridSize,
+    /// Cursor position, which may lie outside the grid.
+    pub cursor_position: CellPosition,
+    /// Whether the producer requests a visible cursor.
+    pub cursor_visible: bool,
+    /// Revision of the observed state.
+    pub revision: u64,
+}
 
 /// A cheap, thread-safe handle to a retained terminal surface.
 ///
@@ -22,21 +33,30 @@ pub struct TerminalSurface {
 }
 
 impl TerminalSurface {
+    /// Maximum retained cells (about 48 MiB of cell storage per surface).
+    /// This bounds producer-controlled allocation independently of GPU limits.
+    pub const MAX_CELLS: usize = 1 << 20;
+
     /// Creates an empty terminal surface with the given size in cells
     /// (`(columns, rows)` or a [`GridSize`]).
+    ///
+    /// # Panics
+    /// Panics if the grid exceeds [`Self::MAX_CELLS`].
     #[must_use]
     pub fn new(size: impl Into<GridSize>) -> Self {
         let size = size.into();
+        assert!(
+            size.area() <= Self::MAX_CELLS,
+            "terminal surface exceeds MAX_CELLS"
+        );
         Self {
             shared: Arc::new(Mutex::new(SurfaceState {
                 size,
                 cells: vec![TerminalCell::EMPTY; size.area()],
                 cursor_position: CellPosition::new(0, 0),
                 cursor_visible: false,
-                cell_size: None,
-                pixel_size: UVec2::ZERO,
                 revision: 0,
-                dirty_cells: vec![false; size.area()],
+                row_revisions: vec![0; usize::from(size.height)],
             })),
         }
     }
@@ -54,7 +74,9 @@ impl TerminalSurface {
         state.snapshot()
     }
 
-    /// Returns the current monotonically increasing change revision.
+    /// Returns the change revision, incremented once per changed update.
+    /// The counter wraps at `u64::MAX`; compare revisions for equality rather
+    /// than ordering. Incremental readers support crossing that boundary.
     #[must_use]
     pub fn revision(&self) -> u64 {
         self.lock().revision
@@ -62,7 +84,7 @@ impl TerminalSurface {
 
     /// Returns whether both handles refer to the same terminal surface.
     ///
-    /// This is useful when associating a [`crate::render::Terminal`] query result with one of several
+    /// This is useful when associating a [`crate::render::TerminalRenderer`] query result with one of several
     /// surface handles owned by the application.
     #[must_use]
     pub fn shares_state_with(&self, other: &Self) -> bool {
@@ -75,7 +97,9 @@ impl TerminalSurface {
     /// This is the only way to write to a surface: the lock is taken once,
     /// every change made through the [`SurfaceUpdate`] is published together
     /// as at most one new revision, and nothing is published if no cell,
-    /// cursor or size actually changed.
+    /// cursor or size actually changed. If the closure unwinds, completed
+    /// writes are retained and their revision is published before unlocking.
+    /// A batch that changes a value and restores it still publishes a revision.
     ///
     /// ```
     /// # use bevy_terminal::prelude::{TerminalSurface, TerminalCell};
@@ -102,12 +126,11 @@ impl TerminalSurface {
     /// The renderer calls this once per frame whose revision differs from the
     /// snapshot's; the lock is held only while dirty cells are copied.
     pub(crate) fn update_snapshot(&self, snapshot: &mut TerminalSnapshot) -> SnapshotDelta {
-        let mut state = self.lock();
+        let state = self.lock();
         if snapshot.size != state.size {
             let changed_cells = state.cells.len();
             let changed_rows = (0..state.size.height).collect();
             *snapshot = state.snapshot();
-            state.dirty_cells.fill(false);
             return SnapshotDelta {
                 changed_rows,
                 changed_cells,
@@ -121,17 +144,25 @@ impl TerminalSurface {
         let height = state.size.height;
         let mut changed_rows = Vec::new();
         let mut changed_cells = 0;
-        let SurfaceState {
-            cells, dirty_cells, ..
-        } = &mut *state;
         for row in 0..height {
+            // Compare ages rather than raw revisions so wrapping the counter is
+            // harmless. Revisions belong to each reader; synchronizing never
+            // consumes another reader's changes.
+            let age = state
+                .revision
+                .wrapping_sub(state.row_revisions[usize::from(row)]);
+            if age >= state.revision.wrapping_sub(snapshot.revision) {
+                continue;
+            }
             let start = usize::from(row) * width;
             let end = start + width;
             let mut row_changed = false;
-            for index in start..end {
-                if dirty_cells[index] {
-                    snapshot.cells[index].clone_from(&cells[index]);
-                    dirty_cells[index] = false;
+            for (retained, current) in snapshot.cells[start..end]
+                .iter_mut()
+                .zip(&state.cells[start..end])
+            {
+                if retained != current {
+                    retained.clone_from(current);
                     changed_cells += 1;
                     row_changed = true;
                 }
@@ -155,27 +186,16 @@ impl TerminalSurface {
         }
     }
 
-    /// Sets the logical-pixel dimensions of one cell.
-    ///
-    /// The renderer calls this from its render configuration so producers can
-    /// report pixel metrics through [`TerminalSurface::pixel_size`].
-    pub(crate) fn set_cell_size(&self, width: f32, height: f32) {
-        let mut state = self.lock();
-        let cell_size = Some(Vec2::new(width.max(0.0), height.max(0.0)));
-        let pixel_size = surface_pixel_size(state.size, cell_size);
-        if state.cell_size != cell_size || state.pixel_size != pixel_size {
-            state.cell_size = cell_size;
-            state.pixel_size = pixel_size;
-            state.touch();
-        }
-    }
-
-    /// Returns the logical pixel size of the surface once a renderer has
-    /// configured the cell size, `None` before that.
+    /// Reads grid, cursor and revision together without copying cell content.
     #[must_use]
-    pub fn pixel_size(&self) -> Option<UVec2> {
+    pub fn info(&self) -> SurfaceInfo {
         let state = self.lock();
-        state.cell_size.map(|_| state.pixel_size)
+        SurfaceInfo {
+            size: state.size,
+            cursor_position: state.cursor_position,
+            cursor_visible: state.cursor_visible,
+            revision: state.revision,
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, SurfaceState> {
@@ -205,10 +225,10 @@ struct SurfaceState {
     cells: Vec<TerminalCell>,
     cursor_position: CellPosition,
     cursor_visible: bool,
-    cell_size: Option<Vec2>,
-    pixel_size: UVec2,
     revision: u64,
-    dirty_cells: Vec<bool>,
+    // Eight bytes per row, rather than a flag or revision for every cell.
+    // Readers compare cells only in rows changed since their own snapshot.
+    row_revisions: Vec<u64>,
 }
 
 impl SurfaceState {
@@ -236,7 +256,7 @@ impl SurfaceState {
             return false;
         }
         self.cells[index].clone_from(cell);
-        self.dirty_cells[index] = true;
+        self.row_revisions[index / usize::from(self.size.width)] = self.revision.wrapping_add(1);
         true
     }
 
@@ -258,70 +278,31 @@ impl SurfaceState {
         start..start + width
     }
 
-    fn mark_rows_dirty(&mut self, rows: Range<u16>) {
-        for row in rows.start.min(self.size.height)..rows.end.min(self.size.height) {
-            let range = self.row_range(row);
-            self.dirty_cells[range].fill(true);
-        }
-    }
-
-    fn scroll_up(&mut self, region: Range<u16>, line_count: u16) -> bool {
+    fn scroll(&mut self, region: Range<u16>, line_count: u16, down: bool) -> bool {
         let start = region.start.min(self.size.height);
         let end = region.end.min(self.size.height).max(start);
         let count = line_count.min(end - start);
-        if count == 0 {
+        let width = usize::from(self.size.width);
+        if count == 0 || width == 0 {
             return false;
         }
-        let width = usize::from(self.size.width);
         let first = usize::from(start) * width;
         let last = usize::from(end) * width;
-        self.cells[first..last].rotate_left(usize::from(count) * width);
-        for row in end - count..end {
-            let range = self.row_range(row);
-            self.cells[range].fill(TerminalCell::EMPTY);
+        let offset = usize::from(count) * width;
+        let mut changed = false;
+        // Move in the direction that preserves the source, retaining allocation
+        // and marking only rows whose cells actually changed.
+        for step in 0..last - first {
+            let index = if down { last - 1 - step } else { first + step };
+            let source = if down {
+                index.checked_sub(offset).filter(|source| *source >= first)
+            } else {
+                index.checked_add(offset).filter(|source| *source < last)
+            };
+            let cell = source.map_or(TerminalCell::EMPTY, |source| self.cells[source].clone());
+            changed |= self.write(index, &cell);
         }
-        self.mark_rows_dirty(start..end);
-        true
-    }
-
-    fn scroll_down(&mut self, region: Range<u16>, line_count: u16) -> bool {
-        let start = region.start.min(self.size.height);
-        let end = region.end.min(self.size.height).max(start);
-        let count = line_count.min(end - start);
-        if count == 0 {
-            return false;
-        }
-        let width = usize::from(self.size.width);
-        let first = usize::from(start) * width;
-        let last = usize::from(end) * width;
-        self.cells[first..last].rotate_right(usize::from(count) * width);
-        for row in start..start + count {
-            let range = self.row_range(row);
-            self.cells[range].fill(TerminalCell::EMPTY);
-        }
-        self.mark_rows_dirty(start..end);
-        true
-    }
-}
-
-fn surface_pixel_size(size: GridSize, cell_size: Option<Vec2>) -> UVec2 {
-    let Some(cell) = cell_size else {
-        return UVec2::ZERO;
-    };
-    UVec2::new(
-        pixel_dimension(size.width, cell.x),
-        pixel_dimension(size.height, cell.y),
-    )
-}
-
-fn pixel_dimension(cells: u16, cell_size: f32) -> u32 {
-    let value = f32::from(cells) * cell_size;
-    if value.is_finite() {
-        value.round().clamp(0.0, u32::MAX as f32) as u32
-    } else if value.is_sign_positive() {
-        u32::MAX
-    } else {
-        0
+        changed
     }
 }
 
@@ -452,10 +433,17 @@ impl SurfaceUpdate<'_> {
     }
 
     /// Resizes the grid, preserving the overlapping cells and clamping the
-    /// cursor into the new bounds. Every cell is marked dirty.
+    /// cursor into the new bounds. Every row is invalidated.
+    ///
+    /// # Panics
+    /// Panics before modifying the grid if it exceeds [`TerminalSurface::MAX_CELLS`].
     pub fn resize(&mut self, size: impl Into<GridSize>) -> bool {
         let state = &mut *self.state;
         let new_size = size.into();
+        assert!(
+            new_size.area() <= TerminalSurface::MAX_CELLS,
+            "terminal surface exceeds MAX_CELLS"
+        );
         let GridSize {
             width: columns,
             height: rows,
@@ -474,8 +462,7 @@ impl SurfaceUpdate<'_> {
                 .clone_from_slice(&old_cells[old_start..old_start + copied_columns]);
         }
         state.size = new_size;
-        state.pixel_size = surface_pixel_size(new_size, state.cell_size);
-        state.dirty_cells = vec![true; new_size.area()];
+        state.row_revisions = vec![state.revision.wrapping_add(1); usize::from(rows)];
         state.cursor_position.x = state.cursor_position.x.min(columns.saturating_sub(1));
         state.cursor_position.y = state.cursor_position.y.min(rows.saturating_sub(1));
         self.changed = true;
@@ -485,7 +472,7 @@ impl SurfaceUpdate<'_> {
     /// Scrolls the rows in `region` up by `line_count`, clearing the rows that
     /// enter at the bottom.
     pub fn scroll_up(&mut self, region: Range<u16>, line_count: u16) -> bool {
-        let changed = self.state.scroll_up(region, line_count);
+        let changed = self.state.scroll(region, line_count, false);
         self.changed |= changed;
         changed
     }
@@ -493,7 +480,7 @@ impl SurfaceUpdate<'_> {
     /// Scrolls the rows in `region` down by `line_count`, clearing the rows
     /// that enter at the top.
     pub fn scroll_down(&mut self, region: Range<u16>, line_count: u16) -> bool {
-        let changed = self.state.scroll_down(region, line_count);
+        let changed = self.state.scroll(region, line_count, true);
         self.changed |= changed;
         changed
     }
@@ -526,10 +513,113 @@ impl SurfaceUpdate<'_> {
     }
 }
 
+impl Drop for SurfaceUpdate<'_> {
+    fn drop(&mut self) {
+        // A producer panic leaves its completed writes in place. Publish those
+        // writes before releasing the lock, just as on a normal return.
+        self.finish();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::scene::{StyleFlags, TerminalColor, TerminalStyle};
+
+    #[test]
+    fn independent_readers_observe_updates_at_different_rates() {
+        let surface = TerminalSurface::new((4, 2));
+        let mut fast = surface.snapshot();
+        let mut slow = surface.snapshot();
+        surface.update(|u| {
+            u.set_cell((1, 0), &TerminalCell::new("A"));
+        });
+        surface.update_snapshot(&mut fast);
+        surface.update(|u| {
+            u.set_cell((2, 1), &TerminalCell::new("B"));
+        });
+        surface.update_snapshot(&mut fast);
+        let delta = surface.update_snapshot(&mut slow);
+        assert_eq!(delta.changed_rows, [0, 1]);
+        assert_eq!(slow.to_text(), fast.to_text());
+        assert_eq!(slow.revision(), fast.revision());
+        assert!(surface.update_snapshot(&mut slow).changed_rows.is_empty());
+    }
+
+    #[test]
+    fn unwinding_publishes_partial_changes_and_recovers_the_lock() {
+        let surface = TerminalSurface::new((2, 1));
+        let mut snapshot = surface.snapshot();
+        let result = std::panic::catch_unwind(|| {
+            surface.update(|u| {
+                u.set_cell((0, 0), &TerminalCell::new("A"));
+                panic!("producer failure");
+            })
+        });
+        assert!(result.is_err());
+        assert_ne!(surface.revision(), snapshot.revision());
+        surface.update_snapshot(&mut snapshot);
+        assert_eq!(snapshot.row_text(0), "A ");
+        assert!(surface.update(|u| {
+            u.set_cell((1, 0), &TerminalCell::new("B"));
+        }));
+        assert_eq!(surface.snapshot().row_text(0), "AB");
+    }
+
+    #[test]
+    fn oversized_resize_panics_before_changing_the_surface() {
+        let surface = TerminalSurface::new((2, 1));
+        let before = surface.info();
+        assert!(
+            std::panic::catch_unwind(|| {
+                surface.update(|update| {
+                    update.resize((u16::MAX, u16::MAX));
+                });
+            })
+            .is_err()
+        );
+        assert_eq!(surface.info(), before);
+        assert_eq!(surface.snapshot().to_text(), "  ");
+        assert!(std::panic::catch_unwind(|| TerminalSurface::new((u16::MAX, u16::MAX))).is_err());
+    }
+
+    #[test]
+    fn snapshot_readers_cross_revision_wrap_independently() {
+        let surface = TerminalSurface::new((1, 2));
+        {
+            let mut state = surface.lock();
+            state.revision = u64::MAX - 1;
+            state.row_revisions.fill(u64::MAX - 1);
+        }
+        let mut fast = surface.snapshot();
+        let mut slow = fast.clone();
+        surface.update(|update| {
+            update.set_cell((0, 0), &TerminalCell::new("A"));
+        });
+        assert_eq!(surface.update_snapshot(&mut fast).changed_rows, [0]);
+        surface.update(|update| {
+            update.set_cell((0, 1), &TerminalCell::new("B"));
+        });
+        assert_eq!(surface.revision(), 0);
+        assert_eq!(surface.update_snapshot(&mut fast).changed_rows, [1]);
+        assert_eq!(surface.update_snapshot(&mut slow).changed_rows, [0, 1]);
+        assert_eq!(fast.to_text(), slow.to_text());
+    }
+
+    #[test]
+    fn scrolling_unchanged_content_does_not_publish() {
+        let surface = TerminalSurface::new((4, 3));
+        assert!(!surface.update(|u| {
+            u.scroll_up(0..3, 1);
+        }));
+        assert!(!surface.update(|u| {
+            u.scroll_down(0..3, 2);
+        }));
+        let empty = TerminalSurface::new((0, 3));
+        assert!(!empty.update(|u| {
+            u.scroll_up(0..3, 1);
+        }));
+    }
 
     fn fill(surface: &TerminalSurface, text: &str, width: u16) {
         surface.update(|update| {
@@ -747,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn resize_preserves_the_two_dimensional_overlap_and_reports_metrics() {
+    fn resize_preserves_the_two_dimensional_overlap() {
         let surface = TerminalSurface::new((4, 3));
         fill(&surface, "AAAABBBBCCCC", 4);
         surface.update(|u| {
@@ -763,10 +853,10 @@ mod tests {
         assert_eq!(snapshot[(0, 2)].symbol(), "C");
         assert_eq!(snapshot.cursor_position(), CellPosition::new(1, 2));
 
-        assert_eq!(surface.pixel_size(), None);
-        surface.set_cell_size(10.8, 20.0);
-        assert_eq!(surface.size(), GridSize::new(2, 3));
-        assert_eq!(surface.pixel_size(), Some(UVec2::new(22, 60)));
+        let info = surface.info();
+        assert_eq!(info.size, snapshot.size());
+        assert_eq!(info.cursor_position, snapshot.cursor_position());
+        assert_eq!(info.revision, snapshot.revision());
     }
 
     #[test]

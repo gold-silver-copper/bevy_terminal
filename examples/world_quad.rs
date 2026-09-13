@@ -24,7 +24,8 @@ struct Screen {
 
 fn main() {
     // The first presented frame already shows the demo scene.
-    let (terminal, renderer) = RatatuiTerminal::drawn(60, 18, common::draw_demo_frame);
+    let (terminal, renderer) =
+        RatatuiTerminal::drawn(60, 18, common::draw_demo_frame).with_renderer();
     let mut app = App::new();
     app.add_plugins((DefaultPlugins, TerminalPlugin));
     let fonts = common::fonts::load(&mut app);

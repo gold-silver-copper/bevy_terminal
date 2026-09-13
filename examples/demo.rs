@@ -5,7 +5,7 @@ mod common;
 
 use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_terminal_ratatui::prelude::{
-    TerminalPlugin, TerminalRenderConfig, TerminalSystems, TerminalTexture,
+    TerminalPlugin, TerminalRenderConfig, TerminalSizing, TerminalSystems, TerminalTexture,
 };
 use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 
@@ -18,7 +18,7 @@ fn main() {
     let terminal = common::demo_terminal();
     let surface = terminal.surface();
     let config = TerminalRenderConfig {
-        cell_size: Vec2::new(11.0, 20.0).into(),
+        sizing: TerminalSizing::FitCellWidth(Vec2::new(11.0, 20.0)),
         ..default()
     };
 

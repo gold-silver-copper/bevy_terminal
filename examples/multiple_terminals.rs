@@ -12,7 +12,7 @@ use bevy::{
     window::{PrimaryWindow, WindowResolution},
 };
 use bevy_terminal_ratatui::prelude::{
-    TerminalPlugin, TerminalRenderConfig, TerminalSystems, TerminalTexture,
+    TerminalPlugin, TerminalRenderConfig, TerminalSizing, TerminalSystems, TerminalTexture,
 };
 use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 use ratatui::{
@@ -37,8 +37,8 @@ const ROW_BOTTOM_MARGIN: f32 = 24.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminals = IndependentTerminals {
-        left: RatatuiTerminal::new(42, 16).0,
-        right: RatatuiTerminal::new(34, 12).0,
+        left: RatatuiTerminal::new(42, 16),
+        right: RatatuiTerminal::new(34, 12),
         tick: 0,
         timer: Timer::new(Duration::from_millis(250), TimerMode::Repeating),
     };
@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     let fonts = fonts::load(&mut app);
     let config = fonts.configure(TerminalRenderConfig {
-        cell_size: Vec2::new(10.0, 18.0).into(),
+        sizing: TerminalSizing::FitCellWidth(Vec2::new(10.0, 18.0)),
         ..default()
     });
     app.insert_resource(fonts)

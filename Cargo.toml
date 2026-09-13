@@ -16,6 +16,8 @@ categories = ["game-development", "gui", "rendering"]
 exclude = [
     "benchmarks/renderer-comparison/**",
     "crates/**",
+    "integration/**",
+    "CLEANUP_PROGRESS.md",
     "*_PROMPT.md",
     "assets/fonts/*",
     "!assets/fonts/jetbrains-mono",
@@ -34,7 +36,7 @@ system_fonts = ["bevy_terminal/system_fonts"]
 bevy_terminal = { version = "0.7.3", path = "crates/bevy_terminal", default-features = false }
 # Only for the `Component` derive on `RatatuiTerminal`; the version is pinned by `bevy_terminal`.
 bevy = { version = "0.19", default-features = false }
-ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets", "scrolling-regions", "std", "underline-color"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["scrolling-regions", "std", "underline-color"] }
 
 [[example]]
 name = "world_quad"
@@ -45,6 +47,7 @@ name = "imported_screen"
 required-features = ["3d"]
 
 [dev-dependencies]
+ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets"] }
 bevy = { version = "0.19", default-features = false, features = ["2d", "3d", "ui", "system_font_discovery"] }
 bevy_image_export = { git = "https://github.com/paulkre/bevy_image_export", tag = "v0.17.0" }
 # Okhsv -> sRGB gamut math for the `colors_rgb` example port; upstream Ratatui

@@ -1564,6 +1564,7 @@ version = "0.7.3"
 dependencies = [
  "bevy",
  "bevy_image_export",
+ "bitflags 2.13.1",
  "skrifa 0.42.1",
  "smol_str",
 ]

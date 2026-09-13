@@ -16,15 +16,15 @@ pub mod prelude {
     pub use crate::render::TerminalWorldQuad;
     pub use crate::{
         render::{
-            BlinkConfig, CellSizing, CursorConfig, CursorStyle, FontFaces, FontSizing,
-            RasterConfig, SmolStr, Terminal, TerminalFonts, TerminalPlugin, TerminalReady,
-            TerminalRemeasured, TerminalRenderConfig, TerminalRenderScale, TerminalStats,
+            BlinkConfig, CursorConfig, CursorStyle, FontFaces, RasterConfig, SmolStr,
+            TerminalFonts, TerminalPlugin, TerminalReady, TerminalRemeasured, TerminalRenderConfig,
+            TerminalRenderScale, TerminalRenderer, TerminalSizing, TerminalStats, TerminalStatus,
             TerminalSystems, TerminalTexture, TerminalTheme, font_family,
         },
         scene::{
             CellOccupancy, CellPosition, CellSymbol, GridSize, StyleFlags, TerminalCell,
             TerminalColor, TerminalSnapshot, TerminalStyle,
         },
-        surface::{SurfaceUpdate, TerminalSurface},
+        surface::{SurfaceInfo, SurfaceUpdate, TerminalSurface},
     };
 }

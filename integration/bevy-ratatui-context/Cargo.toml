@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "bevy-ratatui-context-integration"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bevy = { version = "0.19", default-features = false }
+bevy_terminal_ratatui = { path = "../..", default-features = false, features = ["ui"] }
+# Compile against the real consumer's trait, without starting its native terminal.
+bevy_ratatui = { path = "../../../bevy_ratatui", default-features = false, features = ["std", "crossterm"] }
+ratatui = { version = "0.30.2", default-features = false }

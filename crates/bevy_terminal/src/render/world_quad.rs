@@ -7,13 +7,13 @@ use bevy::{
 
 use super::{TerminalSystems, TerminalTexture};
 
-/// Presents a [`super::Terminal`] on a world-space rectangle.
+/// Presents a [`super::TerminalRenderer`] on a world-space rectangle.
 ///
-/// Add it next to the `Terminal` component (with a `Transform` to place it).
+/// Add it next to the `TerminalRenderer` component (with a `Transform` to place it).
 /// The plugin inserts a `Mesh3d` sized `height` tall and as wide as the
 /// texture's aspect ratio dictates, plus an unlit, alpha-blended
-/// `StandardMaterial` bound to the terminal image. The mesh is rebuilt whenever
-/// the texture is (re)measured or this component changes; the material is
+/// `StandardMaterial` bound to the terminal image. The mesh is rebuilt only when
+/// its dimensions change; the material is
 /// created once because the image handle is stable.
 ///
 /// # Material contract
@@ -110,12 +110,16 @@ pub(super) fn plugin(app: &mut App) {
 }
 
 type QuadChanged = Or<(Changed<TerminalWorldQuad>, Changed<TerminalTexture>)>;
+#[derive(Component)]
+struct QuadGeometry(Vec2);
+
 type QuadItem<'w> = (
     Entity,
     &'w TerminalWorldQuad,
     &'w TerminalTexture,
     Option<&'w Mesh3d>,
     Option<&'w MeshMaterial3d<StandardMaterial>>,
+    Option<&'w QuadGeometry>,
 );
 
 fn sync_world_quads(
@@ -124,19 +128,21 @@ fn sync_world_quads(
     mut materials: ResMut<Assets<StandardMaterial>>,
     quads: Query<QuadItem<'_>, QuadChanged>,
 ) {
-    for (entity, quad, texture, mesh, material) in &quads {
+    for (entity, quad, texture, mesh, material, geometry) in &quads {
         let size = quad.size_for(texture.size);
-        let rectangle = Mesh::from(Rectangle::from_size(size));
         match mesh.filter(|mesh| meshes.contains(&mesh.0)) {
-            Some(mesh) => {
+            Some(mesh) if geometry.is_none_or(|geometry| geometry.0 != size) => {
                 if let Some(mut existing) = meshes.get_mut(&mesh.0) {
-                    *existing = rectangle;
+                    *existing = Mesh::from(Rectangle::from_size(size));
                 }
+                commands.entity(entity).insert(QuadGeometry(size));
             }
+            Some(_) => {}
             None => {
-                commands
-                    .entity(entity)
-                    .insert(Mesh3d(meshes.add(rectangle)));
+                commands.entity(entity).insert((
+                    Mesh3d(meshes.add(Rectangle::from_size(size))),
+                    QuadGeometry(size),
+                ));
             }
         }
         let material_handle = match material {
@@ -149,9 +155,18 @@ fn sync_world_quads(
                 handle
             }
         };
-        let Some(mut material) = materials.get_mut(&material_handle) else {
+        let Some(existing) = materials.get(&material_handle) else {
             continue;
         };
+        if existing.base_color_texture.as_ref() == Some(&texture.image)
+            && existing.unlit == quad.unlit
+            && existing.alpha_mode == quad.alpha_mode
+            && existing.double_sided == quad.double_sided
+            && existing.cull_mode == quad.cull_mode
+        {
+            continue;
+        }
+        let mut material = materials.get_mut(&material_handle).unwrap();
         material.base_color_texture = Some(texture.image.clone());
         material.unlit = quad.unlit;
         material.alpha_mode = quad.alpha_mode;
@@ -165,7 +180,85 @@ mod tests {
     use bevy::camera::primitives::MeshAabb;
 
     use super::*;
-    use crate::{render::Terminal, surface::TerminalSurface};
+    use crate::{render::TerminalRenderer, surface::TerminalSurface};
+
+    #[test]
+    fn unchanged_geometry_does_not_modify_mesh_or_material_assets() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>();
+        plugin(&mut app);
+        let entity = app
+            .world_mut()
+            .spawn((
+                TerminalWorldQuad::default(),
+                TerminalTexture {
+                    status: super::super::TerminalStatus::Loading,
+                    image: Handle::default(),
+                    size: UVec2::new(80, 40),
+                    logical_size: Vec2::new(80.0, 40.0),
+                    raster_scale: 1.0,
+                    cell_size: Vec2::ONE,
+                    font_size: 1.0,
+                },
+            ))
+            .id();
+        app.update();
+        app.update();
+        let mut mesh_events = app
+            .world()
+            .resource::<Messages<AssetEvent<Mesh>>>()
+            .get_cursor_current();
+        let mut material_events = app
+            .world()
+            .resource::<Messages<AssetEvent<StandardMaterial>>>()
+            .get_cursor_current();
+
+        // A measurement/status notification with identical geometry must be idle.
+        app.world_mut()
+            .get_mut::<TerminalTexture>(entity)
+            .unwrap()
+            .status = super::super::TerminalStatus::Ready;
+        app.update();
+        app.update();
+        assert_eq!(
+            mesh_events
+                .read(app.world().resource::<Messages<AssetEvent<Mesh>>>())
+                .count(),
+            0
+        );
+        assert_eq!(
+            material_events
+                .read(
+                    app.world()
+                        .resource::<Messages<AssetEvent<StandardMaterial>>>()
+                )
+                .count(),
+            0
+        );
+
+        app.world_mut()
+            .get_mut::<TerminalWorldQuad>(entity)
+            .unwrap()
+            .unlit = false;
+        app.update();
+        app.update();
+        assert_eq!(
+            mesh_events
+                .read(app.world().resource::<Messages<AssetEvent<Mesh>>>())
+                .count(),
+            0
+        );
+        assert!(
+            material_events
+                .read(
+                    app.world()
+                        .resource::<Messages<AssetEvent<StandardMaterial>>>()
+                )
+                .any(|event| matches!(event, AssetEvent::Modified { .. }))
+        );
+    }
 
     #[test]
     fn quad_follows_the_texture_aspect_and_keeps_its_material() {
@@ -182,7 +275,10 @@ mod tests {
         let surface = TerminalSurface::new((4, 2));
         let entity = app
             .world_mut()
-            .spawn((Terminal::new(surface.clone()), TerminalWorldQuad::new(2.0)))
+            .spawn((
+                TerminalRenderer::new(surface.clone()),
+                TerminalWorldQuad::new(2.0),
+            ))
             .id();
         app.update();
         app.update();

@@ -1,7 +1,7 @@
-//! Rendering: the [`TerminalPlugin`], the [`Terminal`] component and its
+//! Rendering: the [`TerminalPlugin`], the [`TerminalRenderer`] component and its
 //! configuration, the renderer-owned [`TerminalTexture`], per-terminal
 //! [`TerminalStats`], and the [`TerminalTheme`]. Add the plugin once and spawn
-//! a `Terminal` (plus an `ImageNode` to show it) per rendered surface.
+//! a `TerminalRenderer` (plus an `ImageNode` to show it) per rendered surface.
 
 use bevy::{
     ecs::schedule::SystemSet,
@@ -17,16 +17,18 @@ use crate::scene::{StyleFlags, TerminalCell, TerminalSnapshot};
 mod batch;
 mod color;
 mod fonts;
+mod terminal;
 #[cfg(feature = "3d")]
 mod world_quad;
 
-pub use batch::{
-    Terminal, TerminalPlugin, TerminalReady, TerminalRemeasured, TerminalStats, TerminalTexture,
-    grid_for, grid_for_window, raster_scale_for_window,
-};
+pub use batch::TerminalPlugin;
 pub use color::TerminalTheme;
 use color::dim;
 pub use fonts::{SmolStr, TerminalFonts, font_family};
+pub use terminal::{
+    TerminalReady, TerminalRemeasured, TerminalRenderer, TerminalStats, TerminalStatus,
+    TerminalTexture, grid_for, grid_for_window, raster_scale_for_window,
+};
 #[cfg(feature = "3d")]
 pub use world_quad::TerminalWorldQuad;
 
@@ -166,17 +168,7 @@ impl FontFaces {
     /// Returns the face used for the given weight and style.
     #[must_use]
     pub fn select(&self, bold: bool, italic: bool) -> &FontSource {
-        match (bold, italic) {
-            (true, true) => self
-                .bold_italic
-                .as_ref()
-                .or(self.bold.as_ref())
-                .or(self.italic.as_ref()),
-            (true, false) => self.bold.as_ref(),
-            (false, true) => self.italic.as_ref(),
-            (false, false) => None,
-        }
-        .unwrap_or(&self.regular)
+        self.resolve(bold, italic).0
     }
 }
 
@@ -192,56 +184,86 @@ impl<T: Into<FontSource>> From<T> for FontFaces {
     }
 }
 
-/// How the rasterized font size is chosen.
+/// How requested logical sizes determine the terminal's measured geometry.
 ///
-/// # Vertical fit
-///
-/// Whichever variant is used, the renderer measures the primary font after
-/// choosing the size: the rows a full block (`█`) covers completely are the
-/// font's *line box*, and the ink of an ASCII probe (`gjpqy|[]{}()_`) in every
-/// face plus an accented-capital probe are measured too. Glyphs are then
-/// shifted by one uniform whole-pixel offset per terminal so that (in this
-/// order) the block keeps covering the cell (tiles of blocks stay seamless),
-/// the ASCII probe is fully inside the cell, and accented capitals are inside
-/// when the font leaves room. Nothing about the font is assumed; the
-/// measurement is repeated whenever fonts or the configuration change and
-/// never per frame.
-///
-/// With [`FitCellWidth`](Self::FitCellWidth), the configured cell height is a
-/// *minimum*; [`CellSizing::FromFont`] instead takes the measured line box as
-/// its height. In either mode a primary-font glyph inside the line box is never
-/// clipped and blocks tile with no seam. With [`Px`](Self::Px) in a
-/// [`CellSizing::Logical`] cell both sizes are honored exactly and glyphs
-/// beyond the cell are clipped after the same fitting. Fallback-font glyphs,
-/// italics that overhang their advance and accents that a font draws above its
-/// own line box are centered/pushed into the cell (dropping the faintest
-/// columns when they are wider than it) and clipped as a last resort. A
-/// sub-pixel overshoot — the fraction of a column that box-drawing and block
-/// glyphs are drawn past their advance so strokes overlap — is not overhang:
-/// the run keeps its bearings and the cell clips the column, so `┌` stays
-/// aligned with `│`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum FontSizing {
-    /// Measure the regular font's advance width by shaping it and pick the
-    /// font size at which one glyph advance equals the *physical* cell width,
-    /// so box-drawing and block glyphs designed to fill their advance tile the
-    /// grid without seams at every raster scale. Assumes a monospaced primary
-    /// font. The cell height is at least the font's line box (see above).
-    #[default]
-    FitCellWidth,
-    /// Request this size in logical pixels. With an explicit cell this is used
-    /// exactly. With [`CellSizing::FromFont`], the physical size is adjusted
-    /// just enough for the measured advance to equal the cell's whole-pixel
-    /// width, preventing seams in block and box-drawing glyphs; read the
-    /// effective size from [`TerminalTexture::font_size`](crate::render::TerminalTexture::font_size).
-    Px(f32),
+/// The renderer snaps cells to physical pixels. Font-driven and width-fitted
+/// modes then refit the font advance to that width, preventing seams. Glyph
+/// fitting preserves the font's line box and clips fallback overhang to cells.
+/// Read effective dimensions from [`TerminalTexture::measured`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TerminalSizing {
+    /// Derive cells from a logical font size and line-height multiplier.
+    /// Width follows the font advance; height follows ascent, descent and
+    /// leading. Multipliers below one intentionally clip outer ink. Block
+    /// elements still tile because they are rendered as geometry.
+    FromFont {
+        /// Requested logical font size.
+        font_size: f32,
+        /// Positive multiplier of the font's natural line box.
+        line_height: f32,
+    },
+    /// Fit the font to this logical cell width. Height is a minimum and grows
+    /// to contain the font's line box.
+    FitCellWidth(Vec2),
+    /// Explicit logical cell and font sizes. Cells snap to physical pixels;
+    /// glyphs exceeding them are fitted and clipped without growing the cell.
+    Fixed {
+        /// Logical dimensions of one cell.
+        cell_size: Vec2,
+        /// Requested logical font size.
+        font_size: f32,
+    },
+}
+
+impl TerminalSizing {
+    /// Font-driven sizing with natural line height.
+    #[must_use]
+    pub const fn font(font_size: f32) -> Self {
+        Self::FromFont {
+            font_size,
+            line_height: 1.0,
+        }
+    }
+
+    /// Checks that every requested dimension and multiplier is finite and positive.
+    pub fn is_valid(self) -> bool {
+        let positive = |value: f32| value.is_finite() && value > 0.0;
+        match self {
+            Self::FromFont {
+                font_size,
+                line_height,
+            } => positive(font_size) && positive(line_height),
+            Self::FitCellWidth(cell) => positive(cell.x) && positive(cell.y),
+            Self::Fixed {
+                cell_size,
+                font_size,
+            } => positive(cell_size.x) && positive(cell_size.y) && positive(font_size),
+        }
+    }
+
+    fn needs_advance(self) -> bool {
+        !matches!(self, Self::Fixed { .. })
+    }
+
+    fn line_height(self) -> f32 {
+        match self {
+            Self::FromFont { line_height, .. } => line_height,
+            _ => 1.0,
+        }
+    }
+}
+
+impl Default for TerminalSizing {
+    fn default() -> Self {
+        Self::FitCellWidth(Vec2::new(11.0, 20.0))
+    }
 }
 
 /// Number of probe glyphs shaped by [`measure_advance`].
 const PROBE_GLYPHS: usize = 100;
 /// Font size in logical pixels used to shape the probe run.
 pub(crate) const PROBE_FONT_SIZE: f32 = 64.0;
-/// Font size used while [`FontSizing::FitCellWidth`] has not been measured yet.
+/// Font size used while [`TerminalSizing::FitCellWidth`] has not been measured yet.
 const UNMEASURED_FONT_SIZE: f32 = 16.0;
 
 /// Measures the average advance of the regular font at [`PROBE_FONT_SIZE`] by
@@ -311,18 +333,21 @@ pub(crate) struct LogicalMetrics {
 /// (`None` until it could be measured).
 fn resolve_metrics(config: &TerminalRenderConfig, measured_advance: Option<f32>) -> LogicalMetrics {
     let advance_per_px = measured_advance.map(|advance| advance / PROBE_FONT_SIZE);
-    match (config.cell_size, config.font_size) {
-        (CellSizing::Logical(cell), FontSizing::Px(size)) => LogicalMetrics {
-            font_size: size.max(1.0),
-            cell_size: cell,
+    match config.sizing {
+        TerminalSizing::Fixed {
+            cell_size,
+            font_size,
+        } => LogicalMetrics {
+            font_size: font_size.max(1.0),
+            cell_size,
         },
-        (CellSizing::Logical(cell), FontSizing::FitCellWidth) => LogicalMetrics {
+        TerminalSizing::FitCellWidth(cell_size) => LogicalMetrics {
             font_size: advance_per_px
-                .map_or(UNMEASURED_FONT_SIZE, |ratio| (cell.x / ratio).max(1.0)),
-            cell_size: cell,
+                .map_or(UNMEASURED_FONT_SIZE, |ratio| (cell_size.x / ratio).max(1.0)),
+            cell_size,
         },
-        (CellSizing::FromFont { .. }, FontSizing::Px(size)) => {
-            let font_size = size.max(1.0);
+        TerminalSizing::FromFont { font_size, .. } => {
+            let font_size = font_size.max(1.0);
             let cell_size = advance_per_px.map_or(Vec2::ONE, |ratio| {
                 Vec2::new((ratio * font_size).max(1.0), 1.0)
             });
@@ -330,18 +355,6 @@ fn resolve_metrics(config: &TerminalRenderConfig, measured_advance: Option<f32>)
                 font_size,
                 cell_size,
             }
-        }
-        (CellSizing::FromFont { .. }, FontSizing::FitCellWidth) => {
-            warn_once!(
-                "bevy_terminal: CellSizing::FromFont requires FontSizing::Px; using the default font size"
-            );
-            resolve_metrics(
-                &TerminalRenderConfig {
-                    font_size: FontSizing::Px(UNMEASURED_FONT_SIZE),
-                    ..config.clone()
-                },
-                measured_advance,
-            )
         }
     }
 }
@@ -457,85 +470,21 @@ pub enum TerminalRenderScale {
     Fixed(f32),
 }
 
-/// How the logical cell size is chosen.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum CellSizing {
-    /// An explicit cell size in logical pixels. Combine with
-    /// [`FontSizing::FitCellWidth`] to size the font to the cell width (the
-    /// height then grows to the font's line box when it is shorter — read the
-    /// effective size from [`TerminalTexture::cell_size`](crate::render::TerminalTexture::cell_size)),
-    /// or with [`FontSizing::Px`] for full control of both.
-    Logical(Vec2),
-    /// Derive the cell from the font: width = the regular font's measured
-    /// advance at the configured [`FontSizing::Px`] size, snapped to a whole
-    /// physical pixel, and height = the font's line box (ascent + descent +
-    /// leading from its metrics tables, as terminal emulators size rows)
-    /// times `line_height`, grown to the full block glyph when that is taller
-    /// and the multiplier is not below one. The final raster font size is derived back from the
-    /// snapped width so glyph advance and cell width remain identical. This is
-    /// how terminal emulators work ("font size in, cell size out"; zoom by
-    /// changing the font size). Requires [`FontSizing::Px`].
-    FromFont {
-        /// Multiplier applied to the font's line box to get the cell height:
-        /// `1.0` is the font's natural row (the terminal-emulator default),
-        /// `0.9` packs rows tighter, `1.2` spaces them out, like WezTerm's
-        /// `line_height` or Ghostty's `adjust-cell-height`. Below `1.0` the
-        /// outermost ascender and descender pixels clip; block elements are
-        /// drawn from geometry, so they still tile. The block glyph only
-        /// grows the cell when the multiplier is at least `1.0`. Values that
-        /// are not finite or not positive are treated as `1.0`.
-        line_height: f32,
-    },
-}
-
-impl CellSizing {
-    /// Derive both cell dimensions from the selected font at its natural line
-    /// height.
-    pub const FROM_FONT: Self = Self::FromFont { line_height: 1.0 };
-
-    /// The effective line-height multiplier of a font-driven cell (`1.0` for
-    /// an explicit cell or an invalid value).
-    #[must_use]
-    pub fn line_height(self) -> f32 {
-        match self {
-            Self::FromFont { line_height } if line_height.is_finite() && line_height > 0.0 => {
-                line_height
-            }
-            _ => 1.0,
-        }
-    }
-}
-
-impl Default for CellSizing {
-    fn default() -> Self {
-        Self::Logical(Vec2::new(11.0, 20.0))
-    }
-}
-
-impl From<Vec2> for CellSizing {
-    fn from(cell: Vec2) -> Self {
-        Self::Logical(cell)
-    }
-}
-
 /// Configuration for converting terminal cells into rendered geometry and text.
 ///
-/// The cell size is either explicit ([`CellSizing::Logical`]) or derived from
-/// the font ([`CellSizing::FromFont`]). Bevy can shape several fallback fonts
+/// [`TerminalSizing`] selects font-driven or explicit cell geometry. Bevy can shape several fallback fonts
 /// in one run, so there is no single font metric that is guaranteed to describe
 /// every Unicode glyph; text runs are anchored to cell coordinates to prevent
 /// cumulative drift either way.
 ///
-/// This is a component: every [`Terminal`] entity requires one (a default is
+/// This is a component: every [`TerminalRenderer`] entity requires one (a default is
 /// inserted automatically). Mutating it rebuilds only that terminal.
-#[derive(Clone, Component, Debug, PartialEq)]
+#[derive(Clone, Component, Debug, Default, PartialEq)]
 pub struct TerminalRenderConfig {
-    /// How the cell size is chosen.
-    pub cell_size: CellSizing,
+    /// Requested sizing policy; effective geometry is exposed by the texture.
+    pub sizing: TerminalSizing,
     /// Font faces for regular, bold, italic and bold-italic text.
     pub font: FontFaces,
-    /// How the font size is chosen.
-    pub font_size: FontSizing,
     /// Terminal color theme.
     pub theme: TerminalTheme,
     /// Cursor appearance.
@@ -544,20 +493,6 @@ pub struct TerminalRenderConfig {
     pub blink: BlinkConfig,
     /// Physical rasterization settings.
     pub raster: RasterConfig,
-}
-
-impl Default for TerminalRenderConfig {
-    fn default() -> Self {
-        Self {
-            cell_size: CellSizing::default(),
-            font: FontFaces::default(),
-            font_size: FontSizing::FitCellWidth,
-            theme: TerminalTheme::default(),
-            cursor: CursorConfig::default(),
-            blink: BlinkConfig::default(),
-            raster: RasterConfig::default(),
-        }
-    }
 }
 
 /// Physical rasterization settings.
@@ -569,7 +504,7 @@ pub struct RasterConfig {
     ///
     /// Defaults to [`FontHinting::Disabled`]: hinted rasterization snaps the
     /// font to whole-pixel sizes, so a font sized to fill the cell width
-    /// exactly (see [`FontSizing::FitCellWidth`]) is rendered a fraction too
+    /// exactly (see [`TerminalSizing::FitCellWidth`]) is rendered a fraction too
     /// narrow or wide and adjacent block/box glyphs show seams on displays
     /// whose scale factor makes the physical font size fractional. Unhinted
     /// rasterization keeps the measured metrics exact.
@@ -722,18 +657,34 @@ mod tests {
     }
 
     #[test]
-    fn from_font_line_height_multiplier() {
-        assert_eq!(CellSizing::FROM_FONT.line_height(), 1.0);
-        assert_eq!(CellSizing::FromFont { line_height: 0.9 }.line_height(), 0.9);
-        assert_eq!(CellSizing::FromFont { line_height: 0.0 }.line_height(), 1.0);
+    fn sizing_rejects_invalid_numeric_inputs() {
+        assert!(TerminalSizing::font(16.0).is_valid());
+        for value in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(!TerminalSizing::font(value).is_valid());
+            assert!(
+                !TerminalSizing::FromFont {
+                    font_size: 16.0,
+                    line_height: value
+                }
+                .is_valid()
+            );
+            assert!(!TerminalSizing::FitCellWidth(Vec2::new(value, 20.0)).is_valid());
+            assert!(
+                !TerminalSizing::Fixed {
+                    cell_size: Vec2::ONE,
+                    font_size: value
+                }
+                .is_valid()
+            );
+        }
         assert_eq!(
-            CellSizing::FromFont {
-                line_height: f32::NAN
+            TerminalSizing::FromFont {
+                font_size: 16.0,
+                line_height: 0.9
             }
             .line_height(),
-            1.0
+            0.9
         );
-        assert_eq!(CellSizing::Logical(Vec2::ONE).line_height(), 1.0);
     }
 
     #[test]
@@ -903,7 +854,7 @@ mod tests {
     #[test]
     fn font_size_selection_uses_measured_advance_or_explicit_pixels() {
         let config = TerminalRenderConfig {
-            cell_size: Vec2::new(11.0, 20.0).into(),
+            sizing: TerminalSizing::FitCellWidth(Vec2::new(11.0, 20.0)),
             ..default()
         };
         // A font whose advance is 0.6 em measures 38.4 px at the 64 px probe.
@@ -915,7 +866,10 @@ mod tests {
             UNMEASURED_FONT_SIZE
         );
         let explicit = TerminalRenderConfig {
-            font_size: FontSizing::Px(18.0),
+            sizing: TerminalSizing::Fixed {
+                cell_size: Vec2::new(11.0, 20.0),
+                font_size: 18.0,
+            },
             ..config.clone()
         };
         assert_eq!(resolve_metrics(&explicit, Some(38.4)).font_size, 18.0);
@@ -924,8 +878,10 @@ mod tests {
         // Before refinement, font-driven cells have a measured width and a
         // placeholder height; refinement replaces it with the measured line box.
         let from_font = TerminalRenderConfig {
-            cell_size: CellSizing::FROM_FONT,
-            font_size: FontSizing::Px(20.0),
+            sizing: TerminalSizing::FromFont {
+                font_size: 20.0,
+                line_height: 1.0,
+            },
             ..config
         };
         let metrics = resolve_metrics(&from_font, Some(38.4));
@@ -935,20 +891,13 @@ mod tests {
         assert_eq!(resolve_metrics(&from_font, None).cell_size, Vec2::ONE);
         // Zooming changes the cell.
         let zoomed = TerminalRenderConfig {
-            font_size: FontSizing::Px(30.0),
+            sizing: TerminalSizing::FromFont {
+                font_size: 30.0,
+                line_height: 1.0,
+            },
             ..from_font.clone()
         };
         assert!((resolve_metrics(&zoomed, Some(38.4)).cell_size.x - 18.0).abs() < 1e-4);
-        // FromFont with FitCellWidth is a configuration error: retain
-        // font-driven sizing and substitute the renderer's default font size.
-        let invalid = TerminalRenderConfig {
-            font_size: FontSizing::FitCellWidth,
-            ..from_font
-        };
-        let fallback = resolve_metrics(&invalid, Some(38.4));
-        assert_eq!(fallback.font_size, UNMEASURED_FONT_SIZE);
-        assert!((fallback.cell_size.x - 9.6).abs() < 1e-4);
-        assert_eq!(fallback.cell_size.y, 1.0);
     }
 
     #[test]

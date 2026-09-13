@@ -22,7 +22,7 @@ use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, Ima
 use bevy_terminal_ratatui::TerminalRenderer;
 use bevy_terminal_ratatui::prelude::{
     BlinkConfig, CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig,
-    TerminalRenderScale, TerminalSystems,
+    TerminalRenderScale, TerminalSizing, TerminalSystems,
 };
 
 const CELL_WIDTH: f32 = 10.0;
@@ -49,7 +49,7 @@ fn main() {
 
     let surface = catalog::draw_surface(&catalog::EXAMPLES[0]);
     let config = TerminalRenderConfig {
-        cell_size: Vec2::new(CELL_WIDTH, CELL_HEIGHT).into(),
+        sizing: TerminalSizing::FitCellWidth(Vec2::new(CELL_WIDTH, CELL_HEIGHT)),
         raster: RasterConfig {
             scale: TerminalRenderScale::Fixed(1.0),
             ..default()

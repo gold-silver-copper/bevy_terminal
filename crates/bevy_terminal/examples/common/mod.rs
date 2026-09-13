@@ -22,7 +22,7 @@ pub fn ui_terminal(
     origin: Vec2,
 ) -> impl Bundle {
     (
-        Terminal::new(surface),
+        TerminalRenderer::new(surface),
         config,
         ImageNode::default(),
         Node {

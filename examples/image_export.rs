@@ -17,7 +17,7 @@ use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, Ima
 use bevy_terminal_ratatui::TerminalRenderer;
 use bevy_terminal_ratatui::prelude::{
     CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalRenderScale,
-    TerminalSystems,
+    TerminalSizing, TerminalSystems,
 };
 
 /// Canvas large enough for the 72×22 scene at the measured Iosevka cell
@@ -29,7 +29,7 @@ const EXPORT_FRAMES: u32 = 12;
 fn main() {
     let surface = common::demo_surface();
     let config = TerminalRenderConfig {
-        cell_size: Vec2::new(11.0, 20.0).into(),
+        sizing: TerminalSizing::FitCellWidth(Vec2::new(11.0, 20.0)),
         raster: RasterConfig {
             scale: TerminalRenderScale::Fixed(1.0),
             ..default()

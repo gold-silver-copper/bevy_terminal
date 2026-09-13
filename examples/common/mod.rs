@@ -22,7 +22,7 @@ pub fn demo_surface() -> TerminalSurface {
 
 /// A Ratatui terminal showing the representative scene at the default grid.
 pub fn demo_terminal() -> RatatuiTerminal {
-    RatatuiTerminal::drawn(COLUMNS, ROWS, draw_demo_frame).0
+    RatatuiTerminal::drawn(COLUMNS, ROWS, draw_demo_frame)
 }
 
 /// Draws the representative scene into `terminal` at its current size.

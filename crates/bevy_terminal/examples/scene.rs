@@ -28,7 +28,7 @@ fn main() {
     let config = common::configure_fonts(
         &mut app,
         TerminalRenderConfig {
-            cell_size: common::CELL_SIZE.into(),
+            sizing: TerminalSizing::FitCellWidth(common::CELL_SIZE),
             ..default()
         },
     );
@@ -82,7 +82,7 @@ const GAP: f32 = 24.0;
 fn fit_to_window(
     scenes: Res<Scenes>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    mut terminals: Query<(&Terminal, &TerminalTexture, &mut Node)>,
+    mut terminals: Query<(&TerminalRenderer, &TerminalTexture, &mut Node)>,
 ) {
     let Ok(window) = windows.single() else {
         return;

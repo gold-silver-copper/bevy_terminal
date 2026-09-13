@@ -55,7 +55,8 @@ fn main() {
         move |mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>| {
             // Step 1: the screen mesh. Stands in for a mesh claimed from a loaded
             // scene; only the UV convention matters (0..1 across the screen face).
-            let (terminal, renderer) = RatatuiTerminal::drawn(64, 20, common::draw_demo_frame);
+            let (terminal, renderer) =
+                RatatuiTerminal::drawn(64, 20, common::draw_demo_frame).with_renderer();
             commands.spawn((
                 Screen,
                 terminal,

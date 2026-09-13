@@ -270,7 +270,6 @@ pub fn draw_surface(spec: &ExampleSpec) -> TerminalSurface {
     RatatuiTerminal::drawn(COLUMNS, ROWS, |frame| {
         (spec.render)(frame, &ExampleState::canonical(spec.slug));
     })
-    .0
     .surface()
 }
 
@@ -294,7 +293,7 @@ pub fn redraw_interactive_surface(
     spec: &ExampleSpec,
     state: &ExampleState,
 ) {
-    let (mut terminal, _renderer) = RatatuiTerminal::new(COLUMNS, ROWS);
+    let mut terminal = RatatuiTerminal::new(COLUMNS, ROWS);
     let rendered_surface = terminal.surface();
     redraw_interactive_terminal(&mut terminal, spec, state);
 

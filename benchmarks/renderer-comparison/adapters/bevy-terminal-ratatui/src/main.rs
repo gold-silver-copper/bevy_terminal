@@ -1,6 +1,9 @@
 use bevy::{app::SubApps, prelude::*, text::FontSource};
+use bevy_terminal_ratatui::prelude::{
+    BlinkConfig, CursorConfig, TerminalPlugin, TerminalRenderConfig, TerminalSizing, TerminalStats,
+    TerminalSurface, TerminalTexture,
+};
 use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
-use bevy_terminal_ratatui::prelude::{BlinkConfig, CursorConfig, FontSizing, TerminalPlugin, TerminalRenderConfig, TerminalStats, TerminalSurface, TerminalTexture};
 use renderer_bench_sdk::{
     AdapterFrame, AdapterMetadata, BenchConfig, BenchResult, RendererAdapter, SharedFontFixture,
     measure, read_bevy_image_rgba, render_workload, run,
@@ -16,7 +19,7 @@ struct BevyTerminalRatatuiAdapter {
 
 impl RendererAdapter for BevyTerminalRatatuiAdapter {
     fn new(config: &BenchConfig) -> BenchResult<Self> {
-        let (terminal, _renderer) = RatatuiTerminal::new(config.cols, config.rows);
+        let terminal = RatatuiTerminal::new(config.cols, config.rows);
         let surface = terminal.surface();
         Ok(Self {
             terminal,
@@ -37,8 +40,10 @@ impl RendererAdapter for BevyTerminalRatatuiAdapter {
         app.world_mut().spawn((
             TerminalRenderer::new(self.surface.clone()),
             TerminalRenderConfig {
-                cell_size: Vec2::new(config.cell_width, config.cell_height).into(),
-                font_size: FontSizing::Px(config.font_size as f32),
+                sizing: TerminalSizing::Fixed {
+                    cell_size: Vec2::new(config.cell_width, config.cell_height),
+                    font_size: config.font_size as f32,
+                },
                 font: FontSource::Handle(font).into(),
                 cursor: CursorConfig {
                     blink_hz: None,

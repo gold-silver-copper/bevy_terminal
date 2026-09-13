@@ -39,7 +39,7 @@ fn main() {
     let config = common::configure_fonts(
         &mut app,
         TerminalRenderConfig {
-            cell_size: common::CELL_SIZE.into(),
+            sizing: TerminalSizing::FitCellWidth(common::CELL_SIZE),
             raster: RasterConfig {
                 scale: TerminalRenderScale::Fixed(1.0),
                 ..default()
@@ -58,7 +58,7 @@ fn main() {
         })
         .add_systems(Startup, move |mut commands: Commands| {
             for surface in [&main, &status] {
-                commands.spawn((Terminal::new(surface.clone()), config.clone()));
+                commands.spawn((TerminalRenderer::new(surface.clone()), config.clone()));
             }
         })
         .init_resource::<PendingExports>()
@@ -74,7 +74,7 @@ fn main() {
 fn export_when_ready(
     ready: On<TerminalReady>,
     surfaces: Res<Surfaces>,
-    terminals: Query<(&Terminal, &TerminalTexture)>,
+    terminals: Query<(&TerminalRenderer, &TerminalTexture)>,
     mut pending: ResMut<PendingExports>,
 ) {
     let Ok((terminal, texture)) = terminals.get(ready.entity) else {

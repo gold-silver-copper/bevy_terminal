@@ -36,7 +36,7 @@ use bevy::{
 };
 use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::prelude::{
-    CellSizing, FontSizing, TerminalPlugin, TerminalRenderConfig, TerminalStats, TerminalSystems,
+    TerminalPlugin, TerminalRenderConfig, TerminalSizing, TerminalStats, TerminalSystems,
     TerminalTexture,
 };
 use palette::{Okhsv, Srgb, convert::FromColorUnclamped};
@@ -64,10 +64,12 @@ const INITIAL_COLUMNS: u16 = 80;
 const INITIAL_ROWS: u16 = 24;
 
 fn main() {
-    let (terminal, renderer) = RatatuiTerminal::new(INITIAL_COLUMNS, INITIAL_ROWS);
+    let (terminal, renderer) = RatatuiTerminal::new(INITIAL_COLUMNS, INITIAL_ROWS).with_renderer();
     let config = TerminalRenderConfig {
-        cell_size: CellSizing::FROM_FONT,
-        font_size: FontSizing::Px(FONT_SIZE),
+        sizing: TerminalSizing::FromFont {
+            font_size: FONT_SIZE,
+            line_height: 1.0,
+        },
         ..default()
     };
 

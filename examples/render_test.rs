@@ -31,7 +31,7 @@ use bevy_image_export::ImageExportPlugin;
 use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::prelude::{
     CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalRenderConfig,
-    TerminalRenderScale, TerminalSystems, TerminalTexture, TerminalTheme,
+    TerminalRenderScale, TerminalSizing, TerminalSystems, TerminalTexture, TerminalTheme,
 };
 use ratatui::{
     layout::Position,
@@ -195,7 +195,7 @@ fn main() {
         .position(|argument| argument == "--font")
         .and_then(|index| args.get(index + 1).cloned())
         .or_else(|| std::env::var("RENDER_TEST_FONT").ok());
-    let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS);
+    let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS).with_renderer();
     draw_render_test(&mut terminal, FAMILIES[0].0);
     let theme = TerminalTheme {
         background: if transparent {
@@ -207,7 +207,7 @@ fn main() {
     };
     let config = TerminalRenderConfig {
         theme,
-        cell_size: CELL.into(),
+        sizing: TerminalSizing::FitCellWidth(CELL),
         raster: RasterConfig {
             scale: if export {
                 TerminalRenderScale::Fixed(1.0)

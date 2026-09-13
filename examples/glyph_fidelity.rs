@@ -46,8 +46,8 @@ use bevy::{
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::prelude::{
-    CellSizing, CursorConfig, FontFaces, FontSizing, RasterConfig, TerminalPlugin, TerminalReady,
-    TerminalRenderConfig, TerminalRenderScale, TerminalSnapshot, TerminalSystems, TerminalTexture,
+    CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalReady, TerminalRenderConfig,
+    TerminalRenderScale, TerminalSizing, TerminalSnapshot, TerminalSystems, TerminalTexture,
 };
 use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 use ratatui::{
@@ -410,12 +410,11 @@ fn main() {
     let windowed_family = families[0].name;
     app.add_systems(Startup, move |mut commands: Commands| {
         for (index, (family, scale)) in cases.iter().enumerate() {
-            let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS);
+            let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS).with_renderer();
             draw_harness(&mut terminal, family.name, scale.unwrap_or(1.0), None);
             let config = TerminalRenderConfig {
-                cell_size: from_font.map_or(CELL.into(), |_| CellSizing::FROM_FONT),
+                sizing: from_font.map_or(TerminalSizing::FitCellWidth(CELL), TerminalSizing::font),
                 font: family.faces.clone(),
-                font_size: from_font.map_or(FontSizing::FitCellWidth, FontSizing::Px),
                 raster: RasterConfig {
                     scale: scale.map_or(TerminalRenderScale::Automatic, TerminalRenderScale::Fixed),
                     ..default()
@@ -512,7 +511,7 @@ fn on_ready(
         if !case.is_reference && case.reference.is_none() {
             // Same font size and content in a cell 6 px wider and 10 px taller: the
             // oracle for "was anything clipped".
-            let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS);
+            let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS).with_renderer();
             draw_harness(&mut terminal, case.family, scale, None);
             let faces = config.font.clone();
             let reference = commands
@@ -520,10 +519,10 @@ fn on_ready(
                     common::app::headless_terminal(
                         renderer,
                         TerminalRenderConfig {
-                            cell_size: CellSizing::Logical(
-                                texture.cell_size + Vec2::new(6.0, 10.0),
-                            ),
-                            font_size: FontSizing::Px(texture.font_size),
+                            sizing: TerminalSizing::Fixed {
+                                cell_size: texture.cell_size + Vec2::new(6.0, 10.0),
+                                font_size: texture.font_size,
+                            },
                             font: faces,
                             raster: RasterConfig {
                                 scale: TerminalRenderScale::Fixed(scale),

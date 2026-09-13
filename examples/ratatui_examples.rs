@@ -20,7 +20,8 @@ use bevy::{
     window::{CursorMoved, PrimaryWindow, WindowResizeConstraints, WindowResolution},
 };
 use bevy_terminal_ratatui::prelude::{
-    TerminalPlugin, TerminalRenderConfig, TerminalSurface, TerminalSystems, TerminalTexture,
+    TerminalPlugin, TerminalRenderConfig, TerminalSizing, TerminalSurface, TerminalSystems,
+    TerminalTexture,
 };
 use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 use ratatui::layout::Size;
@@ -38,7 +39,7 @@ fn main() {
     let gallery = Gallery::new(start_index);
     let surface = gallery.surface();
     let config = TerminalRenderConfig {
-        cell_size: Vec2::new(CELL_WIDTH, CELL_HEIGHT).into(),
+        sizing: TerminalSizing::FitCellWidth(Vec2::new(CELL_WIDTH, CELL_HEIGHT)),
         ..default()
     };
     let width = f32::from(catalog::COLUMNS).mul_add(CELL_WIDTH, MARGIN * 2.0);
@@ -98,7 +99,7 @@ struct Gallery {
 
 impl Gallery {
     fn new(index: usize) -> Self {
-        let (terminal, _renderer) = RatatuiTerminal::new(catalog::COLUMNS, catalog::ROWS);
+        let terminal = RatatuiTerminal::new(catalog::COLUMNS, catalog::ROWS);
         let mut gallery = Self {
             index,
             states: catalog::EXAMPLES
