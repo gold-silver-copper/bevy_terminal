@@ -1019,23 +1019,68 @@ fn glyph(offset_x: f32, columns: &[u32]) -> CachedGlyph {
 #[test]
 fn horizontal_fit_pushes_overhang_inside_and_centers_overflow() {
     // Inside the span: bearings are kept.
-    assert_eq!(fit_horizontally(&[glyph(2.0, &[9, 9, 9])], 11.0), 0.0);
+    assert_eq!(
+        fit_horizontally(&[glyph(2.0, &[9, 9, 9])], 11.0, false),
+        0.0
+    );
     // Overhanging left (an italic): pushed right by the overhang.
-    assert_eq!(fit_horizontally(&[glyph(-2.0, &[9; 8])], 11.0), 2.0);
+    assert_eq!(fit_horizontally(&[glyph(-2.0, &[9; 8])], 11.0, false), 2.0);
     // Overhanging right: pushed left.
-    assert_eq!(fit_horizontally(&[glyph(6.0, &[9; 8])], 11.0), -3.0);
+    assert_eq!(fit_horizontally(&[glyph(6.0, &[9; 8])], 11.0, false), -3.0);
     // Leading transparent columns do not count as ink.
-    assert_eq!(fit_horizontally(&[glyph(-2.0, &[0, 0, 9, 9])], 11.0), 0.0);
+    assert_eq!(
+        fit_horizontally(&[glyph(-2.0, &[0, 0, 9, 9])], 11.0, false),
+        0.0
+    );
     // Wider than the span with symmetric coverage: centered.
-    assert_eq!(fit_horizontally(&[glyph(0.0, &[9; 15])], 11.0), -2.0);
+    assert_eq!(fit_horizontally(&[glyph(0.0, &[9; 15])], 11.0, false), -2.0);
     // Wider than the span with a faint left column: the faint side is clipped.
     let mut columns = vec![255; 12];
     columns[0] = 3;
-    assert_eq!(fit_horizontally(&[glyph(0.0, &columns)], 11.0), -1.0);
+    assert_eq!(fit_horizontally(&[glyph(0.0, &columns)], 11.0, false), -1.0);
     columns.reverse();
-    assert_eq!(fit_horizontally(&[glyph(0.0, &columns)], 11.0), 0.0);
+    assert_eq!(fit_horizontally(&[glyph(0.0, &columns)], 11.0, false), 0.0);
     // Blank runs never shift.
-    assert_eq!(fit_horizontally(&[glyph(3.0, &[0, 0])], 11.0), 0.0);
+    assert_eq!(fit_horizontally(&[glyph(3.0, &[0, 0])], 11.0, false), 0.0);
+}
+
+#[test]
+fn ordinary_text_keeps_faint_edge_columns_that_fit() {
+    // Cascadia Mono italic W at 1x: 11 ink columns at x=1 in an 11px cell.
+    let mut columns = vec![255; 11];
+    columns[10] = 120;
+    let run = [glyph(1.0, &columns)];
+    assert_eq!(fit_horizontally(&run, 11.0, false), -1.0);
+    assert_eq!(fit_horizontally(&run, 11.0, true), 0.0);
+    columns.reverse();
+    assert_eq!(fit_horizontally(&[glyph(-1.0, &columns)], 11.0, false), 1.0);
+}
+
+#[test]
+fn oversized_run_placement_has_explicit_coverage_and_tie_expectations() {
+    // Three possible 3-column crops retain 14, 31, and 30 units. Keep the middle.
+    assert_eq!(
+        fit_horizontally(&[glyph(-1.0, &[2, 2, 10, 19, 1])], 3.0, false),
+        0.0
+    );
+    // Flat coverage: even overflow centers exactly; odd overflow snaps toward +infinity.
+    assert_eq!(fit_horizontally(&[glyph(0.0, &[9; 7])], 3.0, false), -2.0);
+    assert_eq!(fit_horizontally(&[glyph(0.0, &[9; 6])], 3.0, false), -1.0);
+    // Equal maxima on opposite sides of a worse center choose the lower shift.
+    // Crops starting at 0/1/2 retain 20/11/20 respectively.
+    assert_eq!(
+        fit_horizontally(&[glyph(0.0, &[10, 1, 9, 1, 10])], 3.0, false),
+        -2.0
+    );
+    // A combined run is fitted as one unit, not one translation per glyph.
+    assert_eq!(
+        fit_horizontally(
+            &[glyph(-1.0, &[2, 2]), glyph(1.0, &[10, 19, 1])],
+            3.0,
+            false
+        ),
+        0.0
+    );
 }
 
 #[test]
@@ -1087,25 +1132,25 @@ fn horizontal_fit_ignores_sub_pixel_overshoot() {
     // `─`: full-strength bar across the cell plus a 47% column past it.
     let mut bar = vec![255; 11];
     bar.push(120);
-    assert_eq!(fit_horizontally(&[glyph(0.0, &bar)], 11.0), 0.0);
+    assert_eq!(fit_horizontally(&[glyph(0.0, &bar)], 11.0, true), 0.0);
     // The same on the left (`┐`'s bar reaching into the previous cell).
     let mut bar = vec![120];
     bar.extend([255; 11]);
-    assert_eq!(fit_horizontally(&[glyph(-1.0, &bar)], 11.0), 0.0);
+    assert_eq!(fit_horizontally(&[glyph(-1.0, &bar)], 11.0, true), 0.0);
     // Overshoot on both sides at once.
     let mut bar = vec![120];
     bar.extend([255; 11]);
     bar.push(120);
-    assert_eq!(fit_horizontally(&[glyph(-1.0, &bar)], 11.0), 0.0);
+    assert_eq!(fit_horizontally(&[glyph(-1.0, &bar)], 11.0, true), 0.0);
     // A full-strength column outside the span is real overhang: pushed.
-    assert_eq!(fit_horizontally(&[glyph(3.0, &[255; 9])], 11.0), -1.0);
+    assert_eq!(fit_horizontally(&[glyph(3.0, &[255; 9])], 11.0, true), -1.0);
     // Two faint columns are past the tolerance: the run is wider than the
     // span and placed by retained coverage, which keeps the solid columns.
     let mut bar = vec![255; 11];
     bar.extend([120, 120]);
-    assert_eq!(fit_horizontally(&[glyph(0.0, &bar)], 11.0), 0.0);
+    assert_eq!(fit_horizontally(&[glyph(0.0, &bar)], 11.0, true), 0.0);
     // A negative-bearing italic with a solid first column is still pushed.
-    assert_eq!(fit_horizontally(&[glyph(-1.0, &[255; 9])], 11.0), 1.0);
+    assert_eq!(fit_horizontally(&[glyph(-1.0, &[255; 9])], 11.0, true), 1.0);
 }
 
 #[test]

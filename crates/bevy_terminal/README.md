@@ -101,6 +101,11 @@ There is no presentation-dependent or primary-window-dependent scale behavior.
 
 `TerminalSizing` supports font-driven cells (`FromFont`), fitting font advance
 to a requested cell width (`FitCellWidth`), and explicit cells/font size (`Fixed`).
+Natural and width-fitted rows enclose the configured faces' typographic metrics
+in whole pixels. Text and box-drawing alignment are measured separately; faint
+text-edge pixels are preserved whenever the run fits its cell span.
+Styled and fallback runs share the configured text baseline. Fallback glyphs
+do not change cell measurements when the displayed content changes.
 Font-driven sizing accepts a line-height multiplier; values below one can clip
 outer ink intentionally. Fixed geometry fits/clips glyphs to the specified cells.
 

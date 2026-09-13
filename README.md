@@ -208,12 +208,38 @@ cargo run --example glyph_fidelity -- --check --font all --scale all  # GPU read
 cargo test --test glyph_fidelity -- --ignored                         # the same check as an integration test
 ```
 
-`--check` renders each terminal twice — once at the real cell and once in a
-6 px wider, 10 px taller reference cell at the same font size — and asserts
-that every ASCII/Latin/Greek/Cyrillic glyph inside the font's line box keeps
-exactly the same ink pixels (nothing clipped), that the solid-block tile has
-no pixel off the fill color and the line tiles are continuous, at 1×, 1.5×,
-2× and 3×.
+`--check` compares GPU pixels with raw Bevy glyph-atlas coverage, independently
+of terminal fitting and clipping. Ordinary text that fits must retain its shape;
+oversized ink and deliberately compact cells must match an unchanged crop at a
+shared typographic baseline. The comparison permits one sRGB code value for CPU/GPU
+conversion rounding. Solid blocks, half-block joins, and line panels have strict
+continuity checks at 1×, 1.5×, 2×, and 3×.
+
+Checks disable host font discovery and use bundled faces plus a monochrome emoji
+fallback. Unsupported characters are reported as font-coverage gaps, separately
+from rendering failures. TSV results, full captures, and native/8× glyph details
+are written to `target/glyph-fidelity-check` (override with `--output`).
+
+```text
+cargo run --example glyph_fidelity -- --check --font all --scale all --from-font 23
+cargo run --example glyph_fidelity -- --check --font all --scale all --from-font 23 --line-height 0.85
+cargo run --example glyph_fidelity -- --check --font all --scale all --fixed-cell 9x18 --font-size 18
+cargo test --example glyph_fidelity  # reference-oracle regressions
+```
+
+`cargo run --example glyph_coverage` checks required script fallback and color
+emoji with pinned test fonts and no host discovery. It verifies configured
+baseline placement, intrinsic emoji colors over two backgrounds, wide-cell
+occupancy, and untouched neighbors. Eight stages cover fractional metrics,
+compact/fixed cells, font changes, content replacement, and idle rendering.
+Missing required glyphs or an unexpected resolved face fail the run. Results
+and captures go to `target/glyph-coverage` (`--output` overrides this).
+VS16 color sequences are covered. `--text-presentation` adds a strict VS15
+fallback probe, currently failing in Parley 0.9 because it selects the emoji
+fallback even for text presentation; this capability remains outstanding.
+
+Test-font subset provenance, licensing, and reproduction instructions are in
+[`assets/fonts/fidelity/README.md`](assets/fonts/fidelity/README.md).
 
 The interactive UI examples are resizable: their grids follow the window at the
 renderer's measured cell size (`RatatuiTerminal::fit_to`, see

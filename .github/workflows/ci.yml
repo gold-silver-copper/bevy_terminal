@@ -120,6 +120,29 @@ jobs:
         timeout-minutes: 10
         run: cargo test --workspace --all-features --test gpu_readback --test export_readiness --locked -- --ignored --test-threads=1
 
+      - name: Glyph reference oracle regressions
+        run: cargo test --all-features --example glyph_fidelity --locked
+
+      - name: Deterministic glyph fidelity
+        timeout-minutes: 20
+        run: |
+          cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --output "$RUNNER_TEMP/glyph-fidelity/fit"
+          cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --from-font 23.0 --output "$RUNNER_TEMP/glyph-fidelity/natural"
+          cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --from-font 23.0 --line-height 0.85 --output "$RUNNER_TEMP/glyph-fidelity/compact"
+          cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --fixed-cell 9x18 --font-size 18 --output "$RUNNER_TEMP/glyph-fidelity/fixed"
+
+      - name: Required fallback, color, and lifecycle coverage
+        timeout-minutes: 10
+        run: cargo run --all-features --locked --example glyph_coverage -- --output "$RUNNER_TEMP/glyph-fidelity/coverage"
+
+      - name: Upload glyph fidelity diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: glyph-fidelity
+          path: ${{ runner.temp }}/glyph-fidelity
+          retention-days: 7
+
       - name: Documentation tests
         run: cargo test --workspace --all-features --doc --locked
 

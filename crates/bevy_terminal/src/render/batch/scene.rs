@@ -1,5 +1,5 @@
 //! CPU scene construction, glyph fitting, and quad geometry.
-use super::shaping::{CachedGlyph, ShapeCaches, UnifiedGlyphAtlas, cached_shape};
+use super::shaping::{CachedGlyph, ShapeCaches, UnifiedGlyphAtlas, cached_shape, is_box_drawing};
 use super::{
     BatchScene, BlinkPhases, DrawBatch, PixelGeometry, QuadInstance, RasterMetrics, ResolvedStyle,
     TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext, cell_span,
@@ -249,9 +249,14 @@ pub(super) fn build_scene(
                     width: width as f32 * raster.cell_size.x,
                     height: raster.cell_size.y,
                 };
+                let box_drawing = is_box_drawing(symbol);
                 let shift = Vec2::new(
-                    fit_horizontally(&shaped, cell_bounds.width),
-                    raster.glyph_offset,
+                    fit_horizontally(&shaped, cell_bounds.width, box_drawing),
+                    if box_drawing {
+                        raster.box_offset
+                    } else {
+                        raster.glyph_offset
+                    },
                 );
                 for glyph in shaped.iter() {
                     let geometry = PixelGeometry {
@@ -385,12 +390,12 @@ pub(super) fn build_scene(
 /// that overshoot lights one faint extra column outside the span. Pushing the
 /// run inside for it would move `┌` one pixel away from a `│` in the row
 /// below, which is exactly the misalignment the overshoot exists to prevent.
-/// A single outside column on either side whose coverage is below the run's
-/// strongest column is therefore treated as overshoot: the run keeps its
-/// bearings and the per-cell clip drops the column, the way Ghostty renders
-/// ordinary text without any alignment constraint. A full-strength column
-/// outside the span is real overhang and is still pushed inside.
-pub(super) fn fit_horizontally(glyphs: &[CachedGlyph], span: f32) -> f32 {
+/// For a single box-drawing character, an outside column with coverage below
+/// the run's strongest column is treated as overshoot: the run keeps its
+/// bearings and the per-cell clip drops the column. Ordinary text does not
+/// use this allowance: every ink column that fits is retained. A full-strength
+/// column outside the span is real overhang and is still pushed inside.
+pub(super) fn fit_horizontally(glyphs: &[CachedGlyph], span: f32, box_drawing: bool) -> f32 {
     let mut left = f32::INFINITY;
     let mut right = f32::NEG_INFINITY;
     for glyph in glyphs {
@@ -400,7 +405,11 @@ pub(super) fn fit_horizontally(glyphs: &[CachedGlyph], span: f32) -> f32 {
     if right <= left {
         return 0.0;
     }
-    let (left, right) = trim_overshoot(glyphs, span, left, right);
+    let (left, right) = if box_drawing {
+        trim_overshoot(glyphs, span, left, right)
+    } else {
+        (left, right)
+    };
     if right <= left {
         0.0
     } else if right - left <= span {

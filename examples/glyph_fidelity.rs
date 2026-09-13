@@ -1,5 +1,5 @@
-//! Glyph fidelity harness: proves that no glyph of the primary font is clipped
-//! and that block/box glyphs tile without seams.
+//! Glyph fidelity harness: compares rendered text with unclipped font bitmaps
+//! and checks explicit cropping and block/box continuity.
 //!
 //! Every cell sits on a contrasting checkerboard background so a clipped or
 //! bleeding pixel is visible against its neighbor, and every row group is
@@ -20,17 +20,23 @@
 //! - `--tiles-only` limits `--check` to the block/box seam panels;
 //! - `--export` writes PNGs to `target/glyph-fidelity/<family>/<scale>x/`
 //!   headlessly;
-//! - `--check` reads every texture back from the GPU and asserts, per glyph
-//!   cell of the ASCII/Latin/Greek/Cyrillic rows, that the glyph has exactly
-//!   as many ink pixels as the same glyph rendered in a roomier reference cell
-//!   (so nothing was clipped), and that the tile panels have no seams; the
-//!   process exits with status 1 when a check fails.
+//! - `--fixed-cell <width>x<height>` with `--font-size <px>` selects explicit
+//!   geometry; `--line-height <ratio>` configures `--from-font` cells;
+//! - `--output <dir>` selects the check results and diagnostic image directory;
+//! - `--check` uses only bundled fonts and a separate raw Bevy glyph-atlas
+//!   reference. Fitting text must preserve coverage (within one sRGB code value);
+//!   oversized or intentionally compact text must be an unchanged crop at the
+//!   terminal's shared typographic baseline. Missing font coverage is recorded separately.
+//!   Solid, half-block, and line tiles are strict. Results are TSV plus native
+//!   and 8x diagnostic PNGs, by default under `target/glyph-fidelity-check`.
 //!
 //! Without `--export`/`--check` a window shows one family; `Space`/`Tab`
 //! cycle families.
 
 #[allow(dead_code)]
 mod common;
+#[path = "common/fidelity_oracle.rs"]
+mod fidelity_oracle;
 
 use std::sync::{Arc, Mutex};
 
@@ -122,7 +128,7 @@ const CHECKER: [Color; 2] = [Color::Rgb(40, 44, 64), Color::Rgb(84, 56, 44)];
 const INK: Color = Color::White;
 const INK_RGB: [u8; 3] = [255, 255, 255];
 
-/// Rows and their groups. Rows checked for clipping are those with a `strict` group.
+/// Rows and their groups. Text groups use raw bitmap comparison; tiles use geometry checks.
 const ROW_TITLE: u16 = 0;
 const ROWS_ASCII: [u16; 4] = [2, 3, 4, 5];
 const ROWS_LATIN: [u16; 2] = [7, 8];
@@ -281,10 +287,6 @@ struct Case {
     family: &'static str,
     dir: &'static str,
     scale: f32,
-    /// The roomy reference terminal for `--check`, if this is a primary case.
-    reference: Option<Entity>,
-    /// Whether this is a reference terminal.
-    is_reference: bool,
 }
 
 #[derive(Resource)]
@@ -292,6 +294,7 @@ struct Options {
     export: bool,
     check: bool,
     tiles_only: bool,
+    output: String,
 }
 
 /// Measured textures queued for exporters; render-world preparation sizes buffers.
@@ -321,6 +324,39 @@ fn main() {
     let scale_argument = parse_arg(&args, "--scale");
     let from_font =
         parse_arg(&args, "--from-font").map(|value| value.parse::<f32>().unwrap_or(18.0).max(1.0));
+
+    let line_height = parse_arg(&args, "--line-height")
+        .map(|s| s.parse::<f32>().expect("numeric line height"))
+        .unwrap_or(1.0);
+    let fixed = parse_arg(&args, "--fixed-cell").map(|s| {
+        let (width, height) = s.split_once('x').expect("--fixed-cell WIDTHxHEIGHT");
+        Vec2::new(
+            width.parse().expect("cell width"),
+            height.parse().expect("cell height"),
+        )
+    });
+    let fixed_font_size = parse_arg(&args, "--font-size")
+        .map(|s| s.parse::<f32>().expect("numeric font size"))
+        .unwrap_or(18.0);
+    assert!(line_height.is_finite() && line_height > 0.0);
+    assert!(fixed_font_size.is_finite() && fixed_font_size > 0.0);
+    if let Some(cell) = fixed {
+        assert!(cell.is_finite() && cell.cmpgt(Vec2::ZERO).all());
+    }
+    let sizing = fixed.map_or_else(
+        || {
+            from_font.map_or(TerminalSizing::FitCellWidth(CELL), |font_size| {
+                TerminalSizing::FromFont {
+                    font_size,
+                    line_height,
+                }
+            })
+        },
+        |cell_size| TerminalSizing::Fixed {
+            cell_size,
+            font_size: fixed_font_size,
+        },
+    );
 
     let wanted: Vec<usize> = match font_argument.as_deref() {
         Some("all") => (0..FAMILIES.len()).collect(),
@@ -379,8 +415,24 @@ fn main() {
             ..default()
         }));
     }
+    if check {
+        app.world_mut()
+            .resource_mut::<bevy::text::FontCx>()
+            .collection = fontique::Collection::new(fontique::CollectionOptions {
+            system_fonts: false,
+            ..default()
+        });
+        let fallback = Font::from_bytes(
+            include_bytes!("../assets/fonts/fidelity/NotoEmoji-Regular.ttf").to_vec(),
+        );
+        let mut fonts = app.world_mut().resource_mut::<bevy::text::FontCx>();
+        fonts.collection.register_fonts(fallback.data, None);
+        fonts
+            .set_emoji_family("Noto Emoji")
+            .expect("bundled emoji family");
+    }
     let families = load_families(&mut app, &wanted);
-    if families.is_empty() {
+    if families.len() != wanted.len() {
         eprintln!("no vendored font family found under assets/fonts");
         std::process::exit(2);
     }
@@ -390,6 +442,8 @@ fn main() {
             export,
             check,
             tiles_only,
+            output: parse_arg(&args, "--output")
+                .unwrap_or_else(|| "target/glyph-fidelity-check".into()),
         })
         .init_resource::<PendingExports>()
         .init_resource::<Captures>()
@@ -415,7 +469,7 @@ fn main() {
             let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS).with_renderer();
             draw_harness(&mut terminal, family.name, scale.unwrap_or(1.0), None);
             let config = TerminalRenderConfig {
-                sizing: from_font.map_or(TerminalSizing::FitCellWidth(CELL), TerminalSizing::font),
+                sizing,
                 font: family.faces.clone(),
                 raster: RasterConfig {
                     scale: scale.unwrap_or(1.0),
@@ -431,8 +485,6 @@ fn main() {
                 family: family.name,
                 dir: family.dir,
                 scale: scale.unwrap_or(1.0),
-                reference: None,
-                is_reference: false,
             };
             if headless {
                 commands.spawn((
@@ -495,66 +547,24 @@ struct FontCycle {
     current: usize,
 }
 
-/// Once a primary terminal is measured: redraw its title with the metrics,
-/// queue its exporter, and (for `--check`) spawn its roomy reference twin.
+/// Starts readbacks once geometry is measured. The oracle reads raw font
+/// bitmaps independently after the rendered scenes have reached the GPU.
 fn on_ready(
     mut commands: Commands,
     options: Res<Options>,
-    mut cases: Query<
-        (Entity, &mut Case, &TerminalTexture, &TerminalRenderConfig),
-        Without<CaptureStarted>,
-    >,
+    cases: Query<(Entity, &Case, &TerminalTexture), Without<CaptureStarted>>,
     mut pending: ResMut<PendingExports>,
 ) {
-    for (entity, mut case, texture, config) in &mut cases {
+    for (entity, case, texture) in &cases {
         if texture.measured().is_none() {
             continue;
         }
         commands.entity(entity).insert(CaptureStarted);
-        let scale = case.scale;
-        if options.export && !case.is_reference {
-            let dir = format!("target/glyph-fidelity/{}/{}x", case.dir, scale);
+        if options.export {
+            let dir = format!("target/glyph-fidelity/{}/{}x", case.dir, case.scale);
             pending.0.push((texture.image.clone(), dir));
         }
         if options.check {
-            if !case.is_reference && case.reference.is_none() {
-                // Same font size and content in a cell 6 px wider and 10 px taller: the
-                // oracle for "was anything clipped".
-                let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS).with_renderer();
-                draw_harness(&mut terminal, case.family, scale, None);
-                let faces = config.font.clone();
-                let reference = commands
-                    .spawn((
-                        common::app::headless_terminal(
-                            renderer,
-                            TerminalRenderConfig {
-                                sizing: TerminalSizing::Fixed {
-                                    cell_size: texture.measured().unwrap().cell_size()
-                                        + Vec2::new(6.0, 10.0),
-                                    font_size: texture.measured().unwrap().font_size(),
-                                },
-                                font: faces,
-                                raster: RasterConfig { scale, ..default() },
-                                cursor: CursorConfig {
-                                    blink_hz: None,
-                                    ..default()
-                                },
-                                ..default()
-                            },
-                        ),
-                        Case {
-                            family: case.family,
-                            dir: case.dir,
-                            scale,
-                            reference: None,
-                            is_reference: true,
-                        },
-                        Drawn(terminal),
-                        TitledWith::default(),
-                    ))
-                    .id();
-                case.reference = Some(reference);
-            }
             commands
                 .spawn(Readback::texture(texture.image.clone()))
                 .observe(
@@ -563,8 +573,6 @@ fn on_ready(
                           captures: Res<Captures>,
                           frame: Res<Frame>,
                           mut commands: Commands| {
-                        // Give the scene a few frames to reach the GPU, keep the latest
-                        // readback for a while, then stop reading back.
                         if frame.0 < 8 {
                             return;
                         }
@@ -602,7 +610,7 @@ fn refresh_titles(
             continue;
         };
         let metrics = Some((geometry.cell_size(), geometry.font_size()));
-        if case.is_reference || titled.0 == metrics {
+        if titled.0 == metrics {
             continue;
         }
         titled.0 = metrics;
@@ -633,7 +641,14 @@ fn tick(
     mut frame: ResMut<Frame>,
     options: Res<Options>,
     captures: Res<Captures>,
-    cases: Query<(Entity, &Case, &TerminalRenderer, &TerminalTexture)>,
+    cases: Query<(
+        Entity,
+        &Case,
+        &TerminalRenderer,
+        &TerminalTexture,
+        &TerminalRenderConfig,
+    )>,
+    mut oracle: fidelity_oracle::Rasterizer,
     mut exit: MessageWriter<AppExit>,
 ) {
     frame.0 += 1;
@@ -643,8 +658,8 @@ fn tick(
     if options.check {
         let expected = cases.iter().count();
         let ready = captures.0.lock().unwrap().len();
-        // Every primary and reference terminal must have a capture; wait a little
-        // longer so all readbacks reflect the final scene.
+        // Every terminal must have a capture; wait for the startup scenes and
+        // title redraws to reach the GPU before comparing them.
         if frame.0 < 30 || ready < expected {
             if frame.0 > 600 {
                 eprintln!("timed out waiting for readbacks ({ready}/{expected})");
@@ -654,7 +669,13 @@ fn tick(
             return;
         }
         let captures = captures.0.lock().unwrap();
-        let failures = run_checks(&captures, &cases, options.tiles_only);
+        let failures = run_checks(
+            &captures,
+            &cases,
+            options.tiles_only,
+            &mut oracle,
+            &options.output,
+        );
         RESULT.store(i32::from(failures > 0), std::sync::atomic::Ordering::SeqCst);
         exit.write(AppExit::Success);
     } else if frame.0 >= 8 {
@@ -811,60 +832,9 @@ fn checker_rgb(column: u16, row: u16) -> [u8; 3] {
     }
 }
 
-/// Ink statistics of one cell (or wide span) of a capture.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Ink {
-    /// Number of ink pixels.
-    count: u32,
-    /// Ink bounding box size in pixels (zero when there is no ink).
-    bbox: UVec2,
-    /// Ink bounding box origin relative to the cell.
-    origin: UVec2,
-}
-
-/// Measures the ink of a cell in a capture with a physical cell size.
-fn ink_of(data: &[u8], size: UVec2, cell: UVec2, column: u16, row: u16, span: u16) -> Ink {
-    let background = checker_rgb(column, row);
-    let x0 = u32::from(column) * cell.x;
-    let y0 = u32::from(row) * cell.y;
-    let mut count = 0;
-    let (mut min_x, mut min_y, mut max_x, mut max_y) = (u32::MAX, u32::MAX, 0, 0);
-    for y in y0..(y0 + cell.y).min(size.y) {
-        for x in x0..(x0 + cell.x * u32::from(span)).min(size.x) {
-            // A wide cell's continuation column has the other checker color.
-            let bg = if x >= x0 + cell.x {
-                checker_rgb(column + 1, row)
-            } else {
-                background
-            };
-            if is_ink(texel(data, size, x, y), bg) {
-                count += 1;
-                min_x = min_x.min(x);
-                min_y = min_y.min(y);
-                max_x = max_x.max(x);
-                max_y = max_y.max(y);
-            }
-        }
-    }
-    let (bbox, origin) = if count == 0 {
-        (UVec2::ZERO, UVec2::ZERO)
-    } else {
-        (
-            UVec2::new(max_x - min_x + 1, max_y - min_y + 1),
-            UVec2::new(min_x - x0, min_y - y0),
-        )
-    };
-    Ink {
-        count,
-        bbox,
-        origin,
-    }
-}
-
 struct Group {
     name: &'static str,
     rows: Vec<u16>,
-    strict: bool,
 }
 
 fn groups() -> Vec<Group> {
@@ -872,52 +842,52 @@ fn groups() -> Vec<Group> {
         Group {
             name: "ascii",
             rows: ROWS_ASCII.to_vec(),
-            strict: true,
         },
         Group {
             name: "latin",
             rows: ROWS_LATIN.to_vec(),
-            strict: true,
         },
         Group {
             name: "greek/cyrillic",
             rows: vec![ROW_GREEK, ROW_CYRILLIC],
-            strict: true,
         },
         Group {
             name: "marks",
             rows: vec![ROW_MARKS],
-            strict: false,
         },
         Group {
-            name: "box drawing",
-            rows: ROWS_BOX.to_vec(),
-            strict: false,
-        },
-        Group {
-            name: "blocks/shapes/arrows",
-            rows: vec![ROW_BLOCKS, ROW_ARROWS],
-            strict: false,
+            name: "wide/fallback",
+            rows: vec![ROW_WIDE],
         },
     ]
 }
 
-/// Compares every primary capture with its reference and checks the tiles.
+/// Compares each capture with raw glyph coverage and checks the procedural tiles.
 /// Returns the number of failed (family, scale, group) combinations.
 fn run_checks(
     captures: &[Capture],
-    cases: &Query<(Entity, &Case, &TerminalRenderer, &TerminalTexture)>,
+    cases: &Query<(
+        Entity,
+        &Case,
+        &TerminalRenderer,
+        &TerminalTexture,
+        &TerminalRenderConfig,
+    )>,
     tiles_only: bool,
+    oracle: &mut fidelity_oracle::Rasterizer,
+    output: &str,
 ) -> usize {
     let capture_of = |entity: Entity| captures.iter().find(|(e, ..)| *e == entity);
     let mut failures = 0;
+    let output = std::path::Path::new(output);
+    std::fs::create_dir_all(output).expect("create fidelity output directory");
+    let mut summary =
+        String::from("family\tscale\tgroup\tchecked\tunavailable\tfailures\toversize\n");
+    let mut diagnostics = String::from("family\tscale\tgroup\tclassification\tdiagnostic\n");
     println!("family            scale  group                 result");
-    let mut primaries: Vec<_> = cases
-        .iter()
-        .filter(|(_, case, ..)| !case.is_reference)
-        .collect();
+    let mut primaries: Vec<_> = cases.iter().collect();
     primaries.sort_by(|a, b| (a.1.dir, a.1.scale.to_bits()).cmp(&(b.1.dir, b.1.scale.to_bits())));
-    for (entity, case, renderer, texture) in primaries {
+    for (entity, case, renderer, texture, config) in primaries {
         let Some((_, data, size)) = capture_of(entity) else {
             println!(
                 "{:<17} {:<6} {:<21} MISSING CAPTURE",
@@ -926,35 +896,38 @@ fn run_checks(
             failures += 1;
             continue;
         };
+        let directory = output.join(case.dir).join(format!("{}x", case.scale));
+        std::fs::create_dir_all(&directory).expect("create case directory");
+        let stride = data.len() / size.y as usize;
+        let pixels: Vec<u8> = data
+            .chunks_exact(stride)
+            .flat_map(|row| row[..size.x as usize * 4].iter().copied())
+            .collect();
+        fidelity_oracle::save_png(&directory.join("actual.png"), *size, pixels);
         let snapshot = renderer.surface().snapshot();
         let cell = UVec2::new(
-            (texture.measured().unwrap().cell_size().x * case.scale).round() as u32,
-            (texture.measured().unwrap().cell_size().y * case.scale).round() as u32,
+            (texture.measured().unwrap().cell_size().x * texture.measured().unwrap().raster_scale())
+                .round() as u32,
+            (texture.measured().unwrap().cell_size().y * texture.measured().unwrap().raster_scale())
+                .round() as u32,
         );
-        let reference = case
-            .reference
-            .and_then(|reference| cases.get(reference).ok())
-            .and_then(|(entity, _, _, texture)| {
-                capture_of(entity).map(|(_, data, size)| (data, size, texture))
-            });
-        // The font's line box in reference-cell coordinates: the rows a full block
-        // covers completely (measured on the solid tile's first cell).
-        let line_box = reference.and_then(|(ref_data, ref_size, ref_texture)| {
-            let ref_cell = UVec2::new(
-                (ref_texture.measured().unwrap().cell_size().x * case.scale).round() as u32,
-                (ref_texture.measured().unwrap().cell_size().y * case.scale).round() as u32,
-            );
-            block_rows(ref_data, *ref_size, ref_cell, tile_column(0), TILE_ROWS_A)
-        });
+        let expected_baseline = oracle
+            .baseline(
+                config,
+                texture.measured().unwrap().font_size()
+                    * texture.measured().unwrap().raster_scale(),
+                cell.y as f32,
+            )
+            .expect("configured baseline reference");
         for group in groups().into_iter().filter(|_| !tiles_only) {
-            // A glyph whose unclipped ink lies inside the font's line box and is no
-            // wider than its cell must keep every pixel. A glyph the font designed
-            // beyond the line box or wider than the cell (accents that overshoot,
-            // italic overhang, fallback families) is reported for information
-            // only — clipping it (after fitting) is the documented policy.
+            // Ink inside the resolved font's line box must be preserved when it
+            // fits the cell. Oversized ink and explicit compact geometry must
+            // still match an unchanged crop, with no per-character vertical fit.
             let mut problems: Vec<String> = Vec::new();
             let mut oversize: Vec<String> = Vec::new();
             let mut checked = 0;
+            let mut unsupported = 0;
+            let mut saved = 0;
             for row in &group.rows {
                 for column in 1..COLUMNS - 1 {
                     let Some(symbol) = glyph_at(&snapshot, column, *row) else {
@@ -962,66 +935,165 @@ fn run_checks(
                     };
                     let span = snapshot.cell((column, *row)).map_or(1, |c| c.columns());
                     checked += 1;
-                    let ink = ink_of(data, *size, cell, column, *row, span);
-                    let Some((ref_data, ref_size, ref_texture)) = reference else {
-                        if ink.count == 0 {
-                            problems.push(format!("{symbol:?} at ({column},{row}): no ink"));
+                    let source_cell = snapshot.cell((column, *row)).unwrap();
+                    let reference = match oracle.shape(
+                        source_cell,
+                        config,
+                        texture.measured().unwrap().font_size()
+                            * texture.measured().unwrap().raster_scale(),
+                        cell.y as f32,
+                    ) {
+                        Ok(reference) => reference,
+                        Err(error) => {
+                            problems.push(format!("{symbol:?}: oracle error: {error}"));
+                            continue;
+                        }
+                    };
+                    if !reference.supported {
+                        unsupported += 1;
+                        diagnostics.push_str(&format!(
+                            "{}\t{}\t{}\tunavailable\t{symbol:?} at ({column},{row})\n",
+                            case.family, case.scale, group.name
+                        ));
+                        if group.name == "ascii" {
+                            problems.push(format!("{symbol:?}: missing required ASCII glyph"));
                         }
                         continue;
+                    }
+                    let Some((min, max)) = reference.ink_bounds() else {
+                        problems.push(format!("{symbol:?}: empty reference"));
+                        continue;
                     };
-                    let ref_cell = UVec2::new(
-                        (ref_texture.measured().unwrap().cell_size().x * case.scale).round() as u32,
-                        (ref_texture.measured().unwrap().cell_size().y * case.scale).round() as u32,
-                    );
-                    let expected = ink_of(ref_data, *ref_size, ref_cell, column, *row, span);
-                    if ink.count == expected.count {
+                    let width = max.x - min.x;
+                    let compact = matches!(config.sizing, TerminalSizing::Fixed { .. })
+                        || matches!(config.sizing, TerminalSizing::FromFont { line_height, .. } if line_height < 1.0);
+                    let expected_y = expected_baseline - reference.baseline.round() as i32;
+                    let deliberately_clipped =
+                        compact && (min.y + expected_y < 0 || max.y + expected_y > cell.y as i32);
+                    let fits = !deliberately_clipped
+                        && width <= (cell.x * u32::from(span)) as i32
+                        && min.y as f32 >= (reference.baseline - reference.ascent).floor()
+                        && max.y as f32 <= (reference.baseline + reference.descent).ceil()
+                        && max.y - min.y <= cell.y as i32;
+                    let bg = checker_rgb(column, *row);
+                    let span_size = UVec2::new(cell.x * u32::from(span), cell.y);
+                    let actual: Vec<[u8; 3]> = (0..span_size.y)
+                        .flat_map(|y| {
+                            (0..span_size.x).map(move |x| {
+                                texel(
+                                    data,
+                                    *size,
+                                    u32::from(column) * cell.x + x,
+                                    u32::from(*row) * cell.y + y,
+                                )
+                            })
+                        })
+                        .collect();
+                    // Font metrics set vertical placement. Fitting runs retain
+                    // their bearings; oversized runs must match a permitted crop.
+                    let placement = reference
+                        .fitting_shift(span_size.x)
+                        .map(|x| IVec2::new(x, expected_y))
+                        .or_else(|| reference.matching_crop(&actual, span_size, expected_y, bg));
+                    let shift = placement.unwrap_or(IVec2::new(0, expected_y));
+                    let differences = reference.differences(&actual, span_size, shift, bg);
+                    let clipped = min + shift;
+                    let end = max + shift;
+                    let clipped = clipped.x < 0
+                        || clipped.y < 0
+                        || end.x > (cell.x * u32::from(span)) as i32
+                        || end.y > cell.y as i32;
+                    if (saved < 3 && (differences != 0 || clipped)) || symbol == "W" {
+                        let image_size = (max - min).as_uvec2();
+                        let mut pixels = Vec::new();
+                        for y in min.y..max.y {
+                            for x in min.x..max.x {
+                                pixels.extend(reference.pixel(IVec2::new(x, y), bg));
+                                pixels.push(255);
+                            }
+                        }
+                        fidelity_oracle::save_detail(
+                            &directory.join(format!("reference-{row}-{column}.png")),
+                            image_size,
+                            pixels,
+                        );
+                        let pixels = actual
+                            .iter()
+                            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
+                            .collect();
+                        fidelity_oracle::save_detail(
+                            &directory.join(format!("actual-{row}-{column}.png")),
+                            span_size,
+                            pixels,
+                        );
+                        saved += 1;
+                    }
+                    if differences == 0 && !clipped {
                         continue;
                     }
-                    let (line_top, line_bottom) = line_box.unwrap_or((0, cell.y));
-                    let fits = expected.bbox.x <= cell.x * u32::from(span)
-                        && expected.origin.y >= line_top
-                        && expected.origin.y + expected.bbox.y <= line_bottom;
-                    let message = format!(
-                        "{symbol:?} at ({column},{row}): {} ink px vs {} unclipped ({} px {}; glyph {}×{} in a {}×{} cell, drawn {}×{} at {},{})",
-                        ink.count,
-                        expected.count,
-                        expected.count.abs_diff(ink.count),
-                        if ink.count < expected.count {
-                            "lost"
-                        } else {
-                            "extra"
-                        },
-                        expected.bbox.x,
-                        expected.bbox.y,
-                        cell.x * u32::from(span),
-                        cell.y,
-                        ink.bbox.x,
-                        ink.bbox.y,
-                        ink.origin.x,
-                        ink.origin.y
-                    );
-                    if fits {
-                        problems.push(message);
-                    } else {
+                    if !fits
+                        && differences == 0
+                        && let Some(crop) = placement
+                    {
+                        let message = format!(
+                            "{symbol:?} at ({column},{row}): verified unchanged crop at {crop:?}; raw {min:?}..{max:?}, baseline {:.2}, ascent {:.2}, descent {:.2}",
+                            reference.baseline, reference.ascent, reference.descent
+                        );
+                        diagnostics.push_str(&format!(
+                            "{}\t{}\t{}\texpected-clipping\t{}\n",
+                            case.family, case.scale, group.name, message
+                        ));
                         oversize.push(message);
+                        continue;
                     }
+                    let message = format!(
+                        "{symbol:?} at ({column},{row}): {differences} differing pixels, clipped={clipped}; raw bounds {min:?}..{max:?}, cell {cell:?}, shift {shift:?}, baseline {:.2}, ascent {:.2}, descent {:.2}, faces {:?}, glyphs {} ({} color)",
+                        reference.baseline,
+                        reference.ascent,
+                        reference.descent,
+                        reference.faces,
+                        reference.glyph_count,
+                        reference.color_glyphs
+                    );
+                    diagnostics.push_str(&format!(
+                        "{}\t{}\t{}\t{}\t{}\n",
+                        case.family, case.scale, group.name, "failure", message
+                    ));
+                    // Out-of-bounds ink is not an exemption from rendering
+                    // correctness: expected clipping must match an unchanged crop.
+                    problems.push(message);
                 }
             }
+            if group.name == "wide/fallback" && checked - unsupported < 5 {
+                problems.push(
+                    "bundled emoji fallback must exercise at least five supported wide symbols"
+                        .into(),
+                );
+            }
+            summary.push_str(&format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                case.family,
+                case.scale,
+                group.name,
+                checked,
+                unsupported,
+                problems.len(),
+                oversize.len()
+            ));
+            println!(
+                "    coverage: {} supported, {unsupported} unavailable in bundled fonts",
+                checked - unsupported
+            );
             let result = if problems.is_empty() {
                 format!(
-                    "pass ({checked} glyphs, {} outside the line box or wider than the cell)",
-                    oversize.len()
-                )
-            } else if group.strict {
-                failures += 1;
-                format!(
-                    "FAIL ({} of {checked} glyphs clipped, {} outside the line box or wider than the cell)",
-                    problems.len(),
+                    "pass ({} supported glyphs, {unsupported} unavailable, {} verified crops)",
+                    checked - unsupported,
                     oversize.len()
                 )
             } else {
+                failures += 1;
                 format!(
-                    "info ({} of {checked} glyphs clipped, {} outside the line box or wider than the cell)",
+                    "FAIL ({} of {checked} glyphs clipped, {} outside the line box or wider than the cell)",
                     problems.len(),
                     oversize.len()
                 )
@@ -1043,32 +1115,30 @@ fn run_checks(
                 println!("    (oversize) … {} more", oversize.len() - 3);
             }
         }
-        // Tiles. Solid blocks and lines are strict; the half-block joins depend on
-        // the font drawing its half blocks exactly to the cell edge (DejaVu Sans
-        // Mono's `▐` stops short of it), so they are reported for information.
+        // Block elements are procedural geometry, including half-block joins.
+        // Every solid/block/line tile is strict, independent of the font's outlines.
         let mut problems = Vec::new();
-        let mut notes = Vec::new();
         for (top, tiles) in [(TILE_ROWS_A, TILES_A), (TILE_ROWS_B, TILES_B)] {
             for (index, tile) in tiles.iter().enumerate() {
                 let left = tile_column(index);
                 if let Some(problem) = check_tile(data, *size, cell, *tile, left, top) {
-                    if matches!(tile, Tile::HalfColumns | Tile::HalfRows) {
-                        notes.push(format!("{}: {problem}", tile.label()));
-                    } else {
-                        problems.push(format!("{}: {problem}", tile.label()));
-                    }
+                    problems.push(format!("{}: {problem}", tile.label()));
                 }
             }
         }
+        summary.push_str(&format!(
+            "{}\t{}\ttiles\t{}\t0\t{}\t{}\n",
+            case.family,
+            case.scale,
+            TILES_A.len() + TILES_B.len(),
+            problems.len(),
+            0
+        ));
         let result = if problems.is_empty() {
-            format!("pass ({} font-side half-block joins noted)", notes.len())
+            "pass".to_owned()
         } else {
             failures += 1;
-            format!(
-                "FAIL ({}, {} half-block joins noted)",
-                problems.len(),
-                notes.len()
-            )
+            format!("FAIL ({} tile defects)", problems.len())
         };
         println!(
             "{:<17} {:<6} {:<21} {result}",
@@ -1077,39 +1147,15 @@ fn run_checks(
         for problem in &problems {
             println!("    {problem}");
         }
-        for note in &notes {
-            println!("    (font) {note}");
-        }
     }
+    std::fs::write(output.join("results.tsv"), summary).expect("write fidelity summary");
+    std::fs::write(output.join("diagnostics.tsv"), diagnostics).expect("write glyph diagnostics");
     if failures == 0 {
         println!("all checks passed");
     } else {
         println!("{failures} check(s) failed");
     }
     failures
-}
-
-/// Rows `[top, bottom)` of a cell that a full block glyph covers completely.
-fn block_rows(data: &[u8], size: UVec2, cell: UVec2, column: u16, row: u16) -> Option<(u32, u32)> {
-    // The block may be narrower than a roomy reference cell: sample the columns
-    // that are white in the cell's middle row.
-    let x0 = u32::from(column) * cell.x;
-    let y0 = u32::from(row) * cell.y;
-    let white = |x: u32, y: u32| {
-        texel(data, size, x, y)
-            .iter()
-            .zip(INK_RGB)
-            .all(|(a, b)| a.abs_diff(b) <= 1)
-    };
-    let middle = y0 + cell.y / 2;
-    let columns: Vec<u32> = (x0..x0 + cell.x).filter(|x| white(*x, middle)).collect();
-    if columns.is_empty() {
-        return None;
-    }
-    let full = |y: u32| columns.iter().all(|x| white(*x, y0 + y));
-    let top = (0..cell.y).find(|y| full(*y))?;
-    let bottom = (top..cell.y).take_while(|y| full(*y)).last()? + 1;
-    Some((top, bottom))
 }
 
 /// The symbol drawn at a cell, if it is a non-blank glyph anchor.
@@ -1158,8 +1204,7 @@ fn check_tile(
         }
         Tile::HalfColumns => {
             // Each `▐▌` pair forms a block across the cell boundary; the join must be
-            // solid (two pixel columns on either side, away from the panel's own edge
-            // rows where a font's half blocks may end differently from its full block).
+            // solid in the two pixel columns on either side of the join.
             for pair in 0..u32::from(TILE_WIDTH) / 2 {
                 let boundary = x0 + (pair * 2 + 1) * cell.x;
                 for y in y0 + 1..y0 + height - 1 {

@@ -1,0 +1,1749 @@
+{
+  "base_commit": "12b035ceb0b317ce8c529485b80c6b0317cf67ec",
+  "date": "2026-09-13",
+  "committed": false,
+  "pushed": false,
+  "github_mutations": false,
+  "remaining_strict_failures": 0,
+  "evidence_directory": "/tmp/glyph-fidelity-fix",
+  "backends": {
+    "Metal": "Apple M2 Max, macOS 26.5.2, Rust 1.96.0-nightly (80381278a)",
+    "Vulkan": "llvmpipe LLVM 15.0.6 / Mesa 22.3.6, Debian bookworm container, Rust 1.95.0"
+  },
+  "ghostty_revision": "7aab0a0392369613472bd5dcfd66bef58e78c3ec",
+  "baseline": {
+    "git_head": "12b035ceb0b317ce8c529485b80c6b0317cf67ec",
+    "groups": [
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "8 of 376 glyphs clipped, 35 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "23 of 187 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "2 of 162 glyphs clipped, 2 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.0,
+        "group": "marks",
+        "result": "info",
+        "details": "9 of 20 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "55 of 128 glyphs clipped, 46 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "14 of 184 glyphs clipped, 30 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.5,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "8 of 376 glyphs clipped, 28 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.5,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "45 of 187 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.5,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "4 of 162 glyphs clipped, 2 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.5,
+        "group": "marks",
+        "result": "info",
+        "details": "12 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.5,
+        "group": "box drawing",
+        "result": "info",
+        "details": "45 of 128 glyphs clipped, 46 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.5,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "14 of 184 glyphs clipped, 30 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 1.5,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 2.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "13 of 376 glyphs clipped, 26 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 2.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "23 of 187 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 2.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "2 of 162 glyphs clipped, 2 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 2.0,
+        "group": "marks",
+        "result": "info",
+        "details": "10 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 2.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "45 of 128 glyphs clipped, 46 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 2.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "17 of 184 glyphs clipped, 27 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 2.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 3.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "16 of 376 glyphs clipped, 18 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 3.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "64 of 187 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 3.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "6 of 162 glyphs clipped, 2 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 3.0,
+        "group": "marks",
+        "result": "info",
+        "details": "12 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 3.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "45 of 128 glyphs clipped, 46 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 3.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "17 of 184 glyphs clipped, 27 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Cascadia Mono",
+        "scale": 3.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "8 of 376 glyphs clipped, 21 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "5 of 187 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "2 of 162 glyphs clipped, 4 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.0,
+        "group": "marks",
+        "result": "info",
+        "details": "2 of 20 glyphs clipped, 8 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "55 of 128 glyphs clipped, 49 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "11 of 184 glyphs clipped, 18 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.5,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "6 of 376 glyphs clipped, 22 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.5,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "58 of 187 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.5,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "6 of 162 glyphs clipped, 4 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.5,
+        "group": "marks",
+        "result": "info",
+        "details": "2 of 20 glyphs clipped, 8 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.5,
+        "group": "box drawing",
+        "result": "info",
+        "details": "65 of 128 glyphs clipped, 49 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.5,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "14 of 184 glyphs clipped, 18 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 1.5,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 2.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "6 of 376 glyphs clipped, 24 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 2.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "12 of 187 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 2.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "2 of 162 glyphs clipped, 6 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 2.0,
+        "group": "marks",
+        "result": "info",
+        "details": "2 of 20 glyphs clipped, 8 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 2.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "65 of 128 glyphs clipped, 49 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 2.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "11 of 184 glyphs clipped, 18 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 2.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 3.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "7 of 376 glyphs clipped, 23 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 3.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "13 of 187 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 3.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "2 of 162 glyphs clipped, 5 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 3.0,
+        "group": "marks",
+        "result": "info",
+        "details": "2 of 20 glyphs clipped, 8 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 3.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "65 of 128 glyphs clipped, 49 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 3.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "14 of 184 glyphs clipped, 18 outside the line box or wider than the cell"
+      },
+      {
+        "font": "DejaVu Sans Mono",
+        "scale": 3.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "6 of 376 glyphs clipped, 22 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "69 of 187 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "8 of 162 glyphs clipped, 8 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.0,
+        "group": "marks",
+        "result": "info",
+        "details": "10 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "59 of 128 glyphs clipped, 49 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "14 of 184 glyphs clipped, 18 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.5,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "3 of 376 glyphs clipped, 25 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.5,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "11 of 187 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.5,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "4 of 162 glyphs clipped, 6 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.5,
+        "group": "marks",
+        "result": "info",
+        "details": "10 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.5,
+        "group": "box drawing",
+        "result": "info",
+        "details": "65 of 128 glyphs clipped, 49 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.5,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "14 of 184 glyphs clipped, 18 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 1.5,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Hack",
+        "scale": 2.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "5 of 376 glyphs clipped, 25 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 2.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "9 of 187 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 2.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "2 of 162 glyphs clipped, 6 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 2.0,
+        "group": "marks",
+        "result": "info",
+        "details": "10 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 2.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "65 of 128 glyphs clipped, 49 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 2.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "11 of 184 glyphs clipped, 18 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 2.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Hack",
+        "scale": 3.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "5 of 376 glyphs clipped, 23 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 3.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "9 of 187 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 3.0,
+        "group": "greek/cyrillic",
+        "result": "pass",
+        "details": "162 glyphs, 7 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 3.0,
+        "group": "marks",
+        "result": "info",
+        "details": "9 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 3.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "65 of 128 glyphs clipped, 49 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 3.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "14 of 184 glyphs clipped, 18 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Hack",
+        "scale": 3.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "11 of 376 glyphs clipped, 22 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "54 of 187 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "4 of 162 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.0,
+        "group": "marks",
+        "result": "info",
+        "details": "9 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "75 of 128 glyphs clipped, 3 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "16 of 184 glyphs clipped, 36 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.5,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "13 of 376 glyphs clipped, 22 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.5,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "65 of 187 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.5,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "6 of 162 glyphs clipped, 2 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.5,
+        "group": "marks",
+        "result": "info",
+        "details": "8 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.5,
+        "group": "box drawing",
+        "result": "info",
+        "details": "75 of 128 glyphs clipped, 3 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.5,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "18 of 184 glyphs clipped, 38 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 1.5,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 2.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "14 of 376 glyphs clipped, 18 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 2.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "64 of 187 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 2.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "6 of 162 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 2.0,
+        "group": "marks",
+        "result": "info",
+        "details": "9 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 2.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "75 of 128 glyphs clipped, 3 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 2.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "17 of 184 glyphs clipped, 40 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 2.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 3.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "10 of 376 glyphs clipped, 18 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 3.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "64 of 187 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 3.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "6 of 162 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 3.0,
+        "group": "marks",
+        "result": "info",
+        "details": "9 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 3.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "75 of 128 glyphs clipped, 3 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 3.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "18 of 184 glyphs clipped, 39 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Iosevka Fixed",
+        "scale": 3.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "11 of 376 glyphs clipped, 18 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.0,
+        "group": "latin",
+        "result": "pass",
+        "details": "187 glyphs, 3 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.0,
+        "group": "greek/cyrillic",
+        "result": "pass",
+        "details": "162 glyphs, 8 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.0,
+        "group": "marks",
+        "result": "info",
+        "details": "5 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "65 of 128 glyphs clipped, 49 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "11 of 184 glyphs clipped, 37 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.5,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "13 of 376 glyphs clipped, 17 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.5,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "2 of 187 glyphs clipped, 2 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.5,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "2 of 162 glyphs clipped, 6 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.5,
+        "group": "marks",
+        "result": "info",
+        "details": "6 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.5,
+        "group": "box drawing",
+        "result": "info",
+        "details": "65 of 128 glyphs clipped, 49 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.5,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "11 of 184 glyphs clipped, 39 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 1.5,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 2.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "11 of 376 glyphs clipped, 16 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 2.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "1 of 187 glyphs clipped, 2 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 2.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "2 of 162 glyphs clipped, 5 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 2.0,
+        "group": "marks",
+        "result": "info",
+        "details": "4 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 2.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "65 of 128 glyphs clipped, 49 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 2.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "11 of 184 glyphs clipped, 39 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 2.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 3.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "9 of 376 glyphs clipped, 14 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 3.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "1 of 187 glyphs clipped, 2 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 3.0,
+        "group": "greek/cyrillic",
+        "result": "pass",
+        "details": "162 glyphs, 6 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 3.0,
+        "group": "marks",
+        "result": "info",
+        "details": "4 of 20 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 3.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "63 of 128 glyphs clipped, 49 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 3.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "13 of 184 glyphs clipped, 39 outside the line box or wider than the cell"
+      },
+      {
+        "font": "JetBrains Mono",
+        "scale": 3.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "11 of 376 glyphs clipped, 10 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "1 of 187 glyphs clipped, 2 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.0,
+        "group": "greek/cyrillic",
+        "result": "pass",
+        "details": "162 glyphs, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.0,
+        "group": "marks",
+        "result": "pass",
+        "details": "20 glyphs, 8 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "65 of 128 glyphs clipped, 46 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "14 of 184 glyphs clipped, 27 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.5,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "10 of 376 glyphs clipped, 12 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.5,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "2 of 187 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.5,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "1 of 162 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.5,
+        "group": "marks",
+        "result": "pass",
+        "details": "20 glyphs, 8 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.5,
+        "group": "box drawing",
+        "result": "info",
+        "details": "63 of 128 glyphs clipped, 46 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.5,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "13 of 184 glyphs clipped, 28 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 1.5,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 2.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "8 of 376 glyphs clipped, 10 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 2.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "2 of 187 glyphs clipped, 1 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 2.0,
+        "group": "greek/cyrillic",
+        "result": "FAIL",
+        "details": "1 of 162 glyphs clipped, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 2.0,
+        "group": "marks",
+        "result": "pass",
+        "details": "20 glyphs, 8 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 2.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "63 of 128 glyphs clipped, 46 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 2.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "13 of 184 glyphs clipped, 28 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 2.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 3.0,
+        "group": "ascii",
+        "result": "FAIL",
+        "details": "5 of 376 glyphs clipped, 11 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 3.0,
+        "group": "latin",
+        "result": "FAIL",
+        "details": "1 of 187 glyphs clipped, 2 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 3.0,
+        "group": "greek/cyrillic",
+        "result": "pass",
+        "details": "162 glyphs, 0 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 3.0,
+        "group": "marks",
+        "result": "pass",
+        "details": "20 glyphs, 8 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 3.0,
+        "group": "box drawing",
+        "result": "info",
+        "details": "45 of 128 glyphs clipped, 46 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 3.0,
+        "group": "blocks/shapes/arrows",
+        "result": "info",
+        "details": "14 of 184 glyphs clipped, 28 outside the line box or wider than the cell"
+      },
+      {
+        "font": "Source Code Pro",
+        "scale": 3.0,
+        "group": "tiles",
+        "result": "pass",
+        "details": "0 font-side half-block joins noted"
+      }
+    ],
+    "failures": 66,
+    "from_font_tiles_passed": 24
+  },
+  "matrices": [
+    {
+      "name": "fit-final-rebuilt",
+      "backend": "Metal",
+      "groups": 144,
+      "failures": 0,
+      "supported_text_samples": 17904,
+      "unavailable_samples": 528,
+      "verified_crops": 1151,
+      "results": "/tmp/glyph-fidelity-fix/fit-final-rebuilt/results.tsv",
+      "sha256": "ff6c90ad4932f170573838611ac1c5bbd4067ae06aaf35ca1639b78c586f3999"
+    },
+    {
+      "name": "metal-natural",
+      "backend": "Metal",
+      "groups": 144,
+      "failures": 0,
+      "supported_text_samples": 17904,
+      "unavailable_samples": 528,
+      "verified_crops": 1098,
+      "results": "/tmp/glyph-fidelity-fix/metal-natural/results.tsv",
+      "sha256": "54aff00effeec73b1d88ce05aa32699302353e881bfb280c059610ab6f37bc06"
+    },
+    {
+      "name": "metal-compact",
+      "backend": "Metal",
+      "groups": 144,
+      "failures": 0,
+      "supported_text_samples": 17904,
+      "unavailable_samples": 528,
+      "verified_crops": 4532,
+      "results": "/tmp/glyph-fidelity-fix/metal-compact/results.tsv",
+      "sha256": "89eb8517b1b9aa4d5ee2ea1f57f2a1aaa5fe6376c37aaec48c637123cd510f7e"
+    },
+    {
+      "name": "metal-fixed",
+      "backend": "Metal",
+      "groups": 144,
+      "failures": 0,
+      "supported_text_samples": 17904,
+      "unavailable_samples": 528,
+      "verified_crops": 9537,
+      "results": "/tmp/glyph-fidelity-fix/metal-fixed/results.tsv",
+      "sha256": "932a1461ea1e331b140f21bd7eabbd21019734b2fbfbeb8100c14da69ff98c98"
+    },
+    {
+      "name": "vulkan-fit",
+      "backend": "Vulkan",
+      "groups": 144,
+      "failures": 0,
+      "supported_text_samples": 17904,
+      "unavailable_samples": 528,
+      "verified_crops": 1151,
+      "results": "/tmp/glyph-fidelity-fix/vulkan-fit/results.tsv",
+      "sha256": "ff6c90ad4932f170573838611ac1c5bbd4067ae06aaf35ca1639b78c586f3999"
+    },
+    {
+      "name": "vulkan-natural",
+      "backend": "Vulkan",
+      "groups": 144,
+      "failures": 0,
+      "supported_text_samples": 17904,
+      "unavailable_samples": 528,
+      "verified_crops": 1098,
+      "results": "/tmp/glyph-fidelity-fix/vulkan-natural/results.tsv",
+      "sha256": "54aff00effeec73b1d88ce05aa32699302353e881bfb280c059610ab6f37bc06"
+    },
+    {
+      "name": "vulkan-compact",
+      "backend": "Vulkan",
+      "groups": 144,
+      "failures": 0,
+      "supported_text_samples": 17904,
+      "unavailable_samples": 528,
+      "verified_crops": 4532,
+      "results": "/tmp/glyph-fidelity-fix/vulkan-compact/results.tsv",
+      "sha256": "89eb8517b1b9aa4d5ee2ea1f57f2a1aaa5fe6376c37aaec48c637123cd510f7e"
+    },
+    {
+      "name": "vulkan-fixed",
+      "backend": "Vulkan",
+      "groups": 144,
+      "failures": 0,
+      "supported_text_samples": 17904,
+      "unavailable_samples": 528,
+      "verified_crops": 9537,
+      "results": "/tmp/glyph-fidelity-fix/vulkan-fixed/results.tsv",
+      "sha256": "932a1461ea1e331b140f21bd7eabbd21019734b2fbfbeb8100c14da69ff98c98"
+    }
+  ],
+  "checks": [
+    {
+      "name": "fmt",
+      "command": "cargo fmt --all -- --check",
+      "exit": 0,
+      "seconds": 0.42
+    },
+    {
+      "name": "check",
+      "command": "cargo check --workspace --all-features --all-targets --locked",
+      "exit": 0,
+      "seconds": 10.52
+    },
+    {
+      "name": "tests",
+      "command": "cargo test --workspace --all-features --lib --tests --locked",
+      "exit": 0,
+      "seconds": 16.53
+    },
+    {
+      "name": "gpu-metal",
+      "command": "cargo test --workspace --all-features --test gpu_readback --test export_readiness --locked -- --ignored --test-threads=1",
+      "exit": 0,
+      "seconds": 12.78
+    },
+    {
+      "name": "oracle-final",
+      "command": "cargo test --all-features --example glyph_fidelity --locked",
+      "exit": 0,
+      "seconds": 14.6
+    },
+    {
+      "name": "doctests",
+      "command": "cargo test --workspace --all-features --doc --locked",
+      "exit": 0,
+      "seconds": 5.25
+    },
+    {
+      "name": "docs",
+      "command": "cargo doc --workspace --all-features --no-deps --locked",
+      "exit": 0,
+      "seconds": 12.9
+    },
+    {
+      "name": "minimal",
+      "command": "cargo check -p bevy_terminal --no-default-features --all-targets --locked",
+      "exit": 0,
+      "seconds": 200.38
+    },
+    {
+      "name": "default",
+      "command": "cargo check -p bevy_terminal --all-targets --locked",
+      "exit": 0,
+      "seconds": 36.45
+    },
+    {
+      "name": "consumer-windowed",
+      "command": "cargo check --manifest-path integration/bevy-ratatui-context/Cargo.toml --features consumer-windowed --locked",
+      "exit": 0,
+      "seconds": 14.61
+    },
+    {
+      "name": "natural",
+      "command": [
+        "cargo",
+        "run",
+        "--example",
+        "glyph_fidelity",
+        "--locked",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--output",
+        "/tmp/glyph-fidelity-fix/metal-natural",
+        "--from-font",
+        "23.0"
+      ],
+      "exit": 0,
+      "seconds": 200.94
+    },
+    {
+      "name": "natural-tiles",
+      "command": [
+        "cargo",
+        "run",
+        "--example",
+        "glyph_fidelity",
+        "--locked",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--output",
+        "/tmp/glyph-fidelity-fix/metal-natural-tiles",
+        "--from-font",
+        "23.0",
+        "--tiles-only"
+      ],
+      "exit": 0,
+      "seconds": 71.64
+    },
+    {
+      "name": "compact",
+      "command": [
+        "cargo",
+        "run",
+        "--example",
+        "glyph_fidelity",
+        "--locked",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--output",
+        "/tmp/glyph-fidelity-fix/metal-compact",
+        "--from-font",
+        "23.0",
+        "--line-height",
+        "0.85"
+      ],
+      "exit": 0,
+      "seconds": 79.44
+    },
+    {
+      "name": "fixed",
+      "command": [
+        "cargo",
+        "run",
+        "--example",
+        "glyph_fidelity",
+        "--locked",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--output",
+        "/tmp/glyph-fidelity-fix/metal-fixed",
+        "--fixed-cell",
+        "9x18",
+        "--font-size",
+        "18"
+      ],
+      "exit": 0,
+      "seconds": 52.29
+    },
+    {
+      "name": "natural",
+      "command": [
+        "docker",
+        "exec",
+        "-e",
+        "XDG_RUNTIME_DIR=/tmp/xdg-runtime",
+        "bevy-glyph-fidelity-vulkan",
+        "cargo",
+        "run",
+        "--all-features",
+        "--example",
+        "glyph_fidelity",
+        "--locked",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--output",
+        "/results/vulkan-natural",
+        "--from-font",
+        "23.0"
+      ],
+      "exit": 0,
+      "seconds": 90.74
+    },
+    {
+      "name": "compact",
+      "command": [
+        "docker",
+        "exec",
+        "-e",
+        "XDG_RUNTIME_DIR=/tmp/xdg-runtime",
+        "bevy-glyph-fidelity-vulkan",
+        "cargo",
+        "run",
+        "--all-features",
+        "--example",
+        "glyph_fidelity",
+        "--locked",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--output",
+        "/results/vulkan-compact",
+        "--from-font",
+        "23.0",
+        "--line-height",
+        "0.85"
+      ],
+      "exit": 0,
+      "seconds": 92.59
+    },
+    {
+      "name": "fixed",
+      "command": [
+        "docker",
+        "exec",
+        "-e",
+        "XDG_RUNTIME_DIR=/tmp/xdg-runtime",
+        "bevy-glyph-fidelity-vulkan",
+        "cargo",
+        "run",
+        "--all-features",
+        "--example",
+        "glyph_fidelity",
+        "--locked",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--output",
+        "/results/vulkan-fixed",
+        "--fixed-cell",
+        "9x18",
+        "--font-size",
+        "18"
+      ],
+      "exit": 0,
+      "seconds": 53.64
+    },
+    {
+      "name": "clippy-final",
+      "command": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+      "exit": 0,
+      "seconds": 53.93
+    },
+    {
+      "name": "fit-final",
+      "command": "cargo run --all-features --example glyph_fidelity --locked -- --check --font all --scale all --output /tmp/glyph-fidelity-fix/fit-final",
+      "exit": 1,
+      "seconds": 65.06,
+      "note": "Invalid current-source execution: shared target/debug/examples/glyph_fidelity was overwritten by isolated baseline build. It reproduced the old 22px Cascadia row and clipped W. Superseded by explicit current-source rebuild below; original log retained."
+    },
+    {
+      "name": "fit-final-rebuilt",
+      "command": "WGPU_BACKEND=metal cargo run --all-features --example glyph_fidelity --locked -- --check --font all --scale all --output /tmp/glyph-fidelity-fix/fit-final-rebuilt",
+      "exit": 0,
+      "log": "/tmp/glyph-fidelity-fix/fit-final-rebuilt.log"
+    },
+    {
+      "name": "gpu-vulkan",
+      "command": "docker exec -e XDG_RUNTIME_DIR=/tmp/xdg-runtime bevy-glyph-fidelity-vulkan cargo test --workspace --all-features --test gpu_readback --test export_readiness --locked -- --ignored --test-threads=1",
+      "exit": 0,
+      "log": "/tmp/glyph-fidelity-fix/gpu-vulkan.log"
+    },
+    {
+      "name": "context-test",
+      "command": "cargo test --manifest-path integration/bevy-ratatui-context/Cargo.toml --locked",
+      "exit": 0,
+      "log": "/tmp/glyph-fidelity-fix/context-test.log"
+    },
+    {
+      "name": "minimal-gpu",
+      "command": "CARGO_TARGET_DIR=/Users/kisaczka/Desktop/code/bevy_grid/target WGPU_BACKEND=metal cargo run --manifest-path /tmp/terminal-minimal-gpu/Cargo.toml --locked",
+      "exit": 0,
+      "log": "/tmp/glyph-fidelity-fix/minimal-gpu.log"
+    },
+    {
+      "name": "ratty-build",
+      "command": "CARGO_TARGET_DIR=/Users/kisaczka/Desktop/code/ratty-terminal-main/target cargo build --config /tmp/glyph-fidelity-fix/ratty-patch.toml --locked --example headless_snapshot",
+      "exit": 0,
+      "log": "/tmp/glyph-fidelity-fix/ratty-build.log"
+    },
+    {
+      "name": "ratty-smoke",
+      "command": "WGPU_BACKEND=metal python3 .github/scripts/headless-smoke.py --output /tmp/glyph-fidelity-fix/ratty-smoke --snapshot /Users/kisaczka/Desktop/code/ratty-terminal-main/target/debug/examples/headless_snapshot --document /Users/kisaczka/Desktop/code/ratty-terminal-main/target/debug/examples/document --render-test /Users/kisaczka/Desktop/code/ratty-terminal-main/target/debug/examples/render_test --font-dir /Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/dejavu-sans-mono",
+      "exit": 0,
+      "log": "/tmp/glyph-fidelity-fix/ratty-smoke.log"
+    },
+    {
+      "name": "ratty-lib-tests",
+      "command": "CARGO_TARGET_DIR=/Users/kisaczka/Desktop/code/ratty-terminal-main/target cargo test --config /tmp/glyph-fidelity-fix/ratty-patch.toml --locked --lib",
+      "exit": 0,
+      "log": "/tmp/glyph-fidelity-fix/ratty-lib-tests.log"
+    }
+  ],
+  "source_sha256": {
+    ".github/workflows/ci.yml": "4efd0f073c13709a2beed5326c16537e9338dd89fd327d83dc88caf4f2625ef2",
+    "Cargo.lock": "1f82a39a23ebc344f8916cdc6124d2bad90735b96380c5799cfde436bd69d52a",
+    "Cargo.toml": "4288ffac827ea28a5c18c957d308c3a1599dc03046d9fa4c89ba6e3dcc62c209",
+    "README.md": "3f56d481e21d17c6c61cdbdb65984da60f11fd3cee6077640177c5dbe8faeb47",
+    "crates/bevy_terminal/README.md": "ba22aaa1adfbbe23c39f464321aa00fe3c4e54c749e6520679410c661c39334c",
+    "crates/bevy_terminal/src/render/batch/metrics.rs": "e964d8560904e2411498c496367009690845427e1a7a30c7dbc9c7f66f3133d8",
+    "crates/bevy_terminal/src/render/batch/scene.rs": "2fb8969897faf0d32632f94a23b82c85e4831b79d8f80f75cddbaa4a68ce2151",
+    "crates/bevy_terminal/src/render/batch/shaping.rs": "12f398d1c317ad79038677913da45e7e39d92d79fc3ce4446841e48b1d43f971",
+    "crates/bevy_terminal/src/render/batch/tests.rs": "d26a308ce7f6e744d5de7188758ab5afcc91149cba2fae0e2e3594646658a99b",
+    "examples/glyph_fidelity.rs": "8afb89ba24beb93e774cd489daf8f749266b2a7448b536b4df375c1763e13369",
+    "GLYPH_FIDELITY_FIX_PROMPT.md": "a8f6c9abf80fdd8bfb2e8cd24524956fa3a6ace488b018cc9cbb456cac8d10c3",
+    "assets/fonts/fidelity/NotoEmoji-Regular.ttf": "cd07743a4c93d8da929afdd28c1d368f11da478a1093146a13610081c2a58440",
+    "assets/fonts/fidelity/OFL.txt": "4d5ca8a68ce8fca191f0170b96122f668f4814f6ec1cf0993e1f82c9660a6789",
+    "assets/fonts/fidelity/README.md": "ca4d31e7226cf3ffd79a29c71aa5f515a6e5dde0a336fb658ab68061182455b0",
+    "examples/common/fidelity_oracle.rs": "1236b3e4c834d907d468f8438aa8cc5e18cbb72b60f92d0c4d46d53ac6f0cb24"
+  },
+  "font_sha256": {
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/cascadia-mono/CascadiaMono-Bold.ttf": "b22cb603ed23cac36e8444846e1841caca21719a5e852780a8d37ae7a49b0a36",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/cascadia-mono/CascadiaMono-BoldItalic.ttf": "ecaeab55e6334408f8ff1fde78a99ddaeb3bb7fad4fcd177df8475c88a7d240f",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/cascadia-mono/CascadiaMono-Italic.ttf": "8d98a33e7617c14dd1d200b4900bc6c2d5d7165abb5c09e9d2fd51c38ce9c9ff",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/cascadia-mono/CascadiaMono-Regular.ttf": "06520d032ec274fa5040b22c6f4a1d829081b24ba40b2da56dae89bf10c7b481",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/dejavu-sans-mono/DejaVuSansMono-Bold.ttf": "bce60f1b4421acd9ea51ba6623d7024ecbe6817a953e3654df62a5e6bdf8f769",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/dejavu-sans-mono/DejaVuSansMono-BoldOblique.ttf": "91713a71d550bba22c2a6b2bb2a9ad8f9a159e12e4e9f0a5b2677998ba21213e",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/dejavu-sans-mono/DejaVuSansMono-Oblique.ttf": "742097840c541870e8d6dc5c9b37bb1ceeea6c0dedd1d475faf903ef9df734b0",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf": "b4a6c3e4faab8773f4ff761d56451646409f29abedd68f05d38c2df667d3c582",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/fidelity/NotoEmoji-Regular.ttf": "cd07743a4c93d8da929afdd28c1d368f11da478a1093146a13610081c2a58440",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/hack/Hack-Bold.ttf": "5bbf531eff7f8a0c2559c9a0656718e2828a012a9b1f60b5f54006d59a4de8d4",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/hack/Hack-BoldItalic.ttf": "64f74a079700b7dfe128551a1e28875d5ba980971e55f5e0f0596e37bdc6a6bc",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/hack/Hack-Italic.ttf": "096fb67a2b85f3c866e9cb3e965b27c2c10b977315f4d3d7f095674be35091c1",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/hack/Hack-Regular.ttf": "15f55cc0c85a2988d2b4b3a8cdb5d77fdfbaf319e1bb5309d725db9818fb7125",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/iosevka-fixed/IosevkaFixed-Bold.ttf": "db9ec51e7823f49a5f51ea7755f152876e6badd2f0ad933e400eb1e682ab7b78",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/iosevka-fixed/IosevkaFixed-BoldItalic.ttf": "badfcb70833aa35eacf953533548ba51a236049107fa8709d72a7fd26e9d1c43",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/iosevka-fixed/IosevkaFixed-Italic.ttf": "0d969250494b5bdb43cc3f2f6bb29a11160a03fc5aeb9ded89e7b6d14648d236",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/iosevka-fixed/IosevkaFixed-Regular.ttf": "efdd12eb78b5738b381614e1413aa24ccecc6f9ac5fa28207b389c62fb9231d9",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-Bold.ttf": "5590990c82e097397517f275f430af4546e1c45cff408bde4255dad142479dcb",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-BoldItalic.ttf": "4039d5ce0ed225bf9c8b2c8c6436290ae2f356b7e90d70fa666227238324aa3b",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-ExtraBold.ttf": "8e501d3a6a883e83ea4f7852804fb0894cebdd67751bb1006b37a476cef34cd6",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-ExtraBoldItalic.ttf": "ec3a860fa87d0a3b1451277d1c2f3072f5ba19d2367aec54f7169d5710872610",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-ExtraLight.ttf": "8391e7ec13e8ba758c1838f56bccd973228ccf4dc74aa5bffe9525b9147b12f8",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-ExtraLightItalic.ttf": "3c7fee57538f18b61cc5f0784a8133fe5ee95feb41f633e8f6f7ef609e6207ec",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-Italic.ttf": "9d0a1f7a708e6af183f1193b7e81d40da294f5c67682c085d8401c60aac8ded4",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-Light.ttf": "60c18d7dd58d81b3bbd12e8ce32744a8771bfe2b5280574082b0eaed46c60d24",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-LightItalic.ttf": "18ffadb91fa711b45feae027ddfd561e7f97ace805ec4baf9905046cf450befb",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-Medium.ttf": "31c92d01a8a08528b718a43addf0ad3df0af2ca4b7b3290a452f70f358e14d3d",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-MediumItalic.ttf": "4477fda6bd472ef96b11bc1083370f7fc3ff427bdc807e682ced5819e3dee9df",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf": "a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-SemiBold.ttf": "1b3bfa1ed5665a4ce3f9feb68d2d4e40e70bf8b4b7d9a3edd418f321b4e166a0",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-SemiBoldItalic.ttf": "3b3000507a7285872395ddbb4e53a28f07910dbf494fb0d5e1421dd60b5d8436",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-Thin.ttf": "0756e8e8cf1d65fa7519776764479b3973efb15af4f419d5d7274dc27ae1b702",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/jetbrains-mono/JetBrainsMono-ThinItalic.ttf": "ebcdd13119b6beb7457e2f76b31094cb8cf1108e567030f8402b24dde018e76a",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/source-code-pro/SourceCodePro-Bold.ttf": "b2095e0d657e6d28dc32444a9dacabab0c9241d0bf39d96371756cc9bdbc3a5f",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/source-code-pro/SourceCodePro-BoldIt.ttf": "1b49d9304012bf8db9e5dd4104183d5c122c445d0570a2259125f71977595b90",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/source-code-pro/SourceCodePro-It.ttf": "9c9e0f4d016210a3c5bdfba5262637c5b26ddff4ccc382ebbc781de5961d0042",
+    "/Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/source-code-pro/SourceCodePro-Regular.ttf": "74bd80d3e42a08517cd7e1108ba3d86f2da29ac0f3065be95e0357956ab9db37"
+  },
+  "evidence_sha256": {
+    "/tmp/glyph-fidelity-fix/baseline-fixed.log": "ed5def97877559d30fa31a4b8a3e902081cee45335d66675c3e021099dc4caac",
+    "/tmp/glyph-fidelity-fix/baseline-from-font.log": "4ec69ebb07d11010bd4acfcd578c011eecf143db82941a633247c2eab374f14c",
+    "/tmp/glyph-fidelity-fix/baseline.json": "f75413a19907e77247307977b1e8320a7dd52397b4dc2a5fd907e8216ed80bbf",
+    "/tmp/glyph-fidelity-fix/before-cascadia.log": "46029dcf9c4b6c9187d1e3ef958c635f9c372554e300d8e154b925c9c46c12b9",
+    "/tmp/glyph-fidelity-fix/check.log": "6a0593f784677dfd89bdceb9c1ea2d4c7cbd1fa4352d9d74125ebeb8e716de34",
+    "/tmp/glyph-fidelity-fix/clippy-final.log": "6837176ab0e67b9864743da8a05122ca7f28382d70a6917b963edeee2f9ee366",
+    "/tmp/glyph-fidelity-fix/clippy-first.log": "559ec02d25570a2ff133b90e130c6ff9ff0434b784d497a068c4aa84e8093dbd",
+    "/tmp/glyph-fidelity-fix/clippy-second.log": "68caaddad3722d228f8fd19a9ef4aae964fc5e0d7ed0776bc441f89fdb70cad3",
+    "/tmp/glyph-fidelity-fix/consumer-windowed.log": "f1ad43ab1df88931feb41a1e64bcfa25b015a39acc4d95c6bb4090d11233b30c",
+    "/tmp/glyph-fidelity-fix/context-test.log": "22914445c95dc1dc4453d73a9d38a922ebb76823d3189eb977432574bf38db2a",
+    "/tmp/glyph-fidelity-fix/core-first.log": "aced6d77f3f15b1af5fff9a4b9e35bcbd29707e6eb262665ff8176b45d5c9e09",
+    "/tmp/glyph-fidelity-fix/corrected-first.log": "8565ccb6b1833c51f9f48b17780debd0568e6534d41da862af3ddfc34b4170cd",
+    "/tmp/glyph-fidelity-fix/corrected-wide.log": "0a474e7e0f431aad0832e81442729482003eefb37fd8baff32ea4732a29dd68b",
+    "/tmp/glyph-fidelity-fix/crop-cascadia.log": "587795bc1cf9465f621633a94c86ff3a4881b3e19e25ad3c6200b5fc90aec37c",
+    "/tmp/glyph-fidelity-fix/default.log": "e8d37f86698c0bbc1d40c171cc94b9ebfca94b95edee70c7ce719022bc72509a",
+    "/tmp/glyph-fidelity-fix/docs.log": "75935f88480e0f586b925e43e3923541a480a6964682aea080c1cd9291e52d6e",
+    "/tmp/glyph-fidelity-fix/doctests.log": "e5e3a9737a9e5a1b77338c35fda9cfc980e860c1164fc660f93b9a9b11b4d13e",
+    "/tmp/glyph-fidelity-fix/final-checks.json": "c1413bc78975dfe141c4afcc3c4ae4519a3963500a027e528b999053ebbf6460",
+    "/tmp/glyph-fidelity-fix/fit-final-rebuilt.log": "100db55ead0e0fa2585b54100e405e7fe17a4c38a7146cd7d771d5d59622c79d",
+    "/tmp/glyph-fidelity-fix/fit-final.log": "07d142070396cc558c243ea7f123f174944b8e2ca7f9a5871f7265eedb83be1d",
+    "/tmp/glyph-fidelity-fix/fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/tmp/glyph-fidelity-fix/gpu-metal.log": "c09a11aa1b59abf30fe6e8e2f881d62c5d9dee67eb36f699e467fa3534965b5c",
+    "/tmp/glyph-fidelity-fix/gpu-vulkan.log": "166cc89929c33f58cc423a5951ff3f9f8f7411fa14ab6ef5e7e05b0e9f3a50eb",
+    "/tmp/glyph-fidelity-fix/horizontal-cascadia.log": "8d395bde54322c672bf018345718e127a5d40037975c158ffce9d8db49a08101",
+    "/tmp/glyph-fidelity-fix/metal-compact.log": "6d4507480dcc8085de6612df49e1c630733d2099177a06d8cfca09f5dda6989f",
+    "/tmp/glyph-fidelity-fix/metal-fixed.log": "056242178eb4a87b01cceaa4d611047a1673563b1b11b39d07ed204d85c1d125",
+    "/tmp/glyph-fidelity-fix/metal-matrix.json": "116d42c3223b3cfee8cc9b577154288df93a4fe124a04b45ad8726362cea3a16",
+    "/tmp/glyph-fidelity-fix/metal-natural-tiles.log": "0c51ea896a6d8e55510860b538a71ba2fd736f13f80d569d73d0cab088073f20",
+    "/tmp/glyph-fidelity-fix/metal-natural.log": "652e86684d3dd423e9e444e682cff38f08e4eb32b47caf912808517eea6ff247",
+    "/tmp/glyph-fidelity-fix/minimal-gpu.log": "a235e312c75e44f188f0d270924247cb7d055724cdb33291d0dd1079bf7b4fe6",
+    "/tmp/glyph-fidelity-fix/minimal.log": "3612335aa1343589777d2c635f2861fe1d9321301e906400620b5044da95c8ef",
+    "/tmp/glyph-fidelity-fix/oracle-cascadia-before.log": "9a294f95247f7a4e835d5f7349cd13e8b140ba6e450ed4920586a0d77e467fd9",
+    "/tmp/glyph-fidelity-fix/oracle-check.log": "bc439f99d9776e5c815557bddcf5581c33c261f7446457643df9e8b13e551809",
+    "/tmp/glyph-fidelity-fix/oracle-deterministic-check.log": "5e0b21f77969a9cf56cea3ab1a980d9499344f11811629ccc1dbab27af4fcc73",
+    "/tmp/glyph-fidelity-fix/oracle-final.log": "7758a516d831c062ee1a0bccb52afcb7f058f0a6178e797859bbaf5290b65b01",
+    "/tmp/glyph-fidelity-fix/oracle-tests.log": "c5c1675ba29c4db1e0cfa5ecf5e3293c0f23c0e41a10990dae299cedf8524801",
+    "/tmp/glyph-fidelity-fix/ratty-build.log": "4e4178ca6099e4f173a5262145d92e1b1b13b12fa9bce830b59007f916ff3954",
+    "/tmp/glyph-fidelity-fix/ratty-lib-tests.log": "16e4db2979d69ac657bc7fbc4b8ff31429d598f02ba99f58cac69e3e59367681",
+    "/tmp/glyph-fidelity-fix/ratty-smoke.log": "6f78f6ddaf2278a528462b907df2a8bd24aada7b27045414dcbfcbe0c3ea855d",
+    "/tmp/glyph-fidelity-fix/ratty-tests.log": "906584924ff2e779726674fb081ab303404b9268abc58156f6b224bcca9dd0cb",
+    "/tmp/glyph-fidelity-fix/strict-fit.log": "9572b085c085e6de1a6a23acd75b14873abe1d72c2dd2850e3ee8c5d42dcba05",
+    "/tmp/glyph-fidelity-fix/tests.log": "1998fd0ce4b77d564f4e013fa64302f81120ea22af75e620d208dc8b0b608d89",
+    "/tmp/glyph-fidelity-fix/verification.json": "90806733748d8a1bf054c43e35576103c4ccdb836e507dab0c4f361e7a089b2c",
+    "/tmp/glyph-fidelity-fix/vertical-cascadia.log": "649a19a6542c1a5f72dd03e6dbd06f446836d0688cb6f01adc99bcd56470c093",
+    "/tmp/glyph-fidelity-fix/vulkan-build.log": "67600a306056d140519cae39e736d497bb91f06616c7747f699c685a14c6528a",
+    "/tmp/glyph-fidelity-fix/vulkan-compact.log": "91331285d1a8bbb98ef1e13ffd2c88b46e1d62460e8053da476d19c96e840bdc",
+    "/tmp/glyph-fidelity-fix/vulkan-fit.log": "c49195516cf52ed11c77d8e81135caa498ab44e4de65950b1ffee406461083e2",
+    "/tmp/glyph-fidelity-fix/vulkan-fixed.log": "9499f7ca82fb5c0b9e696b957a54f7a1317f15b58608919b2c7bde6d4ee999bb",
+    "/tmp/glyph-fidelity-fix/vulkan-matrix.json": "99aff636c1f65049fdad63b747d5594859edc830407844141a23bf2e62b1ac1f",
+    "/tmp/glyph-fidelity-fix/vulkan-natural.log": "9806ece2ff797de9718cdd4a4e1268fa7adb728b4de387326a82bd1ebbc0bc49",
+    "/tmp/glyph-fidelity-fix/vulkan-setup.log": "7a2cd0ff7edc9c4d238354cc75b29b0110869b427e1bb9d8919e018010226a30"
+  },
+  "ratty": {
+    "commit": "8e0c5a04d8e93c30c7b4e7a5f64dc40d1ce28df0",
+    "worktree": "/Users/kisaczka/Desktop/code/ratty-glyph-fidelity",
+    "local_override": "/tmp/glyph-fidelity-fix/ratty-patch.toml",
+    "tested_lockfile": "/tmp/glyph-fidelity-fix/ratty-Cargo.local.lock",
+    "smoke": {
+      "captures": {
+        "font-natural": {
+          "width": 1210,
+          "height": 660,
+          "stale_cells": 0
+        },
+        "font-compact": {
+          "width": 1210,
+          "height": 570,
+          "stale_cells": 0
+        },
+        "missing-family": {
+          "width": 1210,
+          "height": 600,
+          "stale_cells": 0
+        },
+        "scene-child-exit": {
+          "width": 1100,
+          "height": 760,
+          "stale_cells": 0
+        },
+        "document-inline": {
+          "width": 1100,
+          "height": 760,
+          "stale_cells": 0
+        },
+        "styles-end": {
+          "width": 1210,
+          "height": 660,
+          "stale_cells": 0
+        },
+        "scroll-30-rows": {
+          "width": 1210,
+          "height": 660,
+          "stale_cells": 0
+        }
+      },
+      "failures": [],
+      "visual_review": "Inspect inline images, box joins, and text styles in the PNG artifacts."
+    },
+    "unit_tests_passed": 106,
+    "source_changes": false
+  },
+  "limits": [
+    "528 unsupported sample instances per matrix, recorded separately; no CJK/Hangul/full-width raster coverage claimed",
+    "Monochrome reference; color-emoji pixel equivalence is outside this oracle",
+    "Fixed and compact requests can crop; arbitrary fixed widths do not promise font-drawn line continuity",
+    "CI workflow changed locally but not published or run on GitHub"
+  ]
+}

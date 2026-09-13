@@ -1,5 +1,5 @@
 //! Glyph rasterization, shape lookup, and atlas storage.
-use super::metrics::column_coverage;
+use super::metrics::{GlyphBox, column_coverage};
 use super::{
     GLYPH_ATLAS_SIZE, GLYPH_FORMAT, RasterMetrics, ResolvedStyle, TerminalRenderConfig,
     TerminalStats, TextContext, text_font,
@@ -17,6 +17,14 @@ use std::borrow::Cow;
 const MAX_SHAPE_ENTRIES: usize = 4096;
 const MAX_SHAPE_BYTES: usize = 4 * 1024 * 1024;
 
+pub(super) struct ShapedRun {
+    pub(super) glyphs: Vec<bevy::text::PositionedGlyph>,
+    /// Snapped line baseline before terminal placement.
+    pub(super) baseline: f32,
+    /// Pixel enclosure of the resolved face's typographic ascent/descent.
+    pub(super) line_box: GlyphBox,
+}
+
 /// Shapes and rasterizes `text` in `style` at the physical metrics; the
 /// layout's glyphs are positioned inside a line box `raster.cell_size.y` tall.
 pub(super) fn shape_run(
@@ -26,7 +34,7 @@ pub(super) fn shape_run(
     raster: RasterMetrics,
     viewport: Vec2,
     cx: &mut TextContext<'_>,
-) -> Option<TextLayoutInfo> {
+) -> Option<ShapedRun> {
     let font = text_font(&config.font, raster.font_size, style);
     let mut computed = ComputedTextBlock::default();
     let mut layout = TextLayoutInfo::default();
@@ -72,7 +80,21 @@ pub(super) fn shape_run(
             .get_or_insert_with(|| format!("{phase} for {:?}: {error}", font.font));
         return None;
     }
-    Some(layout)
+    let line = computed.buffer().lines().next()?;
+    let metrics = line.metrics();
+    Some(ShapedRun {
+        glyphs: layout.glyphs,
+        baseline: super::metrics::snap(metrics.baseline),
+        line_box: GlyphBox {
+            top: (metrics.baseline - metrics.ascent).floor(),
+            bottom: (metrics.baseline + metrics.descent).ceil(),
+        },
+    })
+}
+
+pub(super) fn is_box_drawing(text: &str) -> bool {
+    let mut chars = text.chars();
+    matches!(chars.next(), Some('\u{2500}'..='\u{257f}')) && chars.next().is_none()
 }
 
 #[derive(Clone)]
@@ -376,6 +398,14 @@ pub(super) fn cached_shape<'a>(
     let Some(layout) = shape_run(text, style, config, raster, viewport, cx) else {
         return Cow::Borrowed(&[]);
     };
+    // Each independently shaped cell otherwise centers its own fallback face
+    // in the line. Ordinary runs share the configured primary face's baseline.
+    // This is an integer translation, so rasterization phase is unchanged.
+    let baseline_shift = if is_box_drawing(text) {
+        0.0
+    } else {
+        raster.baseline - layout.baseline
+    };
     let cached = layout
         .glyphs
         .into_iter()
@@ -408,7 +438,8 @@ pub(super) fn cached_shape<'a>(
                 // Atlas texels must land on physical pixel boundaries. Bevy's layout positions
                 // can retain fractional shaping offsets even though the glyph bitmap is an
                 // integer-sized raster image.
-                (glyph.position - size * 0.5).map(super::metrics::snap),
+                (glyph.position - size * 0.5).map(super::metrics::snap)
+                    + Vec2::new(0.0, baseline_shift),
                 size,
                 uv,
                 glyph.atlas_info.is_alpha_mask,

@@ -44,6 +44,8 @@ bevy = { version = "0.19", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["std", "underline-color"] }
 
 [dev-dependencies]
+# Deterministic font collections for the glyph fidelity oracle.
+fontique = { version = "0.9", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets"] }
 bevy = { version = "0.19", default-features = false, features = ["2d", "3d", "ui", "system_font_discovery"] }
 bevy_image_export = { git = "https://github.com/paulkre/bevy_image_export", tag = "v0.17.0" }

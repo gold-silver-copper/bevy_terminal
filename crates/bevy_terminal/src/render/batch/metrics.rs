@@ -222,10 +222,13 @@ pub(super) struct RasterMetrics {
     /// size stays fractional so a font can be sized to make its advance fill
     /// the cell exactly.
     pub(super) font_size: f32,
-    /// Uniform vertical shift applied to every glyph, in whole physical
-    /// pixels, so the primary font's line box sits inside the cell (see
-    /// [`vertical_offset`]).
+    /// Primary face's snapped baseline before the uniform text offset.
+    pub(super) baseline: f32,
+    /// Uniform vertical shift of ordinary text, enclosing the configured
+    /// faces' typographic ascent/descent in whole physical pixels.
     pub(super) glyph_offset: f32,
+    /// Box-drawing glyphs retain their grid alignment independently of text.
+    pub(super) box_offset: f32,
 }
 
 pub(super) fn physical_config(logical: LogicalMetrics, raster_scale: f32) -> RasterMetrics {
@@ -233,7 +236,9 @@ pub(super) fn physical_config(logical: LogicalMetrics, raster_scale: f32) -> Ras
         scale: raster_scale,
         cell_size: (logical.cell_size * raster_scale).round().max(Vec2::ONE),
         font_size: (logical.font_size * raster_scale).max(1.0),
+        baseline: 0.0,
         glyph_offset: 0.0,
+        box_offset: 0.0,
     }
 }
 
@@ -308,17 +313,17 @@ pub(super) fn font_line_box(
 pub(super) const CORE_PROBE: &str = "gjpqy|[]{}()_";
 /// Accented capitals: kept inside the cell when the core box leaves room.
 pub(super) const ACCENT_PROBE: &str = "\u{c5}\u{c9}\u{1eaa}";
-/// A full block: its box is the font's line box, which sizes the cell and is
-/// kept covering the cell so tiles stay seamless.
+/// The font's full-block outline supplies the legacy box-drawing alignment.
+/// It is separate from both typographic metrics and procedural block rendering.
 pub(super) const BLOCK_PROBE: &str = "\u{2588}";
 /// Upper bound on cell-height refinement rounds.
 pub(super) const FIT_ROUNDS: usize = 3;
 
 /// Refines the physical metrics after the logical fit: sizes the font from the
 /// rounded physical cell width (so a fractional raster scale cannot open seams
-/// between advances), grows the cell height to the primary font's line box
-/// (measured on a full block glyph) and derives the vertical glyph offset from
-/// the measured block, core-ASCII and accent ink boxes.
+/// between advances), and encloses the configured faces' typographic metrics
+/// in whole pixels. Ordinary text uses that enclosure for its vertical shift;
+/// box-drawing retains its separately measured grid alignment.
 pub(super) fn refine_metrics(
     config: &TerminalRenderConfig,
     measured_advance: Option<f32>,
@@ -347,7 +352,25 @@ pub(super) fn refine_metrics(
         raster.cell_size.y = raster.cell_size.y.max((line_box * line_height).ceil());
     }
     let mut block = None;
+    let mut text_box: Option<GlyphBox> = None;
     for _ in 0..FIT_ROUNDS {
+        text_box = None;
+        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut style = ResolvedStyle::plain();
+            style.bold = bold;
+            style.italic = italic;
+            if let Some(run) = shape_run("0", &style, config, raster, Vec2::splat(4096.0), cx) {
+                if !bold && !italic {
+                    raster.baseline = run.baseline;
+                }
+                let shift = raster.baseline - run.baseline;
+                let line_box = GlyphBox {
+                    top: run.line_box.top + shift,
+                    bottom: run.line_box.bottom + shift,
+                };
+                text_box = Some(text_box.map_or(line_box, |box_| box_.union(line_box)));
+            }
+        }
         // The block's fully opaque rows are what tiles seamlessly; its anti-aliased
         // edge rows are excluded (falling back to the bitmap minus one row per side).
         block = shape_boxes(BLOCK_PROBE, &ResolvedStyle::plain(), config, raster, cx).map(
@@ -358,7 +381,8 @@ pub(super) fn refine_metrics(
                 })
             },
         );
-        let height = fitted_cell_height(raster.cell_size.y, block);
+        let height = fitted_cell_height(raster.cell_size.y, block)
+            .max(text_box.map_or(0.0, |box_| box_.height()));
         if !may_grow || height == raster.cell_size.y {
             break;
         }
@@ -389,7 +413,8 @@ pub(super) fn refine_metrics(
         }
     }
     let [core, accents] = boxes;
-    raster.glyph_offset = vertical_offset(raster.cell_size.y, block, core, accents);
+    raster.box_offset = vertical_offset(raster.cell_size.y, block, core, accents);
+    raster.glyph_offset = vertical_offset(raster.cell_size.y, None, text_box, None);
     debug!(
         "bevy_terminal: cell {}x{}px font {:.2}px block {:?} core {:?} accents {:?} offset {}",
         raster.cell_size.x,

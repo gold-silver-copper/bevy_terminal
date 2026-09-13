@@ -1,0 +1,3490 @@
+{
+  "objective": "GLYPH_FIDELITY_COVERAGE_PROMPT.md",
+  "base_commit": "12b035ceb0b317ce8c529485b80c6b0317cf67ec",
+  "publication": {
+    "committed": false,
+    "pushed": false,
+    "github_modified": false,
+    "remote_ci": "not run; unpublished local changes"
+  },
+  "source_sha256": {
+    "CODEBASE_IMPLEMENTATION_GLYPH_COVERAGE_REPORT.md": "0d521805c2a6771e10296f1fcae2d04648a4f5d13f5c2a5c5ed66dde1bb2ecce",
+    "CODEBASE_IMPLEMENTATION_GLYPH_FIDELITY_REPORT.md": "40ef41a9a994350dc0976bc70a3868406f601b1104bf15cf427ac0c3d25708cc",
+    "CODEBASE_IMPLEMENTATION_GLYPH_FIDELITY_VERIFICATION.json": "b137efe376cbdcb4b0e5464b9709e63fc5f81654cec574765a4bc65ef98b6c1a",
+    "GLYPH_FIDELITY_COVERAGE_PROMPT.md": "8fe99c5c02ea95b0911bdc43ee56cdae664cfcf7ebadba33930e4113188bbeb2",
+    "GLYPH_FIDELITY_FIX_PROMPT.md": "a8f6c9abf80fdd8bfb2e8cd24524956fa3a6ace488b018cc9cbb456cac8d10c3",
+    "GLYPH_FIDELITY_REMAINING_ISSUES_PROMPT.md": "0cf67a76b96af4c8c0e9f6b3adf451b1507c072739c2ea86a634c7fba585418c",
+    "assets/fonts/fidelity/FidelityASCII.ttf": "b59def7e4b39068ad532b6cc235096a0c321f068fe1b050e60b28f0cac0ad775",
+    "assets/fonts/fidelity/FidelityCJK.otf": "3f29e6da01a7b006ecdb3c23e1633ecc80d83a358c13ccc194b17ea496852ff2",
+    "assets/fonts/fidelity/FidelityColorEmoji.ttf": "8b7440d53774c2cc94e9a5eac10ca50d2ece07b6d8502e5d0dac48ce175361bb",
+    "assets/fonts/fidelity/Noto-OFL.txt": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+    "assets/fonts/fidelity/NotoEmoji-Regular.ttf": "cd07743a4c93d8da929afdd28c1d368f11da478a1093146a13610081c2a58440",
+    "assets/fonts/fidelity/OFL.txt": "4d5ca8a68ce8fca191f0170b96122f668f4814f6ec1cf0993e1f82c9660a6789",
+    "assets/fonts/fidelity/README.md": "8a99a5e530f587905a637534942f45b713177f3688dc36537adf1467cc543a1d",
+    "assets/fonts/fidelity/build_subsets.py": "d19e47c04d630901351a6b157a924611d95678b9c20c4245dc542d5418d77bf4",
+    "assets/fonts/fidelity/subset-hashes.json": "4713367c72f52967ce88b49d8436908ce421577f2a1f852416d9a0859363c6d7",
+    "assets/fonts/fidelity/subset-sources.json": "232e255cec690490dd2a5961e8c6ea3be2ef974f968c137e261153f018145d7d",
+    "examples/common/fidelity_oracle.rs": "46c30e80b79aed6235f481396d59d6735fdbd5ad34c3c26f23bc2238bc8660e7",
+    "examples/glyph_coverage.rs": "5e7fda2d4cacc1c82ede4c2b133ba98348bdb5a73200f10f7911d4c34c1c9d2e",
+    ".github/workflows/ci.yml": "368c47c0c4ae9fa6664b3f2676ea8643dbbaa38e311dfa18239182efbaae1c27",
+    "Cargo.lock": "1f82a39a23ebc344f8916cdc6124d2bad90735b96380c5799cfde436bd69d52a",
+    "Cargo.toml": "4288ffac827ea28a5c18c957d308c3a1599dc03046d9fa4c89ba6e3dcc62c209",
+    "README.md": "de686e66711f2301d56afdf436f210d1caff3ed355bbd6eb50e43a7e095033cb",
+    "crates/bevy_terminal/README.md": "2eecc09573ca811920b50957823d47497d25ce4d0bdb65979ec4d0fb72822660",
+    "crates/bevy_terminal/src/render/batch/metrics.rs": "af87fbcf049448426bb8cfead6994a9a2c7b68489ad53b94998aca3088114287",
+    "crates/bevy_terminal/src/render/batch/scene.rs": "8483ab7f1036d897f64068bf3718c1ed9562345ac9482a45b4c10ea7cf9f471d",
+    "crates/bevy_terminal/src/render/batch/shaping.rs": "6546288c82b3979897163b06dc346daabe5e1dad912aaa7a8e605a01117794b2",
+    "crates/bevy_terminal/src/render/batch/tests.rs": "a8df77af78f2e3d6c258b713ac6415a7750e7428297997f6d6b1b8e266d483ba",
+    "examples/glyph_fidelity.rs": "cbbc93af217cddb42b34b5b6e1044da450075fcf2efbfedc7fc5294f62fa8823"
+  },
+  "initial_source_hashes": {
+    "CODEBASE_IMPLEMENTATION_GLYPH_FIDELITY_REPORT.md": "40ef41a9a994350dc0976bc70a3868406f601b1104bf15cf427ac0c3d25708cc",
+    "CODEBASE_IMPLEMENTATION_GLYPH_FIDELITY_VERIFICATION.json": "b137efe376cbdcb4b0e5464b9709e63fc5f81654cec574765a4bc65ef98b6c1a",
+    "GLYPH_FIDELITY_COVERAGE_PROMPT.md": "8fe99c5c02ea95b0911bdc43ee56cdae664cfcf7ebadba33930e4113188bbeb2",
+    "GLYPH_FIDELITY_FIX_PROMPT.md": "a8f6c9abf80fdd8bfb2e8cd24524956fa3a6ace488b018cc9cbb456cac8d10c3",
+    "assets/fonts/fidelity/NotoEmoji-Regular.ttf": "cd07743a4c93d8da929afdd28c1d368f11da478a1093146a13610081c2a58440",
+    "assets/fonts/fidelity/OFL.txt": "4d5ca8a68ce8fca191f0170b96122f668f4814f6ec1cf0993e1f82c9660a6789",
+    "assets/fonts/fidelity/README.md": "ca4d31e7226cf3ffd79a29c71aa5f515a6e5dde0a336fb658ab68061182455b0",
+    "examples/common/fidelity_oracle.rs": "1236b3e4c834d907d468f8438aa8cc5e18cbb72b60f92d0c4d46d53ac6f0cb24",
+    ".github/workflows/ci.yml": "4efd0f073c13709a2beed5326c16537e9338dd89fd327d83dc88caf4f2625ef2",
+    ".gitignore": "f7d23500cbe9e898c0c9a71c8cfd70ac0b56eedba722cfd02eea06a20a006a94",
+    "API_CLEANUP_2_PROMPT.md": "fad768dbe9ef9427ec459caf6dc75335212603e31aa342731a5413f132e284e2",
+    "API_CLEANUP_PROMPT.md": "dfc6d785e3e30b256cfcd60f20efae4f8a80584d42a061f9ea98706fc3e5e337",
+    "API_TRIM_PROMPT.md": "3600fd09c5291099b9258341147bccc0dbfd91b97eba24fe714d11ab7ac17a90",
+    "BEVY_TERMINAL_SPLIT_PROMPT.md": "8543eb55fe00d02d5b09737978f8808151142249f3bca08a25b92940b7e441c0",
+    "BEVY_TUI_TEXTURE_PARITY_PROMPT.md": "584af3be8040bfe133d40af759925e6482664d46cd37d6a0b947a21fa294cc7b",
+    "CLEANUP_PROGRESS.md": "96ce11e61d3e16ff5209857918da736addf8662b9f79d553b857a2da477c6968",
+    "CODEBASE_AUDIT.md": "ef71aa8fb492d440f1240f3b19234a1bbbbd9c4d5c712946eb4abdf085c59313",
+    "CODEBASE_AUDIT_IMPLEMENTATION_PROMPT.md": "d3415bbc77cded04eafcc093482f62768f01143173e7f2c71c8402f43464d382",
+    "CODEBASE_AUDIT_PROMPT.md": "95973a1e895a2d4c53875b06c28241e583eed4dba592fd61aad7fdee641a16ff",
+    "CODEBASE_CLEANUP_PROMPT.md": "6295830841fc3e4fd78a5d459ac8d72c082630a819ea74d299990b6a28246d39",
+    "CODEBASE_IMPLEMENTATION_LOW_LEVEL_REPORT.md": "513cb826aa03db5362e963bd81d1e4a642b3d132e370a9cc46de9080ee7ab3c1",
+    "CODEBASE_IMPLEMENTATION_LOW_LEVEL_VERIFICATION.json": "12c187f12e4a00c37d6c81a5f62b5e11e3855ab4645b3d2ebf614dd4ef2c2ced",
+    "CODEBASE_IMPLEMENTATION_REPORT.md": "0e500a68fbee6f1dbcfb0e2a5a25b130c3d17054490b875d4eb7edca2128dcd6",
+    "CODEBASE_IMPLEMENTATION_STATUS.md": "381c9af8fee6de6acb4ba1af81b215cdeac7ada43aee2e6ca8f7ce1a5fac56e2",
+    "CODEBASE_IMPLEMENTATION_VERIFICATION.json": "586731ab5d85afdeccd2835b68e21f143696e95464d8bef9b42e2d292ce0236b",
+    "Cargo.lock": "1f82a39a23ebc344f8916cdc6124d2bad90735b96380c5799cfde436bd69d52a",
+    "Cargo.toml": "4288ffac827ea28a5c18c957d308c3a1599dc03046d9fa4c89ba6e3dcc62c209",
+    "DOWNSTREAM_PROMPT.md": "04c28478cf821aad412c7bf1274741861c8e7a63efafab7d8eeaa4b6e7cd1807",
+    "GLYPH_FIDELITY_PROMPT.md": "cd18f9f8b3151181d146250f6229bc92d2ac9e5da6a80d1f895b5210f66cbad4",
+    "IMPLEMENTATION_PROMPT.md": "559214d3fbce3cdb08df21b42c43f5b98b3dd395261affe178e6abb5605185db",
+    "LICENSE": "d0ddf3a109d0235c9f77c7e5f7df332b38ab2416c17ff02de8778d3dc9409799",
+    "LOW_LEVEL_CLEANUP_PROMPT.md": "efb1a23e11ea13730c21c1860c3b373b0fafcda572d9ff0764ccce4e09c0035c",
+    "PERFORMANCE_FIX_2_PROMPT.md": "6f4fc210d6c51167c7dfb3d6fb909dc0c29428ca9687ae205caf268081d26fb9",
+    "PERFORMANCE_IMPROVEMENT_PROMPT.md": "2cb512560dc0903ee44b56d977d56317dd5451f751f4331dd0d6ecf415d8fb1e",
+    "RATATUI_EXAMPLES.md": "1c1f9c769c7ac8e3e4f27767e93ca772eb75e54cdebe025f79d41cf212553afe",
+    "README.md": "3f56d481e21d17c6c61cdbdb65984da60f11fd3cee6077640177c5dbe8faeb47",
+    "assets/fonts/README.md": "3ca21e9dc874deb42f738c576da08637a9065d1fe396a13b033da4cd32ab9664",
+    "assets/fonts/cascadia-mono/CascadiaMono-Bold.ttf": "b22cb603ed23cac36e8444846e1841caca21719a5e852780a8d37ae7a49b0a36",
+    "assets/fonts/cascadia-mono/CascadiaMono-BoldItalic.ttf": "ecaeab55e6334408f8ff1fde78a99ddaeb3bb7fad4fcd177df8475c88a7d240f",
+    "assets/fonts/cascadia-mono/CascadiaMono-Italic.ttf": "8d98a33e7617c14dd1d200b4900bc6c2d5d7165abb5c09e9d2fd51c38ce9c9ff",
+    "assets/fonts/cascadia-mono/CascadiaMono-Regular.ttf": "06520d032ec274fa5040b22c6f4a1d829081b24ba40b2da56dae89bf10c7b481",
+    "assets/fonts/cascadia-mono/LICENSE": "51882cd3cdba4e16f220f44ddb08a635c38c44ea6e0975db2574f4be6f958238",
+    "assets/fonts/dejavu-sans-mono/DejaVuSansMono-Bold.ttf": "bce60f1b4421acd9ea51ba6623d7024ecbe6817a953e3654df62a5e6bdf8f769",
+    "assets/fonts/dejavu-sans-mono/DejaVuSansMono-BoldOblique.ttf": "91713a71d550bba22c2a6b2bb2a9ad8f9a159e12e4e9f0a5b2677998ba21213e",
+    "assets/fonts/dejavu-sans-mono/DejaVuSansMono-Oblique.ttf": "742097840c541870e8d6dc5c9b37bb1ceeea6c0dedd1d475faf903ef9df734b0",
+    "assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf": "b4a6c3e4faab8773f4ff761d56451646409f29abedd68f05d38c2df667d3c582",
+    "assets/fonts/dejavu-sans-mono/LICENSE": "7a083b136e64d064794c3419751e5c7dd10d2f64c108fe5ba161eae5e5958a93",
+    "assets/fonts/hack/Hack-Bold.ttf": "5bbf531eff7f8a0c2559c9a0656718e2828a012a9b1f60b5f54006d59a4de8d4",
+    "assets/fonts/hack/Hack-BoldItalic.ttf": "64f74a079700b7dfe128551a1e28875d5ba980971e55f5e0f0596e37bdc6a6bc",
+    "assets/fonts/hack/Hack-Italic.ttf": "096fb67a2b85f3c866e9cb3e965b27c2c10b977315f4d3d7f095674be35091c1",
+    "assets/fonts/hack/Hack-Regular.ttf": "15f55cc0c85a2988d2b4b3a8cdb5d77fdfbaf319e1bb5309d725db9818fb7125",
+    "assets/fonts/hack/LICENSE.md": "1f61bb7c790c59b4b0ecdf304628b94e42ae4c8020094a8c3da73381ab212623",
+    "assets/fonts/iosevka-fixed/IosevkaFixed-Bold.ttf": "db9ec51e7823f49a5f51ea7755f152876e6badd2f0ad933e400eb1e682ab7b78",
+    "assets/fonts/iosevka-fixed/IosevkaFixed-BoldItalic.ttf": "badfcb70833aa35eacf953533548ba51a236049107fa8709d72a7fd26e9d1c43",
+    "assets/fonts/iosevka-fixed/IosevkaFixed-Italic.ttf": "0d969250494b5bdb43cc3f2f6bb29a11160a03fc5aeb9ded89e7b6d14648d236",
+    "assets/fonts/iosevka-fixed/IosevkaFixed-Regular.ttf": "efdd12eb78b5738b381614e1413aa24ccecc6f9ac5fa28207b389c62fb9231d9",
+    "assets/fonts/iosevka-fixed/LICENSE.md": "4ba53c7c1cb39279aae5f8d7d22054c485c71169920e5a36ed098b115e2e3c5d",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-Bold.ttf": "5590990c82e097397517f275f430af4546e1c45cff408bde4255dad142479dcb",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-BoldItalic.ttf": "4039d5ce0ed225bf9c8b2c8c6436290ae2f356b7e90d70fa666227238324aa3b",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-ExtraBold.ttf": "8e501d3a6a883e83ea4f7852804fb0894cebdd67751bb1006b37a476cef34cd6",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-ExtraBoldItalic.ttf": "ec3a860fa87d0a3b1451277d1c2f3072f5ba19d2367aec54f7169d5710872610",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-ExtraLight.ttf": "8391e7ec13e8ba758c1838f56bccd973228ccf4dc74aa5bffe9525b9147b12f8",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-ExtraLightItalic.ttf": "3c7fee57538f18b61cc5f0784a8133fe5ee95feb41f633e8f6f7ef609e6207ec",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-Italic.ttf": "9d0a1f7a708e6af183f1193b7e81d40da294f5c67682c085d8401c60aac8ded4",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-Light.ttf": "60c18d7dd58d81b3bbd12e8ce32744a8771bfe2b5280574082b0eaed46c60d24",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-LightItalic.ttf": "18ffadb91fa711b45feae027ddfd561e7f97ace805ec4baf9905046cf450befb",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-Medium.ttf": "31c92d01a8a08528b718a43addf0ad3df0af2ca4b7b3290a452f70f358e14d3d",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-MediumItalic.ttf": "4477fda6bd472ef96b11bc1083370f7fc3ff427bdc807e682ced5819e3dee9df",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf": "a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-SemiBold.ttf": "1b3bfa1ed5665a4ce3f9feb68d2d4e40e70bf8b4b7d9a3edd418f321b4e166a0",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-SemiBoldItalic.ttf": "3b3000507a7285872395ddbb4e53a28f07910dbf494fb0d5e1421dd60b5d8436",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-Thin.ttf": "0756e8e8cf1d65fa7519776764479b3973efb15af4f419d5d7274dc27ae1b702",
+    "assets/fonts/jetbrains-mono/JetBrainsMono-ThinItalic.ttf": "ebcdd13119b6beb7457e2f76b31094cb8cf1108e567030f8402b24dde018e76a",
+    "assets/fonts/jetbrains-mono/OFL.txt": "30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad",
+    "assets/fonts/jetbrains-mono/README.md": "7cd233b9458c3d4fcbe594e0bfe5dc19db2098814df6711039e5aa3b15a752ad",
+    "assets/fonts/source-code-pro/LICENSE.md": "7c940e28a5388e9bba866cf0e408edda45fe0899ba98665b8f6ab31dc5e4b8ff",
+    "assets/fonts/source-code-pro/SourceCodePro-Bold.ttf": "b2095e0d657e6d28dc32444a9dacabab0c9241d0bf39d96371756cc9bdbc3a5f",
+    "assets/fonts/source-code-pro/SourceCodePro-BoldIt.ttf": "1b49d9304012bf8db9e5dd4104183d5c122c445d0570a2259125f71977595b90",
+    "assets/fonts/source-code-pro/SourceCodePro-It.ttf": "9c9e0f4d016210a3c5bdfba5262637c5b26ddff4ccc382ebbc781de5961d0042",
+    "assets/fonts/source-code-pro/SourceCodePro-Regular.ttf": "74bd80d3e42a08517cd7e1108ba3d86f2da29ac0f3065be95e0357956ab9db37",
+    "benchmarks/audit-workloads/.gitignore": "306fd52e74fca6746e12acc750f232de15e71da917756a1270d74c91f5eb7368",
+    "benchmarks/audit-workloads/Cargo.lock": "a77a85b583d8dae09112dfd16292a9450aadf477ea2d9838f4ee1027a8e849fb",
+    "benchmarks/audit-workloads/Cargo.toml": "5891bc190212edd11a07680f801fc0f5a8b6c686089759d7fb9bb2639addd4e3",
+    "benchmarks/audit-workloads/README.md": "7c9b7634f45bbaf5a48ea6ebaae7869b6152685152e8c120d74bd1a75e9e97de",
+    "benchmarks/audit-workloads/results/RESULTS.md": "bb7825ae62e5c64d0589d499d1789e99e9fefacc6a7b7f9c69e04bf998da3eac",
+    "benchmarks/audit-workloads/results/baseline-1.log": "d48c69f37a4ab6f56593eee2cff670c188acd0e4a98bf88d2dd612346984c52e",
+    "benchmarks/audit-workloads/results/baseline-1.tsv": "e91a7fd246595d373c81d7b704634313170447452c405227ff1e415441283cc9",
+    "benchmarks/audit-workloads/results/baseline-2.log": "d48c69f37a4ab6f56593eee2cff670c188acd0e4a98bf88d2dd612346984c52e",
+    "benchmarks/audit-workloads/results/baseline-2.tsv": "5d15e6ee4efc009762e1967c2606477dd6bdafadcf1f7109e1380c1c6921601c",
+    "benchmarks/audit-workloads/results/baseline-3.log": "d48c69f37a4ab6f56593eee2cff670c188acd0e4a98bf88d2dd612346984c52e",
+    "benchmarks/audit-workloads/results/baseline-3.tsv": "42ae1ada585db64a9a9e78f928067b5197b25b57ebb99ec0b70b9e0ccc8b2018",
+    "benchmarks/audit-workloads/results/changed-1.log": "0f018288a6e198a3e3ccb6686671767f0ec52d6f95c601816eb59663e67f2e63",
+    "benchmarks/audit-workloads/results/changed-1.tsv": "c218154e4a664e630fed7981ae6564c776cbc2a2a6baf5738653dfbab9518f0b",
+    "benchmarks/audit-workloads/results/changed-2.log": "0f018288a6e198a3e3ccb6686671767f0ec52d6f95c601816eb59663e67f2e63",
+    "benchmarks/audit-workloads/results/changed-2.tsv": "86da6b311f9f61b98b31feeaf4a5391818931a7803a97e92bff51f86bb190026",
+    "benchmarks/audit-workloads/results/changed-3.log": "0f018288a6e198a3e3ccb6686671767f0ec52d6f95c601816eb59663e67f2e63",
+    "benchmarks/audit-workloads/results/changed-3.tsv": "229ce7291e27a363592ba8d4cc46929c8297ef9d1a3101d616b299b7d000cc72",
+    "benchmarks/audit-workloads/results/sampling.json": "276b37eff997ae5c10482e86b449a01e97f0dd47b4d9397a97aaa00120bd129e",
+    "benchmarks/audit-workloads/results/toolchain.txt": "4c9782615be99cbd002084ed7ef5d23c1a4170f5975dd59ba5656257aae687fa",
+    "benchmarks/audit-workloads/src/main.rs": "24e359bb2aa86d248ceaf5f6ce44b53b389559fb8dd419d2920f7ed80ad0727f",
+    "benchmarks/renderer-comparison/.gitignore": "31896a895134a36a70aa6e981bc7eb6b0a9f50510621652ae276b0f46514d1c1",
+    "benchmarks/renderer-comparison/Cargo.lock": "740d9e00b94943e36b297007386058bfc38b857115b1d5880e1883780f9d05a1",
+    "benchmarks/renderer-comparison/Cargo.toml": "6434d897499df6cca771f8b3c504a4c487545589b10f7a9f220a9f85a4509651",
+    "benchmarks/renderer-comparison/PROTOCOL.md": "0ea2392fcfcf14caf925de0b8eac3d2f58ef7fbb5aed31cdd8ff884d49f6fb3a",
+    "benchmarks/renderer-comparison/README.md": "5070ffdea11ecd69ca4a06a4571501c197917942b6ea2abdf3c29ace61aef261",
+    "benchmarks/renderer-comparison/adapters.toml": "40e5664556efe2c2d7c277c2ff22e7bdf92ee352723550100dfa5f1d11f6f430",
+    "benchmarks/renderer-comparison/adapters/bevy-terminal-ratatui/Cargo.toml": "1c6fa9bf9c9931f90e421b98fac0636809fa0e2f37c8791c3a4db6fd7518e281",
+    "benchmarks/renderer-comparison/adapters/bevy-terminal-ratatui/src/main.rs": "376f800579340f9565afeb0ce38c6fc85edec4947116cbbc6f820ab11e060c0d",
+    "benchmarks/renderer-comparison/adapters/bevy-tui-texture/Cargo.toml": "0633e05548d853a6715c99b10bd899457a6857feeb666c3125a7c6dd13c3f2dd",
+    "benchmarks/renderer-comparison/adapters/bevy-tui-texture/src/main.rs": "9c809a6955484561d4226f92d0b7dd81db1c2fa60e921072c7136ff5bb00812e",
+    "benchmarks/renderer-comparison/adapters/egui-ratatui/Cargo.toml": "602232baba43bfda961f2e51ec2b2d4a5d927d160c2c0bc72ae8b4602580b908",
+    "benchmarks/renderer-comparison/adapters/egui-ratatui/src/main.rs": "7e722817de984662803c41c47f381a76009f276406b98ea9a858db3a56ede98c",
+    "benchmarks/renderer-comparison/adapters/empty-bevy/Cargo.toml": "27fefbcb886e96df9c091a3cf05132746124ad04c8daead2a6a5d8f1f1bfa8db",
+    "benchmarks/renderer-comparison/adapters/empty-bevy/src/main.rs": "15f05bb0b2782fa93791918b672b107617ceca01fe9912f8d86fc4ff9d865e84",
+    "benchmarks/renderer-comparison/adapters/parley-ratatui/Cargo.toml": "532bace8ac3620c5a7148fe2bf49684103d6b27c0f0fa85510f7b45b1d02e22e",
+    "benchmarks/renderer-comparison/adapters/parley-ratatui/src/main.rs": "d634c98c5d1ce14a37da3182a8c5e6f98a1bd438ebf29dec4bfdca8d3716fb9e",
+    "benchmarks/renderer-comparison/adapters/soft-ratatui/Cargo.toml": "efcbbc655bd6da2bb79353900ca11bac899fdca7aba1b64d1262bb8e1b604cae",
+    "benchmarks/renderer-comparison/adapters/soft-ratatui/src/main.rs": "181ed76d1e2dd1f6235d578be374e7dadb0e9b54a8f2ea3153dda5e4e70a79fe",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/Cargo.toml": "ac299ff74b67bfff543134554d27d2b64c9c87e6a56a1f65a9b21d6e93dbf589",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/LICENSE": "8d34d739be25ca2bb81f4c59d46a0a27bc51151a397252a84d73ff24f5d308a1",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/NOTICE": "0236a590e0a0652f59742f5f78026747cffb04d0099ed13d4238e13c4453cbc0",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/PATCH.md": "03347900ca7943452652b76c2cd687c897d4447ff8c5bc6af7ea00fe0d58dde3",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/backend/bevy_backend.rs": "791e3db3df5965a9c6b3e3d69986b9a4473145e2e7460e382965e2dac7f22f6d",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/backend/mod.rs": "a867e86ecc972ca1e44b201b54e650391f42b5db22d86e8816a969dead80f021",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/backend/programmatic_glyphs/block_elements.rs": "68343946f901c312fc7ef76f3899c4b4b622f1e370877af28e9a773ac179bae9",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/backend/programmatic_glyphs/box_drawing.rs": "62465617fca1f1ed983ea18d77718473ca418af4f05b7ed94435ebaa90eb0484",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/backend/programmatic_glyphs/braille.rs": "27e1cc3fd7349ce2ef2142afea89f9b3d293a6c3cadf938077e5916aeb74bce6",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/backend/programmatic_glyphs/mod.rs": "e208360e2fd224e4bec10a70c8af6b81f48764ecedf0a076c62b7c76b6eb1ac7",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/backend/programmatic_glyphs/powerline.rs": "5210f35e94700b00032df8cddd4dbea4fbdd1f479d7b3630fb7fa6e244f8f641",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/backend/programmatic_glyphs/primitives.rs": "972e7cafed7c5d49858506c9c6db0625266628a128920aa446884beb4600cc0a",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/backend/programmatic_glyphs/rio_primitives.rs": "a90437edc04cc1851b9765c6099a478b31e8e83b6064901dbe6a363e57bd5802",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/backend/rasterize.rs": "e2e55339a2a899b61fed709ded8d0673254a82ddf40741c0c535b25c9bed93e8",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/backend/shaders/composite_bg.wgsl": "e79e42fd731e030b6644e58275ea7b1ede10f9353ee3a2e4b68a51ec88df8a21",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/backend/shaders/composite_fg.wgsl": "0fa9163b82087c34005904a0e6a68f7edb6a12aa2a3e8f478b31d7918418b726",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/bevy_plugin.rs": "a0d749f8618487df9a0bb773934eb1860b855e6b4802d7309cf146486095c701",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/colors.rs": "f1a7b642e8ea9fc92945a117b82e551f5bfe67f100094495e5820d75012e2d60",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/fonts.rs": "db48c81e2b29acc7fbb1f6c6621ba7a31eee12dff28d1118d6249dd17f5d7bf4",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/input/crossterm_compat.rs": "3f9e648e1aab0460ebf93826a29ffb642515c33089e570b157cfc20043d29f19",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/input/mod.rs": "7b92da5163a95072ad46370686e7395b03d7d468481711a73717ed8eb58da74e",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/input/ray.rs": "b22363ad20bb5285bdcb2fa4bae1d5a70ff788dcc8eb3867a059af98fdad0c55",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/lib.rs": "6d2b9e9dbba1b453a03b0b8cd064adc1c648e46a1c38bf762502ef07c7a58222",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/setup.rs": "a26b87b655ebf951db2b965b846c24dc4bf4c30e71dfc7157289bc76a2dc8104",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/utils/mod.rs": "61801142ce641fb0b0dabe29634b4387627f6c50c7a618fdb21073682c0cb228",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/utils/plan_cache.rs": "26c54a02e19a1568f09bde9a6d5a1ac8a40be44e288c56daa20043a70f6daf3b",
+    "benchmarks/renderer-comparison/patches/bevy_tui_texture/src/utils/text_atlas.rs": "cdc77ad10f150020164c5b0bec77334787017c94f30350ae0f60b54041077f86",
+    "benchmarks/renderer-comparison/patches/egui_ratatui/Cargo.toml": "96b5c48623ae8c774aa23a89376651e9893793bfc3641a357fa3ba2015312fc9",
+    "benchmarks/renderer-comparison/patches/egui_ratatui/PATCH.md": "b872e285cd2f1685d7e4bc93bc1b3971ee2376233964aacce59e28514201a8ac",
+    "benchmarks/renderer-comparison/patches/egui_ratatui/src/lib.rs": "0bb6aaa55e4f86d2fcfb1b1d230b84afd29f6e50a0d33a918de8fa8c589d1297",
+    "benchmarks/renderer-comparison/patches/egui_ratatui/src/ratagui_backend.rs": "aa0f60a1007d7001e5f3dd763fdde7ca59bb188e7b42186cb21bbfed91d519a8",
+    "benchmarks/renderer-comparison/patches/parley_ratatui/Cargo.toml": "37c15aa76536e8b75d8b0aaf0eb2be667106c3037e042003b343d59c28ac2ba4",
+    "benchmarks/renderer-comparison/patches/parley_ratatui/PATCH.md": "5ab8d706181ab1aa524326aa5e91e285b514394de95ed377f772c2de462f2c1b",
+    "benchmarks/renderer-comparison/patches/parley_ratatui/src/backend.rs": "c376b4cdc4686ede02ed6b5d0b9291d83137c946540e08f526bccfd517285c2c",
+    "benchmarks/renderer-comparison/patches/parley_ratatui/src/color.rs": "21f742a98fc5851f045e655521de59f1b7d4607292007c702b237d674cecb1e8",
+    "benchmarks/renderer-comparison/patches/parley_ratatui/src/lib.rs": "859926492c09c98c8d4b367295faad85df420fa91d46e143efddf47c752370c3",
+    "benchmarks/renderer-comparison/patches/parley_ratatui/src/presentation.rs": "61159c3d827adcb4443d2e91a49f970fc3d6c25e63cd7464636860d99cd197c4",
+    "benchmarks/renderer-comparison/patches/parley_ratatui/src/renderer.rs": "efe10c7a938e57abef42f57c1d45b61730a41c9187b7c116c3908e7ef504c54c",
+    "benchmarks/renderer-comparison/patches/parley_ratatui/src/text.rs": "f92c7f2b2eb76616e74623c96a463aa1080d80659c9ecdfe5dd4fd97199d9e01",
+    "benchmarks/renderer-comparison/patches/soft_ratatui/Cargo.toml": "0497ccf72b7299f2eb3f120610c3e26f5d335425288aed68ea5f823e2697caa8",
+    "benchmarks/renderer-comparison/patches/soft_ratatui/LICENSE-APACHE.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "benchmarks/renderer-comparison/patches/soft_ratatui/LICENSE-MIT.md": "905252e7048c527ac0d8443e3e3b7fff39c5f71238b2e62bcf2d960f585110ca",
+    "benchmarks/renderer-comparison/patches/soft_ratatui/PATCH.md": "5027aa8b984fa56a986c1c89c514c0bcdd94aa294f1c63c17a271d07949a7df9",
+    "benchmarks/renderer-comparison/patches/soft_ratatui/src/bdf_backend.rs": "e2b49f2744d4e824c4f333962d83497adbb2024d40b7de36a817e7b3f936d6ed",
+    "benchmarks/renderer-comparison/patches/soft_ratatui/src/colors.rs": "946e74545d3d217607aa2c79fb3360e4d4f88dc868a75c185d5c9afdcf9add9d",
+    "benchmarks/renderer-comparison/patches/soft_ratatui/src/cosmic_backend.rs": "8bb2368f769d3a922a5f82f80e3c3a5619cc3211b7bc8ab8b1542b4bcb7afe47",
+    "benchmarks/renderer-comparison/patches/soft_ratatui/src/embedded_backend.rs": "471702b74dafaa86d2095f012e90c6d11b219c12fc83316420a79a31a3a4eb14",
+    "benchmarks/renderer-comparison/patches/soft_ratatui/src/embedded_ttf_backend.rs": "c074f24befbe1a007be6fef07041d1a4ecc828715ebf5a4269bddad58e012ded",
+    "benchmarks/renderer-comparison/patches/soft_ratatui/src/lib.rs": "c68eccacc69f221ea1b09d076b68cc4d0274490e20ce4379e8593165b6c00479",
+    "benchmarks/renderer-comparison/patches/soft_ratatui/src/pixmap.rs": "c910b670c4bd0d71162d2d87db4593d407ef3aa7aab52127e9e7b02d33913217",
+    "benchmarks/renderer-comparison/patches/soft_ratatui/src/soft_backend.rs": "010d1b63a0b8bd6fbd3306ed937c3cbe68968839f14422a4f898be890bb68956",
+    "benchmarks/renderer-comparison/run.py": "841df22c3ed05e2c24f3138f5147602f7c835bbe762bb797672822a3aef29ebc",
+    "benchmarks/renderer-comparison/run.sh": "ebf67cb4a244c9871a0cd40eccc918ea573210af66651bce0d1838ea9ac2e794",
+    "benchmarks/renderer-comparison/sdk/Cargo.toml": "3b0238edd33f944ba3db7bd7ed8a6d13737f6068d95506040fddbc0008d2516c",
+    "benchmarks/renderer-comparison/sdk/src/lib.rs": "1967df2bcaa421b244e63fabf98c3af63d6e73d2785263d47a632edc2a6c4d39",
+    "crates/bevy_terminal/Cargo.toml": "3654b29eb10287ed2bff6ff490464a0a7c63497e5ebfb9e919765f0b28e39b2c",
+    "crates/bevy_terminal/README.md": "ba22aaa1adfbbe23c39f464321aa00fe3c4e54c749e6520679410c661c39334c",
+    "crates/bevy_terminal/assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf": "b4a6c3e4faab8773f4ff761d56451646409f29abedd68f05d38c2df667d3c582",
+    "crates/bevy_terminal/assets/fonts/dejavu-sans-mono/LICENSE": "7a083b136e64d064794c3419751e5c7dd10d2f64c108fe5ba161eae5e5958a93",
+    "crates/bevy_terminal/assets/fonts/jetbrains-mono/JetBrainsMono-Bold.ttf": "5590990c82e097397517f275f430af4546e1c45cff408bde4255dad142479dcb",
+    "crates/bevy_terminal/assets/fonts/jetbrains-mono/JetBrainsMono-BoldItalic.ttf": "4039d5ce0ed225bf9c8b2c8c6436290ae2f356b7e90d70fa666227238324aa3b",
+    "crates/bevy_terminal/assets/fonts/jetbrains-mono/JetBrainsMono-Italic.ttf": "9d0a1f7a708e6af183f1193b7e81d40da294f5c67682c085d8401c60aac8ded4",
+    "crates/bevy_terminal/assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf": "a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f",
+    "crates/bevy_terminal/assets/fonts/jetbrains-mono/OFL.txt": "30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad",
+    "crates/bevy_terminal/assets/fonts/jetbrains-mono/README.md": "b34f937b89610e552ad7c9c91b73c9ecac8033ca1bfab6a0a29295e975e968a4",
+    "crates/bevy_terminal/examples/common/mod.rs": "56f9fc50fa3522d5bebbd6f38f6f04498586efac42add9f9f42a465ecf9486a6",
+    "crates/bevy_terminal/examples/scene_export.rs": "84dc70c4c720b7e4b6380258dcf5ec0ee354d572c15fff4beff2e908461defaa",
+    "crates/bevy_terminal/src/lib.rs": "3636cb51bc43994f3c1a89623ef4fa30a373d42f1611fc051a1ac08c7762dc35",
+    "crates/bevy_terminal/src/render/batch.rs": "2692b1df8eed3c30df5d43f7d384e67e98b13235e8f701e70f2037cabd48d823",
+    "crates/bevy_terminal/src/render/batch/gpu.rs": "2cc7fc3ab711bb1b1131257254926a44137985c76c5863a8892544a01ef07809",
+    "crates/bevy_terminal/src/render/batch/metrics.rs": "e964d8560904e2411498c496367009690845427e1a7a30c7dbc9c7f66f3133d8",
+    "crates/bevy_terminal/src/render/batch/scene.rs": "2fb8969897faf0d32632f94a23b82c85e4831b79d8f80f75cddbaa4a68ce2151",
+    "crates/bevy_terminal/src/render/batch/shaping.rs": "12f398d1c317ad79038677913da45e7e39d92d79fc3ce4446841e48b1d43f971",
+    "crates/bevy_terminal/src/render/batch/tests.rs": "d26a308ce7f6e744d5de7188758ab5afcc91149cba2fae0e2e3594646658a99b",
+    "crates/bevy_terminal/src/render/color.rs": "ce8e5c11cb3142a3319331510fb67331946161e0d369903adbbd6a7175ab7ef6",
+    "crates/bevy_terminal/src/render/fonts.rs": "58396a27ba168642b2f36fc8ad53aa401ea71c25066bd75ce1f40dbb4e710e6f",
+    "crates/bevy_terminal/src/render/mod.rs": "14d4ed7152093020229cdff948cede7514bdf47e0e8dc5f6d20a4e22b4f9541f",
+    "crates/bevy_terminal/src/render/terminal.rs": "f420c46455099d9a84cdcec1d01abb5c299da3806c8b9a32dac2487093df015c",
+    "crates/bevy_terminal/src/scene.rs": "18b13f62dcee42daf4c18b3614afabb6bf910a506688a0619f26462159c973ec",
+    "crates/bevy_terminal/src/surface.rs": "8ebbec61583ce0ec570f3ca47292846f22ce0a62e0d74a7e60e73d86d7537496",
+    "crates/bevy_terminal/tests/gpu_readback.rs": "b0401a5b6dfa75c5be014fdedc3614d89e303dca5c36371a8ce09d81e733cd4f",
+    "examples/colors_rgb.rs": "d6fc8358c826d655903e0451fb62dd904aa76426898c845149f4951bdff4ce57",
+    "examples/common/app.rs": "5f10c86b965b7828922e9a49582c958f41cd2452cd9aad2035515def61726854",
+    "examples/common/export.rs": "5b1e91d905a9a571335814979e61832b3538c0df465e9914aa3691da8e4083ea",
+    "examples/common/export_gpu.rs": "f002711a1e727accdc0e36261990f80f1b538cbe13ef8c3dc7bd12d269c6494c",
+    "examples/common/fonts.rs": "7372dab9ccb751da17b4ab72251f9df0730d7621f8259ef6a8b11505185b9989",
+    "examples/common/mod.rs": "b0b6f8079c63f23be9d2fe741987f040506ca17aad574f9adcd509f5f5803369",
+    "examples/demo.rs": "c0443d30ad61bc747e9c06930fa972bdcbcb07a3a8ddb2850778794607fb9d28",
+    "examples/glyph_fidelity.rs": "8afb89ba24beb93e774cd489daf8f749266b2a7448b536b4df375c1763e13369",
+    "examples/high_dpi_export.rs": "e7491b2aeecc15514cbcb8c1069605ca0b88792573bf25699488eb721000c1a7",
+    "examples/image_export.rs": "036200febda914578c009d7cdcf4d0e84c960c5b4fa5a77e94158f1b3146fcda",
+    "examples/multiple_terminals.rs": "70778f4a96bc34dab51acd7cec74875963fcf2d2d5481c046d8f0bc1807a9f3a",
+    "examples/multiple_terminals_export.rs": "81c681162c465047cc1e78aa3d90afb0d66d6c637b05214f9727d2466295ecd3",
+    "examples/ratatui_examples.rs": "ed4152332ff09e4bda848e76b350f1b22fce421a9d7dce086d5f88500f21755a",
+    "examples/ratatui_examples/apps/a_m.rs": "a94465c7b144565c6d16b107c34495ff2caa9d5d8722c25a9bb85ea605757264",
+    "examples/ratatui_examples/apps/demo2.rs": "8d744ed8751dcac2e224e2787ffda427f432d8d2d2c216625b50bdae5bb76fca",
+    "examples/ratatui_examples/apps/mod.rs": "30c0807ad463558646b7b940e302bf8cf31c34306042bc766cd4c58e0589aca8",
+    "examples/ratatui_examples/apps/n_z.rs": "e7e20ccd4d14ca5c5e7c85dcce17403fa680677384ee16eafcaca067b495c459",
+    "examples/ratatui_examples/interaction.rs": "44d4b4cfc29364056095f86284df4ff9a37e1b2d90caf597bd4dcceef0bbe318",
+    "examples/ratatui_examples/mod.rs": "231a9b294e20fc39f7e2be7b2d9d6a8a62a0920d0b8c2ec0b40ec08a9ec3450b",
+    "examples/ratatui_examples/state.rs": "df0c60426c4695092fc6e720fb3f721ee3ab13a6d1654498eaf748e8aa38f8c2",
+    "examples/ratatui_examples/support.rs": "8e8a881d06e799db3ceb8e4949d7d345230070174b5ab420b6c484eca3b6ea0c",
+    "examples/ratatui_examples_export.rs": "d5a4bd1458b2f295f09e388e807670268ed77b371000f9b8b421aefcb9fa5203",
+    "examples/render_test.rs": "760cb22c38e9b7a13b3315e49a9b006f2d361ee0a0c29b77f12d417f8528ad32",
+    "examples/world_quad.rs": "10f05deb4794335367efcda03a44a3c89a3cac85ec5124c71f345b49e51a96a1",
+    "integration/bevy-ratatui-context/.gitignore": "306fd52e74fca6746e12acc750f232de15e71da917756a1270d74c91f5eb7368",
+    "integration/bevy-ratatui-context/Cargo.lock": "0b04e80abc1eb48b0feea621aede0e3638b499789225fae42c7e0a30f334123e",
+    "integration/bevy-ratatui-context/Cargo.toml": "60e497710507982825c421394b858e521c406a021e389f8fd7e90b980eda0f2c",
+    "integration/bevy-ratatui-context/README.md": "d930bc8bbb2134aa3923847ae24e7174bda0b5123c04f2c8bf9ebb44cb4fbae7",
+    "integration/bevy-ratatui-context/src/lib.rs": "bfe485ef265e7a776fb1d66f1b99bfb4d3808bd1e24643cbafb54faa8bde35bc",
+    "src/backend.rs": "2218fccf08bf0c18fc2782acb3351eb24b353c34ec69dc02bc6091e6e6cb2fd3",
+    "src/lib.rs": "b94fdfa8afd98801ebe67c8d7492e95b0c57cac714f22ec7210df12c830ce150",
+    "tests/export_readiness.rs": "a054691bcc856eb31b63493749e9b93ebc3e7bc1dac09e9b11026a62c9ace7c6",
+    "tests/glyph_fidelity.rs": "78b5880706321d72d7e16dc9a891355a4058ea8adec88565a56c0db24a1ea0e1"
+  },
+  "baseline": [
+    {
+      "name": "fit",
+      "command": [
+        "cargo",
+        "run",
+        "--all-features",
+        "--example",
+        "glyph_fidelity",
+        "--locked",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--output",
+        "/tmp/glyph-coverage/metal-fit"
+      ],
+      "exit": 0,
+      "seconds": 60.69
+    },
+    {
+      "name": "natural",
+      "command": [
+        "cargo",
+        "run",
+        "--all-features",
+        "--example",
+        "glyph_fidelity",
+        "--locked",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--output",
+        "/tmp/glyph-coverage/metal-natural",
+        "--from-font",
+        "23.0"
+      ],
+      "exit": 0,
+      "seconds": 74.39
+    },
+    {
+      "name": "natural-tiles",
+      "command": [
+        "cargo",
+        "run",
+        "--all-features",
+        "--example",
+        "glyph_fidelity",
+        "--locked",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--output",
+        "/tmp/glyph-coverage/metal-natural-tiles",
+        "--from-font",
+        "23.0",
+        "--tiles-only"
+      ],
+      "exit": 0,
+      "seconds": 46.61
+    },
+    {
+      "name": "compact",
+      "command": [
+        "cargo",
+        "run",
+        "--all-features",
+        "--example",
+        "glyph_fidelity",
+        "--locked",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--output",
+        "/tmp/glyph-coverage/metal-compact",
+        "--from-font",
+        "23.0",
+        "--line-height",
+        "0.85"
+      ],
+      "exit": 0,
+      "seconds": 77.04
+    },
+    {
+      "name": "fixed",
+      "command": [
+        "cargo",
+        "run",
+        "--all-features",
+        "--example",
+        "glyph_fidelity",
+        "--locked",
+        "--",
+        "--check",
+        "--font",
+        "all",
+        "--scale",
+        "all",
+        "--output",
+        "/tmp/glyph-coverage/metal-fixed",
+        "--fixed-cell",
+        "9x18",
+        "--font-size",
+        "18"
+      ],
+      "exit": 0,
+      "seconds": 45.44
+    }
+  ],
+  "missing_inventory": {
+    "greek/cyrillic": {
+      "ῃ": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        }
+      ],
+      "ῳ": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        }
+      ],
+      "ῷ": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        }
+      ]
+    },
+    "wide/fallback": {
+      "汉": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "字": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "日": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "本": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "語": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "한": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "글": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "｜": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "ｆ": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "ｕ": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "ｌ": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "ｗ": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "ｉ": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "ｄ": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "ｔ": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ],
+      "ｈ": [
+        {
+          "family": "Cascadia Mono",
+          "scale": "1"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "2"
+        },
+        {
+          "family": "Cascadia Mono",
+          "scale": "3"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "2"
+        },
+        {
+          "family": "DejaVu Sans Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "1.5"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "2"
+        },
+        {
+          "family": "Iosevka Fixed",
+          "scale": "3"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "1.5"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "2"
+        },
+        {
+          "family": "Source Code Pro",
+          "scale": "3"
+        }
+      ]
+    },
+    "marks": {
+      "e\\u{30a}": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ],
+      "a\\u{328}\\u{308}": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ],
+      "ṩ": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ],
+      "ệ": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ],
+      "ǟ": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ],
+      "ȫ": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ],
+      "x\\u{302}": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ],
+      "Ệ": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ],
+      "ǭ": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ],
+      "o\\u{308}\\u{304}": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ],
+      "u\\u{30c}\\u{307}": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ],
+      "E\\u{300}\\u{306}": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ],
+      "Ǚ": [
+        {
+          "family": "Hack",
+          "scale": "1"
+        },
+        {
+          "family": "Hack",
+          "scale": "1.5"
+        },
+        {
+          "family": "Hack",
+          "scale": "2"
+        },
+        {
+          "family": "Hack",
+          "scale": "3"
+        }
+      ]
+    },
+    "latin": {
+      "Ĳ": [
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        }
+      ],
+      "ĳ": [
+        {
+          "family": "JetBrains Mono",
+          "scale": "1"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "1.5"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "2"
+        },
+        {
+          "family": "JetBrains Mono",
+          "scale": "3"
+        }
+      ]
+    }
+  },
+  "font_sources": [
+    {
+      "local": "../cascadia-mono/CascadiaMono-Regular.ttf",
+      "sha256": "06520d032ec274fa5040b22c6f4a1d829081b24ba40b2da56dae89bf10c7b481",
+      "input_name": "CascadiaMono-Regular.ttf",
+      "output": "FidelityASCII.ttf",
+      "family": "Fidelity ASCII",
+      "text": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~█"
+    },
+    {
+      "repository": "notofonts/noto-cjk",
+      "revision": "f8d157532fbfaeda587e826d4cd5b21a49186f7c",
+      "path": "Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+      "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+      "sha256": "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b",
+      "input_name": "noto-cjk-NotoSansCJKsc-Regular.otf",
+      "output": "FidelityCJK.otf",
+      "family": "Fidelity CJK",
+      "text": "汉字日本語한글｜ｆｕｌｌｗｉｄｔｈ"
+    },
+    {
+      "repository": "googlefonts/noto-emoji",
+      "revision": "8998f5dd683424a73e2314a8c1f1e359c19e8742",
+      "path": "fonts/NotoColorEmoji.ttf",
+      "url": "https://raw.githubusercontent.com/googlefonts/noto-emoji/8998f5dd683424a73e2314a8c1f1e359c19e8742/fonts/NotoColorEmoji.ttf",
+      "sha256": "72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b",
+      "input_name": "noto-emoji-NotoColorEmoji.ttf",
+      "output": "FidelityColorEmoji.ttf",
+      "family": "Fidelity Color Emoji",
+      "text": "🙂🚀🎉👍🏽🇺🇸❤️♥️👩‍💻👨‍👩‍👧‍👦☕️1️⃣🏳️‍🌈"
+    }
+  ],
+  "font_subsets": {
+    "FidelityASCII.ttf": {
+      "sha256": "b59def7e4b39068ad532b6cc235096a0c321f068fe1b050e60b28f0cac0ad775",
+      "bytes": 28604
+    },
+    "FidelityCJK.otf": {
+      "sha256": "3f29e6da01a7b006ecdb3c23e1633ecc80d83a358c13ccc194b17ea496852ff2",
+      "bytes": 9692
+    },
+    "FidelityColorEmoji.ttf": {
+      "sha256": "8b7440d53774c2cc94e9a5eac10ca50d2ece07b6d8502e5d0dac48ce175361bb",
+      "bytes": 137524
+    }
+  },
+  "primary_matrices": {
+    "metal": [
+      {
+        "name": "fit",
+        "command": [
+          "cargo",
+          "run",
+          "--all-features",
+          "--locked",
+          "--example",
+          "glyph_fidelity",
+          "--",
+          "--check",
+          "--font",
+          "all",
+          "--scale",
+          "all",
+          "--output",
+          "/tmp/glyph-coverage/final-metal-fit"
+        ],
+        "exit": 0,
+        "seconds": 65.23,
+        "output": "/tmp/glyph-coverage/final-metal-fit",
+        "groups": 144,
+        "totals": {
+          "checked": 18720,
+          "unavailable": 528,
+          "failures": 0,
+          "oversize": 1151
+        },
+        "results": "/tmp/glyph-coverage/final-metal-fit/results.tsv",
+        "sha256": "ff6c90ad4932f170573838611ac1c5bbd4067ae06aaf35ca1639b78c586f3999"
+      },
+      {
+        "name": "natural",
+        "command": [
+          "cargo",
+          "run",
+          "--all-features",
+          "--locked",
+          "--example",
+          "glyph_fidelity",
+          "--",
+          "--check",
+          "--font",
+          "all",
+          "--scale",
+          "all",
+          "--output",
+          "/tmp/glyph-coverage/final-metal-natural",
+          "--from-font",
+          "23"
+        ],
+        "exit": 0,
+        "seconds": 164.91,
+        "output": "/tmp/glyph-coverage/final-metal-natural",
+        "groups": 144,
+        "totals": {
+          "checked": 18720,
+          "unavailable": 528,
+          "failures": 0,
+          "oversize": 1098
+        },
+        "results": "/tmp/glyph-coverage/final-metal-natural/results.tsv",
+        "sha256": "54aff00effeec73b1d88ce05aa32699302353e881bfb280c059610ab6f37bc06"
+      },
+      {
+        "name": "compact",
+        "command": [
+          "cargo",
+          "run",
+          "--all-features",
+          "--locked",
+          "--example",
+          "glyph_fidelity",
+          "--",
+          "--check",
+          "--font",
+          "all",
+          "--scale",
+          "all",
+          "--output",
+          "/tmp/glyph-coverage/final-metal-compact",
+          "--from-font",
+          "23",
+          "--line-height",
+          "0.85"
+        ],
+        "exit": 0,
+        "seconds": 89.18,
+        "output": "/tmp/glyph-coverage/final-metal-compact",
+        "groups": 144,
+        "totals": {
+          "checked": 18720,
+          "unavailable": 528,
+          "failures": 0,
+          "oversize": 4532
+        },
+        "results": "/tmp/glyph-coverage/final-metal-compact/results.tsv",
+        "sha256": "89eb8517b1b9aa4d5ee2ea1f57f2a1aaa5fe6376c37aaec48c637123cd510f7e"
+      },
+      {
+        "name": "fixed",
+        "command": [
+          "cargo",
+          "run",
+          "--all-features",
+          "--locked",
+          "--example",
+          "glyph_fidelity",
+          "--",
+          "--check",
+          "--font",
+          "all",
+          "--scale",
+          "all",
+          "--output",
+          "/tmp/glyph-coverage/final-metal-fixed",
+          "--fixed-cell",
+          "9x18",
+          "--font-size",
+          "18"
+        ],
+        "exit": 0,
+        "seconds": 58.49,
+        "output": "/tmp/glyph-coverage/final-metal-fixed",
+        "groups": 144,
+        "totals": {
+          "checked": 18720,
+          "unavailable": 528,
+          "failures": 0,
+          "oversize": 9538
+        },
+        "results": "/tmp/glyph-coverage/final-metal-fixed/results.tsv",
+        "sha256": "6822f25162e17fda12ad56a827c4cfd23f085e907260a8761c2e97da07ed02a2"
+      }
+    ],
+    "vulkan": [
+      {
+        "name": "fit",
+        "command": [
+          "docker",
+          "exec",
+          "-e",
+          "XDG_RUNTIME_DIR=/tmp/xdg-runtime",
+          "bevy-glyph-fidelity-vulkan",
+          "cargo",
+          "run",
+          "--all-features",
+          "--locked",
+          "--example",
+          "glyph_fidelity",
+          "--",
+          "--check",
+          "--font",
+          "all",
+          "--scale",
+          "all",
+          "--output",
+          "/results/coverage-final-fit"
+        ],
+        "exit": 0,
+        "seconds": 87.04,
+        "output": "/results/coverage-final-fit",
+        "groups": 144,
+        "totals": {
+          "checked": 18720,
+          "unavailable": 528,
+          "failures": 0,
+          "oversize": 1151
+        },
+        "results": "/tmp/glyph-coverage/final-vulkan-fit/results.tsv",
+        "sha256": "ff6c90ad4932f170573838611ac1c5bbd4067ae06aaf35ca1639b78c586f3999"
+      },
+      {
+        "name": "natural",
+        "command": [
+          "docker",
+          "exec",
+          "-e",
+          "XDG_RUNTIME_DIR=/tmp/xdg-runtime",
+          "bevy-glyph-fidelity-vulkan",
+          "cargo",
+          "run",
+          "--all-features",
+          "--locked",
+          "--example",
+          "glyph_fidelity",
+          "--",
+          "--check",
+          "--font",
+          "all",
+          "--scale",
+          "all",
+          "--output",
+          "/results/coverage-final-natural",
+          "--from-font",
+          "23"
+        ],
+        "exit": 0,
+        "seconds": 148.39,
+        "output": "/results/coverage-final-natural",
+        "groups": 144,
+        "totals": {
+          "checked": 18720,
+          "unavailable": 528,
+          "failures": 0,
+          "oversize": 1098
+        },
+        "results": "/tmp/glyph-coverage/final-vulkan-natural/results.tsv",
+        "sha256": "54aff00effeec73b1d88ce05aa32699302353e881bfb280c059610ab6f37bc06"
+      },
+      {
+        "name": "compact",
+        "command": [
+          "docker",
+          "exec",
+          "-e",
+          "XDG_RUNTIME_DIR=/tmp/xdg-runtime",
+          "bevy-glyph-fidelity-vulkan",
+          "cargo",
+          "run",
+          "--all-features",
+          "--locked",
+          "--example",
+          "glyph_fidelity",
+          "--",
+          "--check",
+          "--font",
+          "all",
+          "--scale",
+          "all",
+          "--output",
+          "/results/coverage-final-compact",
+          "--from-font",
+          "23",
+          "--line-height",
+          "0.85"
+        ],
+        "exit": 0,
+        "seconds": 78.91,
+        "output": "/results/coverage-final-compact",
+        "groups": 144,
+        "totals": {
+          "checked": 18720,
+          "unavailable": 528,
+          "failures": 0,
+          "oversize": 4532
+        },
+        "results": "/tmp/glyph-coverage/final-vulkan-compact/results.tsv",
+        "sha256": "89eb8517b1b9aa4d5ee2ea1f57f2a1aaa5fe6376c37aaec48c637123cd510f7e"
+      },
+      {
+        "name": "fixed",
+        "command": [
+          "docker",
+          "exec",
+          "-e",
+          "XDG_RUNTIME_DIR=/tmp/xdg-runtime",
+          "bevy-glyph-fidelity-vulkan",
+          "cargo",
+          "run",
+          "--all-features",
+          "--locked",
+          "--example",
+          "glyph_fidelity",
+          "--",
+          "--check",
+          "--font",
+          "all",
+          "--scale",
+          "all",
+          "--output",
+          "/results/coverage-final-fixed",
+          "--fixed-cell",
+          "9x18",
+          "--font-size",
+          "18"
+        ],
+        "exit": 0,
+        "seconds": 52.03,
+        "output": "/results/coverage-final-fixed",
+        "groups": 144,
+        "totals": {
+          "checked": 18720,
+          "unavailable": 528,
+          "failures": 0,
+          "oversize": 9538
+        },
+        "results": "/tmp/glyph-coverage/final-vulkan-fixed/results.tsv",
+        "sha256": "6822f25162e17fda12ad56a827c4cfd23f085e907260a8761c2e97da07ed02a2"
+      }
+    ]
+  },
+  "coverage": {
+    "metal": {
+      "exit": 0,
+      "command": "WGPU_BACKEND=metal cargo run --all-features --locked --example glyph_coverage -- --output /tmp/glyph-coverage/final-metal-coverage",
+      "stages": {
+        "compact": {
+          "cases": 24,
+          "samples": 268,
+          "classifications": {
+            "required-success": 72,
+            "verified-crop": 192,
+            "procedural-fill": 4
+          },
+          "results": "/tmp/glyph-coverage/final-metal-coverage/compact/results.tsv",
+          "sha256": "b550a8ba7f300c4d4256bc7e482d0bc8a54e40103bd9570943564f4b773644df"
+        },
+        "content-replace": {
+          "cases": 24,
+          "samples": 136,
+          "classifications": {
+            "verified-crop": 68,
+            "required-success": 68
+          },
+          "results": "/tmp/glyph-coverage/final-metal-coverage/content-replace/results.tsv",
+          "sha256": "5bbcb8a08b043efde091019e0075623c08974fc3627a5a9bdfd962115518530a"
+        },
+        "font-switch": {
+          "cases": 24,
+          "samples": 268,
+          "classifications": {
+            "verified-crop": 208,
+            "required-success": 56,
+            "procedural-fill": 4
+          },
+          "results": "/tmp/glyph-coverage/final-metal-coverage/font-switch/results.tsv",
+          "sha256": "67fac68f5d2f03b69ca1901a0d3e43869531d86177fbac1b5c7c71745c962a52"
+        },
+        "fractional-fixed": {
+          "cases": 24,
+          "samples": 268,
+          "classifications": {
+            "verified-crop": 210,
+            "required-success": 54,
+            "procedural-fill": 4
+          },
+          "results": "/tmp/glyph-coverage/final-metal-coverage/fractional-fixed/results.tsv",
+          "sha256": "b5c7d20598c0ff4a1cca05ff7af94d4bf90cecdd0892aeff48335c2cd04ba66c"
+        },
+        "fractional-natural": {
+          "cases": 24,
+          "samples": 268,
+          "classifications": {
+            "required-success": 190,
+            "verified-crop": 74,
+            "procedural-fill": 4
+          },
+          "results": "/tmp/glyph-coverage/final-metal-coverage/fractional-natural/results.tsv",
+          "sha256": "e772483c02bd53fe2327098b90ad1b3f07be4d94ecd24668118304e9c8296682"
+        },
+        "idle": {
+          "cases": 24,
+          "samples": 136,
+          "classifications": {
+            "verified-crop": 68,
+            "required-success": 68
+          },
+          "results": "/tmp/glyph-coverage/final-metal-coverage/idle/results.tsv",
+          "sha256": "5bbcb8a08b043efde091019e0075623c08974fc3627a5a9bdfd962115518530a"
+        },
+        "roomy": {
+          "cases": 24,
+          "samples": 268,
+          "classifications": {
+            "required-success": 256,
+            "verified-crop": 8,
+            "procedural-fill": 4
+          },
+          "results": "/tmp/glyph-coverage/final-metal-coverage/roomy/results.tsv",
+          "sha256": "7af3a1544fae0a073cb93930e4d69365daee4349b4cb26bd227528754bcfae08"
+        },
+        "same-pixels": {
+          "cases": 24,
+          "samples": 268,
+          "classifications": {
+            "required-success": 256,
+            "verified-crop": 8,
+            "procedural-fill": 4
+          },
+          "results": "/tmp/glyph-coverage/final-metal-coverage/same-pixels/results.tsv",
+          "sha256": "e3ba896f065b3efbc924c17763c5520b392578c1148793fdee292276b39d3dd9"
+        }
+      },
+      "totals": {
+        "required-success": 1020,
+        "verified-crop": 836,
+        "procedural-fill": 24
+      }
+    },
+    "vulkan": {
+      "exit": 0,
+      "command": "docker exec -e XDG_RUNTIME_DIR=/tmp/xdg-runtime bevy-glyph-fidelity-vulkan cargo run --all-features --locked --example glyph_coverage -- --output /results/coverage-final-lifecycle",
+      "stages": {
+        "compact": {
+          "cases": 24,
+          "samples": 268,
+          "classifications": {
+            "required-success": 72,
+            "verified-crop": 192,
+            "procedural-fill": 4
+          },
+          "results": "/tmp/glyph-coverage/final-vulkan-coverage/compact/results.tsv",
+          "sha256": "b550a8ba7f300c4d4256bc7e482d0bc8a54e40103bd9570943564f4b773644df"
+        },
+        "content-replace": {
+          "cases": 24,
+          "samples": 136,
+          "classifications": {
+            "verified-crop": 68,
+            "required-success": 68
+          },
+          "results": "/tmp/glyph-coverage/final-vulkan-coverage/content-replace/results.tsv",
+          "sha256": "5bbcb8a08b043efde091019e0075623c08974fc3627a5a9bdfd962115518530a"
+        },
+        "font-switch": {
+          "cases": 24,
+          "samples": 268,
+          "classifications": {
+            "verified-crop": 208,
+            "required-success": 56,
+            "procedural-fill": 4
+          },
+          "results": "/tmp/glyph-coverage/final-vulkan-coverage/font-switch/results.tsv",
+          "sha256": "67fac68f5d2f03b69ca1901a0d3e43869531d86177fbac1b5c7c71745c962a52"
+        },
+        "fractional-fixed": {
+          "cases": 24,
+          "samples": 268,
+          "classifications": {
+            "verified-crop": 210,
+            "required-success": 54,
+            "procedural-fill": 4
+          },
+          "results": "/tmp/glyph-coverage/final-vulkan-coverage/fractional-fixed/results.tsv",
+          "sha256": "b5c7d20598c0ff4a1cca05ff7af94d4bf90cecdd0892aeff48335c2cd04ba66c"
+        },
+        "fractional-natural": {
+          "cases": 24,
+          "samples": 268,
+          "classifications": {
+            "required-success": 190,
+            "verified-crop": 74,
+            "procedural-fill": 4
+          },
+          "results": "/tmp/glyph-coverage/final-vulkan-coverage/fractional-natural/results.tsv",
+          "sha256": "e772483c02bd53fe2327098b90ad1b3f07be4d94ecd24668118304e9c8296682"
+        },
+        "idle": {
+          "cases": 24,
+          "samples": 136,
+          "classifications": {
+            "verified-crop": 68,
+            "required-success": 68
+          },
+          "results": "/tmp/glyph-coverage/final-vulkan-coverage/idle/results.tsv",
+          "sha256": "5bbcb8a08b043efde091019e0075623c08974fc3627a5a9bdfd962115518530a"
+        },
+        "roomy": {
+          "cases": 24,
+          "samples": 268,
+          "classifications": {
+            "required-success": 256,
+            "verified-crop": 8,
+            "procedural-fill": 4
+          },
+          "results": "/tmp/glyph-coverage/final-vulkan-coverage/roomy/results.tsv",
+          "sha256": "7af3a1544fae0a073cb93930e4d69365daee4349b4cb26bd227528754bcfae08"
+        },
+        "same-pixels": {
+          "cases": 24,
+          "samples": 268,
+          "classifications": {
+            "required-success": 256,
+            "verified-crop": 8,
+            "procedural-fill": 4
+          },
+          "results": "/tmp/glyph-coverage/final-vulkan-coverage/same-pixels/results.tsv",
+          "sha256": "e3ba896f065b3efbc924c17763c5520b392578c1148793fdee292276b39d3dd9"
+        }
+      },
+      "totals": {
+        "required-success": 1020,
+        "verified-crop": 836,
+        "procedural-fill": 24
+      }
+    }
+  },
+  "checks": [
+    {
+      "name": "fmt",
+      "command": "cargo fmt --all -- --check",
+      "exit": 0,
+      "seconds": 0.69
+    },
+    {
+      "name": "clippy-final",
+      "command": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+      "exit": 0,
+      "seconds": 29.73
+    },
+    {
+      "name": "check",
+      "command": "cargo check --workspace --all-features --all-targets --locked",
+      "exit": 0,
+      "seconds": 25.27
+    },
+    {
+      "name": "tests",
+      "command": "cargo test --workspace --all-features --lib --tests --locked",
+      "exit": 0,
+      "seconds": 41.3
+    },
+    {
+      "name": "gpu-metal",
+      "command": "cargo test --workspace --all-features --test gpu_readback --test export_readiness --locked -- --ignored --test-threads=1",
+      "exit": 0,
+      "seconds": 26.27
+    },
+    {
+      "name": "oracle-final",
+      "command": "cargo test --all-features --example glyph_fidelity --locked",
+      "exit": 0,
+      "seconds": 3.68
+    },
+    {
+      "name": "doctests",
+      "command": "cargo test --workspace --all-features --doc --locked",
+      "exit": 0,
+      "seconds": 5.21
+    },
+    {
+      "name": "docs",
+      "command": "cargo doc --workspace --all-features --no-deps --locked",
+      "exit": 0,
+      "seconds": 3.82
+    },
+    {
+      "name": "minimal",
+      "command": "cargo check -p bevy_terminal --no-default-features --all-targets --locked",
+      "exit": 0,
+      "seconds": 2.12
+    },
+    {
+      "name": "default",
+      "command": "cargo check -p bevy_terminal --all-targets --locked",
+      "exit": 0,
+      "seconds": 1.73
+    },
+    {
+      "name": "consumer-windowed",
+      "command": "cargo check --manifest-path integration/bevy-ratatui-context/Cargo.toml --features consumer-windowed --locked",
+      "exit": 0,
+      "seconds": 2.6
+    }
+  ],
+  "check_environment": {
+    "WGPU_BACKEND": "metal",
+    "RUSTDOCFLAGS": "-D warnings"
+  },
+  "extra_checks": [
+    {
+      "name": "clippy-audited",
+      "command": "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+      "result": "passed",
+      "exit": 0,
+      "log": "/tmp/glyph-coverage/clippy-audited.log",
+      "log_sha256": "640199f20aa33d8c02ebc52977ab82c76c917a49d0bcd9fb31b0b7bd1a54cb4b",
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid"
+    },
+    {
+      "name": "subset-validation-final",
+      "command": "FIDELITY_FONT_SOURCES=/tmp/glyph-coverage cargo test --all-features --locked --example glyph_coverage -- --ignored",
+      "result": "1 passed",
+      "exit": 0,
+      "log": "/tmp/glyph-coverage/subset-validation-final.log",
+      "log_sha256": "d7a4c7f085420c58516998862e20f1edcdec4d095473c58a20e736fcb538732b",
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid"
+    },
+    {
+      "name": "gpu-vulkan",
+      "command": "docker exec -e XDG_RUNTIME_DIR=/tmp/xdg-runtime bevy-glyph-fidelity-vulkan cargo test --workspace --all-features --test gpu_readback --test export_readiness --locked -- --ignored --test-threads=1",
+      "result": "5 core + 1 export passed",
+      "exit": 0,
+      "log": "/tmp/glyph-coverage/gpu-vulkan.log",
+      "log_sha256": "6080d0953171e1ed514633a9f817501229d6db313e154d98ca9fbf29756073ea",
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid"
+    },
+    {
+      "name": "context-test",
+      "command": "cargo test --manifest-path integration/bevy-ratatui-context/Cargo.toml --locked",
+      "result": "1 integration passed",
+      "exit": 0,
+      "log": "/tmp/glyph-coverage/context-test.log",
+      "log_sha256": "953ae514b10a1e7d6e482694e8ef6f8247b7894560a4ae3a2a2b78e2e08dd4aa",
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid"
+    },
+    {
+      "name": "minimal-gpu",
+      "command": "CARGO_TARGET_DIR=/Users/kisaczka/Desktop/code/bevy_grid/target WGPU_BACKEND=metal cargo run --manifest-path /tmp/terminal-minimal-gpu/Cargo.toml --locked",
+      "result": "real GPU readback passed",
+      "exit": 0,
+      "log": "/tmp/glyph-coverage/minimal-gpu.log",
+      "log_sha256": "f875fee5ef63dc7a8c31dc93983b74df90840ea1e4ee7309dc00d89d80010ffb",
+      "cwd": "/Users/kisaczka/Desktop/code/bevy_grid"
+    },
+    {
+      "name": "ratty-build",
+      "command": "CARGO_TARGET_DIR=/Users/kisaczka/Desktop/code/ratty-terminal-main/target cargo build --config /tmp/glyph-coverage/ratty-patch.toml --example headless_snapshot",
+      "result": "passed",
+      "exit": 0,
+      "log": "/tmp/glyph-coverage/ratty-build.log",
+      "log_sha256": "b65e9a91b26c56214a83ee303015b1d5bccb384a599b43882b96ef89e82b7733",
+      "cwd": "/Users/kisaczka/Desktop/code/ratty-glyph-fidelity"
+    },
+    {
+      "name": "ratty-tests",
+      "command": "CARGO_TARGET_DIR=/Users/kisaczka/Desktop/code/ratty-terminal-main/target cargo test --config /tmp/glyph-coverage/ratty-patch.toml --locked --lib",
+      "result": "106 passed",
+      "exit": 0,
+      "log": "/tmp/glyph-coverage/ratty-tests.log",
+      "log_sha256": "1fe4d48f2fb656033360929f76dc9c6576a87f8b1032fbcaa21a6e0e782a24c2",
+      "cwd": "/Users/kisaczka/Desktop/code/ratty-glyph-fidelity"
+    },
+    {
+      "name": "ratty-smoke",
+      "command": "WGPU_BACKEND=metal python3 .github/scripts/headless-smoke.py --output /tmp/glyph-coverage/ratty-smoke --snapshot /Users/kisaczka/Desktop/code/ratty-terminal-main/target/debug/examples/headless_snapshot --document /Users/kisaczka/Desktop/code/ratty-terminal-main/target/debug/examples/document --render-test /Users/kisaczka/Desktop/code/ratty-terminal-main/target/debug/examples/render_test --font-dir /Users/kisaczka/Desktop/code/bevy_grid/assets/fonts/dejavu-sans-mono",
+      "result": "7 captures, zero stale cells",
+      "exit": 0,
+      "log": "/tmp/glyph-coverage/ratty-smoke.log",
+      "log_sha256": "6f78f6ddaf2278a528462b907df2a8bd24aada7b27045414dcbfcbe0c3ea855d",
+      "cwd": "/Users/kisaczka/Desktop/code/ratty-glyph-fidelity"
+    }
+  ],
+  "ratty_smoke": {
+    "captures": {
+      "font-natural": {
+        "width": 1210,
+        "height": 660,
+        "stale_cells": 0
+      },
+      "font-compact": {
+        "width": 1210,
+        "height": 570,
+        "stale_cells": 0
+      },
+      "missing-family": {
+        "width": 1210,
+        "height": 600,
+        "stale_cells": 0
+      },
+      "scene-child-exit": {
+        "width": 1100,
+        "height": 760,
+        "stale_cells": 0
+      },
+      "document-inline": {
+        "width": 1100,
+        "height": 760,
+        "stale_cells": 0
+      },
+      "styles-end": {
+        "width": 1210,
+        "height": 660,
+        "stale_cells": 0
+      },
+      "scroll-30-rows": {
+        "width": 1210,
+        "height": 660,
+        "stale_cells": 0
+      }
+    },
+    "failures": [],
+    "visual_review": "Inspect inline images, box joins, and text styles in the PNG artifacts."
+  },
+  "ratty_worktree_clean": true,
+  "capability_limits": [
+    {
+      "name": "VS15 text-presentation fallback",
+      "status": "outstanding upstream capability",
+      "vulkan_exit": 101,
+      "metal_result": "strict probe failed on three unexpected font IDs",
+      "command": "cargo run --all-features --locked --example glyph_coverage -- --scale 1 --text-presentation",
+      "evidence": [
+        "presentation.log",
+        "vs15-vulkan.log"
+      ],
+      "cause": "Parley 0.9.0 src/shape/mod.rs:237-266 classifies pictographs as emoji without VS15 handling; :550-577 prioritizes emoji generic over script fallback.",
+      "counted_as_success": false
+    }
+  ],
+  "requirement_audit": [
+    {
+      "requirement": "1. Establish baseline and preserve work",
+      "status": "complete",
+      "evidence": [
+        "initial.patch",
+        "initial-hashes.json",
+        "metal-matrix.json",
+        "missing-inventory.json"
+      ],
+      "detail": "Fresh five-run Metal baseline; four full final matrices per backend. Existing fidelity report/manifest remain historical."
+    },
+    {
+      "requirement": "2. Required font fallback coverage",
+      "status": "complete",
+      "evidence": [
+        "assets/fonts/fidelity/subset-sources.json",
+        "assets/fonts/fidelity/subset-hashes.json",
+        "assets/fonts/fidelity/README.md",
+        "examples/glyph_coverage.rs",
+        "subset-validation-final.log"
+      ],
+      "detail": "34 distinct formerly missing sequences exercised with host discovery disabled; required resolved faces and support asserted. Three licensed, renamed, hash-pinned subsets; full source metrics/rasters compared."
+    },
+    {
+      "requirement": "3. Independent oracle and placement contracts",
+      "status": "complete",
+      "evidence": [
+        "examples/common/fidelity_oracle.rs",
+        "examples/glyph_fidelity.rs",
+        "crates/bevy_terminal/src/render/batch/tests.rs",
+        "oracle-final.log",
+        "tests.log"
+      ],
+      "detail": "Raw unbounded atlas pixels; expected baseline from font metrics; minimum fitting translations; independently specified asymmetric/tie oversized tests; occupancy and every neighboring cell checked. Final review rejects absent allowed crop placement."
+    },
+    {
+      "requirement": "4. Color coverage and unsupported-stack reporting",
+      "status": "complete_with_explicit_capability_limit",
+      "evidence": [
+        "examples/glyph_coverage.rs",
+        "examples/common/fidelity_oracle.rs",
+        "presentation.log",
+        "vs15-vulkan.log"
+      ],
+      "detail": "12 supported CBDT color sequences over two backgrounds, nonwhite foreground, alpha and one-glyph assertions. VS16/modifier/ZWJ/flag/keycap coverage passes. VS15 text fallback is unsupported by Parley 0.9.0; strict failing probe retained and capability remains outstanding under section 4 allowance, never counted as passing."
+    },
+    {
+      "requirement": "5. Geometry and lifecycle",
+      "status": "complete",
+      "evidence": [
+        "final-metal-coverage",
+        "final-vulkan-coverage",
+        "final-metal-matrix.json",
+        "final-vulkan-matrix.json"
+      ],
+      "detail": "8 stages x 24 cases/backend; fractional sizes/rounding scales, mixed faces, line height, fixed cells, font/content changes, logical/physical geometry, stable handles, idle counters/pixels. Existing box joins and procedural fills pass; intentional crops classified."
+    },
+    {
+      "requirement": "6. Demonstrated minimal production fixes",
+      "status": "complete",
+      "evidence": [
+        "first.log",
+        "first/cjk-1-actual.8x.png",
+        "baseline-fixed.log",
+        "crates/bevy_terminal/src/render/batch/shaping.rs",
+        "crates/bevy_terminal/src/render/batch/metrics.rs"
+      ],
+      "detail": "CJK baseline 28 versus primary 26 reproduced; cached ordinary glyphs translated to common baseline. No public API, second engine, per-frame font scan, or content-dependent sizing added. Existing GPU/unit/consumer suites pass. Ghostty reference revision pinned in report; no copied renderer code."
+    },
+    {
+      "requirement": "7. Verification, CI, consumers, review and deliverables",
+      "status": "complete",
+      "evidence": [
+        "verification.json",
+        "clippy-audited.log",
+        "gpu-vulkan.log",
+        "ratty-smoke/results.json",
+        "context-test.log",
+        ".github/workflows/ci.yml",
+        "CODEBASE_IMPLEMENTATION_GLYPH_COVERAGE_REPORT.md",
+        "CODEBASE_IMPLEMENTATION_GLYPH_COVERAGE_VERIFICATION.json"
+      ],
+      "detail": "Required local checks pass; software Vulkan and Metal tested. Full-diff self-review of production/harness/fonts/docs/CI plus final affected-check reruns. CI coverage step and diagnostics added locally. No GitHub publication requested/performed. Explicit upstream capability limitation remains documented, not represented as fixed."
+    }
+  ],
+  "review": {
+    "mode": "separate full-diff self-review; no subagents",
+    "scope": "all changed renderer, harness, fixture, CI and documentation files",
+    "confirmed_fixes": [
+      "fallback baseline normalization",
+      "obsolete reference alignment removal",
+      "unpadded idle comparison",
+      "current-dimension readback readiness",
+      "allowed-crop presence required before success"
+    ],
+    "remaining_confirmed_renderer_defects": []
+  },
+  "inspected_images": {
+    "/tmp/glyph-coverage/first/cjk-1-actual.8x.png": "2bc3b1aa3a923e4a1e5bcb6eb92a1b3616fa39cdee4184e541664d69aec0bf55",
+    "/tmp/glyph-coverage/final-metal-coverage/roomy/cjk-1x-1-actual.8x.png": "b710e0d5bc88a4e160cb75e7bff71a1afb6f9f15ab6c708d9e0ff5783bde6c09",
+    "/tmp/glyph-coverage/final-metal-coverage/roomy/color-alt-1x.png": "29a2f0d85e4f383f4b36c90a4024633e8133738c19f2129413e7fab7bf8c24d3",
+    "/tmp/glyph-coverage/final-metal-coverage/compact/cjk-1x.png": "e88cbef0a0a357e83aba20d377464c0e3b32b7a6089f308654cb9561e98de74e",
+    "/tmp/glyph-coverage/final-metal-coverage/compact/cjk-1x-1-raw-reference.8x.png": "ddcb78a57e41575d92adf186e32e1ff7b4973eb8adef3d1722978bf06538c986",
+    "/tmp/glyph-coverage/final-metal-coverage/compact/cjk-1x-1-actual.8x.png": "8f9651ae12548bbac179b02a4ada7bf718be3f5b267c2da1bc3a5d3e207d7965",
+    "/tmp/glyph-coverage/ratty-smoke/font-compact.png": "3e3f7c901fb1a7190244c890436f409816d55cf48ae99d444649a4405f0fef5e"
+  },
+  "evidence_root": "/tmp/glyph-coverage",
+  "evidence_hashes": {
+    "context-test.log": "953ae514b10a1e7d6e482694e8ef6f8247b7894560a4ae3a2a2b78e2e08dd4aa",
+    "final-metal-natural.log": "b15205ae678ae53d6f7c0228538a71694e9607b3485e8d44d54902a95e98ffb8",
+    "metal-coverage.log": "5b942b1291552ec91b745d6182a050f68ab8f9bab1d61956d37a04c7bd456090",
+    "ratty-build.log": "b65e9a91b26c56214a83ee303015b1d5bccb384a599b43882b96ef89e82b7733",
+    "default.log": "9463d7cf6a77f3fa63db2ae06b33d1527c078f22b2b4ff26c4c930accba067ee",
+    "minimal.log": "01ff7da096ca57ce3432e5c5ea258f1f370e3ff0a1fce775cf1e53de9e20111e",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "metal-natural-tiles.log": "8772b207f760f7e3a85db1b766ecac624e82171557837dd7a67e3ab21baf7911",
+    "final-metal-fit.log": "34be45a5b2b2fd4c8b56634bfd96cd5b29f0b201833fefcc84efc3e5faa1b9b1",
+    "final-metal-compact.log": "4670ee7e69b916d3d6b8212bec177b0557b6bc147cf02be76a624a12fa904f99",
+    "vs15-vulkan.log": "8f568d2beaf354a7f0554c5f008a67b15b80e24fb47c2195cca13ec10ff48a35",
+    "final-vulkan-fit.log": "7db69fc5e3d609f4f4ae55e56ba4d67040a494ccedb8d505d665f444ee2248bd",
+    "first.log": "ecc3e1a99ef8d5b42eeb6cab1e3780daec2898e3a4bf789ed48fdad5a2bfa60f",
+    "clippy-audited.log": "640199f20aa33d8c02ebc52977ab82c76c917a49d0bcd9fb31b0b7bd1a54cb4b",
+    "clippy-final.log": "e82d4be8b5645e1250943431537e28219bc7392bae68bcad2bb919bf92602b02",
+    "baseline-fixed.log": "d22b4510a4df8396132f2bacde5a7fa39de28d925c3fb9977c950f77afd001df",
+    "final-vulkan-compact.log": "27b800ca0bae61e6347285ef22f1a46a8ce6d864e9a35a7a16cd76888a9d8312",
+    "expanded-check.log": "76d95af82dc18afa606569dfd269ddff78174daa22c8987712d7e4e84aaa7cee",
+    "lifecycle-first.log": "bab9e11132ada63a8ad8664c7c5a2890da9eabcffe603c1ff72e4464fef7eea6",
+    "ratty-tests.log": "1fe4d48f2fb656033360929f76dc9c6576a87f8b1032fbcaa21a6e0e782a24c2",
+    "clippy-reviewed.log": "5a30c553b2534a04d1a74e4ff593c0fa02957be3c9a10b30473a4f9ead1a9e0a",
+    "final-vulkan-natural.log": "0aac71352797f667fa7510045d79c259523879ad456defb6d79cd1a6aeba3139",
+    "check-first.log": "97ce3a085648d4260d0930072741bc92769fea3093b60a9d58e0a3a67f956b4d",
+    "consumer-windowed.log": "7fa984109285c5eaba24966565a3f066c9894a9ff0db0a8bad8b5af69780f80c",
+    "docs.log": "0724751d861616bd3774389886b2fa133a928922a2750017023e1c8500884fec",
+    "final-vulkan-coverage.log": "8a34e55977155ff557d4630c1133a593783adb79d817932b0b5a0361c4716d3a",
+    "palettes-check.log": "3e4872d3402df73aa0be06c4cab2d2517bd62b470d9aa093c6be1d82b0bcc3da",
+    "core-first.log": "50a157799ab06fd973fb54d581a5e5d08b40f40c2beffd178bbe79b1fff477e1",
+    "final-metal-fixed.log": "05ab0885d433898b7111470a8d10839b1437cfd37a723a19773e40ef2753fb29",
+    "metal-compact.log": "3cd13ac2361c8b6a1c7125d4fc1295e28bf3cf2d7115b65be7cd6a83e6b9cf39",
+    "subset-validation.log": "de5d80a6f87d3a89c5b385270f1183b49d1293ae7893f26f8a1e6a4670ad47b4",
+    "normalized-fit.log": "5b77a4f34c0198b678db1cc6b085aeae667b5849d91932663110131ce8aea8bc",
+    "gpu-vulkan.log": "6080d0953171e1ed514633a9f817501229d6db313e154d98ca9fbf29756073ea",
+    "presentation.log": "7e80253139bbb8852733f77615901e1e5cb252de032323b5e818579920d625fc",
+    "minimal-gpu.log": "f875fee5ef63dc7a8c31dc93983b74df90840ea1e4ee7309dc00d89d80010ffb",
+    "subset-validation-final.log": "d7a4c7f085420c58516998862e20f1edcdec4d095473c58a20e736fcb538732b",
+    "ratty-smoke.log": "6f78f6ddaf2278a528462b907df2a8bd24aada7b27045414dcbfcbe0c3ea855d",
+    "metal-natural.log": "bd04e1b3f0f7f53227da5c64cbe5f22e902f58fa05a35ec589867ed2dfb12b27",
+    "oracle-final.log": "00af121278782ee6004f751ef58c488c0b209ddf7f1b8d184050934314277380",
+    "independent-fit.log": "7c9a6749719932dea3659cf5e055f05c9ab6e309edd3e0dd940cbce267860a88",
+    "metal-fixed.log": "febb3845191d3d2685d5f6e70901eadbc72e42cfc05e1aead3e30a4f025a6b1e",
+    "gpu-metal.log": "25f4ef2ede7258f9fc6d0ae4791a293467c947f0e9fa5957881c908401e3696f",
+    "tests.log": "cffaed847c2ba27de897863029284e8bd44108ecdb8dbf950bf20f4b85549383",
+    "check.log": "8a94d2323840ca026b8bcfb69ab7e6465c24af0a87bfe63243d21558fd14610d",
+    "clippy-first.log": "1005d1edc353264f28396e00a36d404eccd9253b244c0b83cebf6120b5b0420e",
+    "oracle-tests.log": "ae3bc9fe12a64b2054be2f993f788c7f79bddeaf9450bd301631e9cd826e792a",
+    "vulkan-coverage.log": "59f24be3acf873de8f26cf5152584042b170f3850835fb9518074e9ac46a4e4f",
+    "metal-fit.log": "25c5c9d1e8a7f2a66f3c2bf3d3c661ed01d43521a9298a343b400ed1039c32a5",
+    "final-vulkan-fixed.log": "41867d5439bda8e7b363e1bfda67a151778125df18f0aef135d5362b43ac7555",
+    "doctests.log": "57a9d54d1bdac1a3b8b6333ae4c6c3a59ad5a4ad990c9febaa0b880501d4ad1a",
+    "independent-baseline-check.log": "0628dd70b3cdbd2739fb1ef474c5f3283b1cb460da244da809461545030e2d80",
+    "final-metal-coverage.log": "08bce9acd80db0d5b123ec796f1914e25f5f6e3cab38a60a206ad788a484a9ed"
+  },
+  "limitations": [
+    "VS15 is explicitly outstanding; selected supported cases do not prove every Unicode sequence/font/color format.",
+    "GPU shutdown emits closed-readback-channel warnings after successful application exit.",
+    "Evidence paths under /tmp are local and may be removed; this manifest preserves commands, aggregate outcomes and hashes."
+  ]
+}

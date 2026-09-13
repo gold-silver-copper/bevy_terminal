@@ -1,0 +1,14 @@
+{
+  "FidelityASCII.ttf": {
+    "sha256": "b59def7e4b39068ad532b6cc235096a0c321f068fe1b050e60b28f0cac0ad775",
+    "bytes": 28604
+  },
+  "FidelityCJK.otf": {
+    "sha256": "3f29e6da01a7b006ecdb3c23e1633ecc80d83a358c13ccc194b17ea496852ff2",
+    "bytes": 9692
+  },
+  "FidelityColorEmoji.ttf": {
+    "sha256": "8b7440d53774c2cc94e9a5eac10ca50d2ece07b6d8502e5d0dac48ce175361bb",
+    "bytes": 137524
+  }
+}
