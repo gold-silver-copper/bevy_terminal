@@ -24,17 +24,21 @@
 //!   geometry; `--line-height <ratio>` configures `--from-font` cells;
 //! - `--output <dir>` selects the check results and diagnostic image directory;
 //! - `--check` uses only bundled fonts and a separate raw Bevy glyph-atlas
-//!   reference. Fitting text must preserve coverage (within one sRGB code value);
-//!   oversized or intentionally compact text must be an unchanged crop at the
-//!   terminal's shared typographic baseline. Missing font coverage is recorded separately.
-//!   Solid, half-block, and line tiles are strict. Results are TSV plus native
-//!   and 8x diagnostic PNGs, by default under `target/glyph-fidelity-check`.
+//!   reference. Every content cell of a checked row must match (within one
+//!   sRGB code value) the row the oracle composes from Ghostty's rules:
+//!   ordinary text at its rasterized size on the terminal's shared baseline,
+//!   symbols scaled down only as needed to fit the cells they may occupy, ink
+//!   confined to its row, wider runs overflowing their neighbours. Missing font
+//!   coverage is recorded separately. Solid, half-block, and line tiles are
+//!   strict. Results are TSV plus native and 8x diagnostic PNGs, by default
+//!   under `target/glyph-fidelity-check`.
 //!
 //! Without `--export`/`--check` a window shows one family; `Space`/`Tab`
 //! cycle families.
 
 #[allow(dead_code)]
 mod common;
+#[allow(dead_code)]
 #[path = "common/fidelity_oracle.rs"]
 mod fidelity_oracle;
 
@@ -859,7 +863,24 @@ fn groups() -> Vec<Group> {
             name: "wide/fallback",
             rows: vec![ROW_WIDE],
         },
+        Group {
+            name: "symbols",
+            rows: vec![ROW_ARROWS],
+        },
+        Group {
+            name: "shapes/braille",
+            rows: vec![ROW_BLOCKS],
+        },
     ]
+}
+
+/// Block elements are drawn as geometry, never as glyphs (shades excluded).
+fn is_block_element(symbol: &str) -> bool {
+    let mut chars = symbol.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some('\u{2580}'..='\u{2590}' | '\u{2594}'..='\u{259f}'), None)
+    )
 }
 
 /// Compares each capture with raw glyph coverage and checks the procedural tiles.
@@ -882,7 +903,7 @@ fn run_checks(
     let output = std::path::Path::new(output);
     std::fs::create_dir_all(output).expect("create fidelity output directory");
     let mut summary =
-        String::from("family\tscale\tgroup\tchecked\tunavailable\tfailures\toversize\n");
+        String::from("family\tscale\tgroup\tchecked\tunavailable\tfailures\tconstrained\n");
     let mut diagnostics = String::from("family\tscale\tgroup\tclassification\tdiagnostic\n");
     println!("family            scale  group                 result");
     let mut primaries: Vec<_> = cases.iter().collect();
@@ -911,156 +932,205 @@ fn run_checks(
             (texture.measured().unwrap().cell_size().y * texture.measured().unwrap().raster_scale())
                 .round() as u32,
         );
+        let font_size = texture.measured().unwrap().physical_font_size();
         let expected_baseline = oracle
-            .baseline(
-                config,
-                texture.measured().unwrap().font_size()
-                    * texture.measured().unwrap().raster_scale(),
-                cell.y as f32,
-            )
+            .baseline(config, font_size, cell.y as f32)
             .expect("configured baseline reference");
         for group in groups().into_iter().filter(|_| !tiles_only) {
-            // Ink inside the resolved font's line box must be preserved when it
-            // fits the cell. Oversized ink and explicit compact geometry must
-            // still match an unchanged crop, with no per-character vertical fit.
+            // Every content cell of a row, blank or not, must show exactly the
+            // row the oracle composes: ordinary text at its rasterized size,
+            // symbols fitted, ink confined to the row, wider runs overflowing
+            // their neighbours with later cells drawn on top.
             let mut problems: Vec<String> = Vec::new();
-            let mut oversize: Vec<String> = Vec::new();
+            let mut constrained: Vec<String> = Vec::new();
             let mut checked = 0;
             let mut unsupported = 0;
             let mut saved = 0;
             for row in &group.rows {
-                for column in 1..COLUMNS - 1 {
-                    let Some(symbol) = glyph_at(&snapshot, column, *row) else {
+                let cells = snapshot.row(*row);
+                let row_size = UVec2::new(size.x, cell.y);
+                // A wide glyph's continuation cells carry their anchor's background.
+                let anchors: Vec<u16> = (0..cells.len())
+                    .map(|column| {
+                        let mut anchor = column;
+                        while anchor > 0 && cells[anchor].is_continuation() {
+                            anchor -= 1;
+                        }
+                        anchor as u16
+                    })
+                    .collect();
+                let mut expected: Vec<[u8; 3]> = (0..row_size.y)
+                    .flat_map(|_| {
+                        (0..row_size.x).map(|x| checker_rgb(anchors[(x / cell.x) as usize], *row))
+                    })
+                    .collect();
+                let mut skipped = vec![false; cells.len()];
+                // Compose the whole row (edge columns can reach the interior);
+                // compare only the interior.
+                let mut column = 0;
+                while column < cells.len() {
+                    let source_cell = &cells[column];
+                    let span = fidelity_oracle::span(cells, column) as usize;
+                    let Some(symbol) = glyph_at(&snapshot, column as u16, *row) else {
+                        column += 1;
                         continue;
                     };
-                    let span = snapshot.cell((column, *row)).map_or(1, |c| c.columns());
-                    checked += 1;
-                    let source_cell = snapshot.cell((column, *row)).unwrap();
-                    let reference = match oracle.shape(
+                    if is_block_element(&symbol) {
+                        // Procedural geometry, drawn over text; checked by the tiles.
+                        skipped[column..column + span].fill(true);
+                        column += span;
+                        continue;
+                    }
+                    let interior = column > 0 && column + 1 < usize::from(COLUMNS);
+                    if interior {
+                        checked += 1;
+                    }
+                    let columns = fidelity_oracle::visual_columns(cells, column);
+                    let placement = match oracle.place(
                         source_cell,
                         config,
-                        texture.measured().unwrap().font_size()
-                            * texture.measured().unwrap().raster_scale(),
-                        cell.y as f32,
+                        font_size,
+                        cell,
+                        columns,
+                        expected_baseline,
                     ) {
-                        Ok(reference) => reference,
+                        Ok(placement) => placement,
                         Err(error) => {
-                            problems.push(format!("{symbol:?}: oracle error: {error}"));
+                            if interior {
+                                problems.push(format!("{symbol:?}: oracle error: {error}"));
+                            }
+                            skipped[column..column + span].fill(true);
+                            column += span;
                             continue;
                         }
                     };
-                    if !reference.supported {
-                        unsupported += 1;
-                        diagnostics.push_str(&format!(
-                            "{}\t{}\t{}\tunavailable\t{symbol:?} at ({column},{row})\n",
-                            case.family, case.scale, group.name
-                        ));
-                        if group.name == "ascii" {
-                            problems.push(format!("{symbol:?}: missing required ASCII glyph"));
-                        }
-                        continue;
-                    }
-                    let Some((min, max)) = reference.ink_bounds() else {
-                        problems.push(format!("{symbol:?}: empty reference"));
-                        continue;
-                    };
-                    let width = max.x - min.x;
-                    let compact = matches!(config.sizing, TerminalSizing::Fixed { .. })
-                        || matches!(config.sizing, TerminalSizing::FromFont { line_height, .. } if line_height < 1.0);
-                    let expected_y = expected_baseline - reference.baseline.round() as i32;
-                    let deliberately_clipped =
-                        compact && (min.y + expected_y < 0 || max.y + expected_y > cell.y as i32);
-                    let fits = !deliberately_clipped
-                        && width <= (cell.x * u32::from(span)) as i32
-                        && min.y as f32 >= (reference.baseline - reference.ascent).floor()
-                        && max.y as f32 <= (reference.baseline + reference.descent).ceil()
-                        && max.y - min.y <= cell.y as i32;
-                    let bg = checker_rgb(column, *row);
-                    let span_size = UVec2::new(cell.x * u32::from(span), cell.y);
-                    let actual: Vec<[u8; 3]> = (0..span_size.y)
-                        .flat_map(|y| {
-                            (0..span_size.x).map(move |x| {
-                                texel(
-                                    data,
-                                    *size,
-                                    u32::from(column) * cell.x + x,
-                                    u32::from(*row) * cell.y + y,
-                                )
-                            })
-                        })
-                        .collect();
-                    // Font metrics set vertical placement. Fitting runs retain
-                    // their bearings; oversized runs must match a permitted crop.
-                    let placement = reference
-                        .fitting_shift(span_size.x)
-                        .map(|x| IVec2::new(x, expected_y))
-                        .or_else(|| reference.matching_crop(&actual, span_size, expected_y, bg));
-                    let shift = placement.unwrap_or(IVec2::new(0, expected_y));
-                    let differences = reference.differences(&actual, span_size, shift, bg);
-                    let clipped = min + shift;
-                    let end = max + shift;
-                    let clipped = clipped.x < 0
-                        || clipped.y < 0
-                        || end.x > (cell.x * u32::from(span)) as i32
-                        || end.y > cell.y as i32;
-                    if (saved < 3 && (differences != 0 || clipped)) || symbol == "W" {
-                        let image_size = (max - min).as_uvec2();
-                        let mut pixels = Vec::new();
-                        for y in min.y..max.y {
-                            for x in min.x..max.x {
-                                pixels.extend(reference.pixel(IVec2::new(x, y), bg));
-                                pixels.push(255);
+                    if !placement.reference.supported {
+                        if interior {
+                            unsupported += 1;
+                            diagnostics.push_str(&format!(
+                                "{}\t{}\t{}\tunavailable\t{symbol:?} at ({column},{row})\n",
+                                case.family, case.scale, group.name
+                            ));
+                            if group.name == "ascii" {
+                                problems.push(format!("{symbol:?}: missing required ASCII glyph"));
                             }
                         }
+                        skipped[column..column + span].fill(true);
+                        column += span;
+                        continue;
+                    }
+                    let Some((min, max)) = placement.ink() else {
+                        if interior {
+                            problems.push(format!("{symbol:?}: empty reference"));
+                        }
+                        column += span;
+                        continue;
+                    };
+                    let x0 = (column as u32 * cell.x) as i32;
+                    let origin = IVec2::new(x0, 0);
+                    if fidelity_oracle::is_graphics(&symbol) {
+                        placement.reference.composite_within(
+                            &mut expected,
+                            row_size,
+                            origin + placement.shift,
+                            x0..x0 + (cell.x * columns) as i32,
+                        );
+                    } else {
+                        placement.reference.composite(
+                            &mut expected,
+                            row_size,
+                            origin + placement.shift,
+                        );
+                    }
+                    if !interior {
+                        column += span;
+                        continue;
+                    }
+                    // A rescaled symbol must be a uniformly shrunk, complete
+                    // copy of the unconstrained raster that fills the limiting
+                    // dimension of its cells; this is not derived from the
+                    // renderer's or the oracle's fitting arithmetic.
+                    if placement.scaled {
+                        let fitted = (max - min).as_vec2();
+                        let full = placement.unconstrained.as_vec2();
+                        let bounds = Vec2::new((cell.x * columns) as f32, cell.y as f32);
+                        let aspect = (fitted.x / fitted.y) / (full.x / full.y);
+                        let fill = (fitted / bounds).max_element();
+                        if !(0.8..=1.25).contains(&aspect) || fill < 0.85 {
+                            problems.push(format!(
+                                "{symbol:?} at ({column},{row}): rescaled ink {fitted:?} from {full:?} in {bounds:?} (aspect ratio {aspect:.2}, fill {fill:.2})"
+                            ));
+                        }
+                    }
+                    let note = if placement.scaled {
+                        Some("fitted")
+                    } else if max.x > (cell.x * columns) as i32 || min.x < 0 {
+                        Some("overflow")
+                    } else if columns as usize > span {
+                        Some("spread")
+                    } else if min.y < 0 || max.y > cell.y as i32 {
+                        Some("clipped")
+                    } else {
+                        None
+                    };
+                    if let Some(note) = note {
+                        let message = format!(
+                            "{symbol:?} at ({column},{row}): {note}; ink {min:?}..{max:?} over {columns} cell(s) of {cell:?}"
+                        );
+                        diagnostics.push_str(&format!(
+                            "{}\t{}\t{}\t{note}\t{message}\n",
+                            case.family, case.scale, group.name
+                        ));
+                        constrained.push(message);
+                    }
+                    column += span;
+                }
+                for column in 1..usize::from(COLUMNS) - 1 {
+                    if skipped[column] {
+                        continue;
+                    }
+                    let symbol = glyph_at(&snapshot, column as u16, *row)
+                        .unwrap_or_else(|| cells[column].symbol().to_owned());
+                    let x0 = column as u32 * cell.x;
+                    let region = |pixels: &dyn Fn(u32, u32) -> [u8; 3]| -> Vec<[u8; 3]> {
+                        (0..cell.y)
+                            .flat_map(|y| (0..cell.x).map(move |x| pixels(x0 + x, y)))
+                            .collect()
+                    };
+                    let expected_cell = region(&|x, y| expected[(y * row_size.x + x) as usize]);
+                    let actual_cell =
+                        region(&|x, y| texel(data, *size, x, u32::from(*row) * cell.y + y));
+                    let differences =
+                        fidelity_oracle::differing_pixels(&expected_cell, &actual_cell);
+                    if (saved < 3 && differences != 0) || symbol == "W" {
+                        let rgba = |pixels: &[[u8; 3]]| -> Vec<u8> {
+                            pixels
+                                .iter()
+                                .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
+                                .collect()
+                        };
                         fidelity_oracle::save_detail(
                             &directory.join(format!("reference-{row}-{column}.png")),
-                            image_size,
-                            pixels,
+                            cell,
+                            rgba(&expected_cell),
                         );
-                        let pixels = actual
-                            .iter()
-                            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
-                            .collect();
                         fidelity_oracle::save_detail(
                             &directory.join(format!("actual-{row}-{column}.png")),
-                            span_size,
-                            pixels,
+                            cell,
+                            rgba(&actual_cell),
                         );
                         saved += 1;
                     }
-                    if differences == 0 && !clipped {
-                        continue;
-                    }
-                    if !fits
-                        && differences == 0
-                        && let Some(crop) = placement
-                    {
-                        let message = format!(
-                            "{symbol:?} at ({column},{row}): verified unchanged crop at {crop:?}; raw {min:?}..{max:?}, baseline {:.2}, ascent {:.2}, descent {:.2}",
-                            reference.baseline, reference.ascent, reference.descent
-                        );
-                        diagnostics.push_str(&format!(
-                            "{}\t{}\t{}\texpected-clipping\t{}\n",
-                            case.family, case.scale, group.name, message
-                        ));
-                        oversize.push(message);
+                    if differences == 0 {
                         continue;
                     }
                     let message = format!(
-                        "{symbol:?} at ({column},{row}): {differences} differing pixels, clipped={clipped}; raw bounds {min:?}..{max:?}, cell {cell:?}, shift {shift:?}, baseline {:.2}, ascent {:.2}, descent {:.2}, faces {:?}, glyphs {} ({} color)",
-                        reference.baseline,
-                        reference.ascent,
-                        reference.descent,
-                        reference.faces,
-                        reference.glyph_count,
-                        reference.color_glyphs
+                        "{symbol:?} at ({column},{row}): {differences} differing pixels in the cell; cell {cell:?}"
                     );
                     diagnostics.push_str(&format!(
-                        "{}\t{}\t{}\t{}\t{}\n",
-                        case.family, case.scale, group.name, "failure", message
+                        "{}\t{}\t{}\tfailure\t{message}\n",
+                        case.family, case.scale, group.name
                     ));
-                    // Out-of-bounds ink is not an exemption from rendering
-                    // correctness: expected clipping must match an unchanged crop.
                     problems.push(message);
                 }
             }
@@ -1078,7 +1148,7 @@ fn run_checks(
                 checked,
                 unsupported,
                 problems.len(),
-                oversize.len()
+                constrained.len()
             ));
             println!(
                 "    coverage: {} supported, {unsupported} unavailable in bundled fonts",
@@ -1086,16 +1156,16 @@ fn run_checks(
             );
             let result = if problems.is_empty() {
                 format!(
-                    "pass ({} supported glyphs, {unsupported} unavailable, {} verified crops)",
+                    "pass ({} supported glyphs, {unsupported} unavailable, {} fitted/overflowing/clipped runs verified)",
                     checked - unsupported,
-                    oversize.len()
+                    constrained.len()
                 )
             } else {
                 failures += 1;
                 format!(
-                    "FAIL ({} of {checked} glyphs clipped, {} outside the line box or wider than the cell)",
+                    "FAIL ({} cells differ from the composed row; {} constrained runs)",
                     problems.len(),
-                    oversize.len()
+                    constrained.len()
                 )
             };
             println!(
@@ -1108,11 +1178,11 @@ fn run_checks(
             if problems.len() > 8 {
                 println!("    … {} more", problems.len() - 8);
             }
-            for problem in oversize.iter().take(3) {
-                println!("    (oversize) {problem}");
+            for note in constrained.iter().take(3) {
+                println!("    (constrained) {note}");
             }
-            if oversize.len() > 3 {
-                println!("    (oversize) … {} more", oversize.len() - 3);
+            if constrained.len() > 3 {
+                println!("    (constrained) … {} more", constrained.len() - 3);
             }
         }
         // Block elements are procedural geometry, including half-block joins.

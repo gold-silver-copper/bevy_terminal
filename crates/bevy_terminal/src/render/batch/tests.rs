@@ -186,6 +186,7 @@ fn failed_measurement_and_shapes_retry_after_font_registration() {
         );
         let run = cached_shape(
             "A",
+            1,
             &ResolvedStyle::plain(),
             &config,
             raster,
@@ -219,6 +220,7 @@ fn failed_measurement_and_shapes_retry_after_font_registration() {
     let raster = refine_metrics(&config, None, raster, &mut cx);
     let run = cached_shape(
         "A",
+        1,
         &ResolvedStyle::plain(),
         &config,
         raster,
@@ -1017,7 +1019,7 @@ fn glyph(offset_x: f32, columns: &[u32]) -> CachedGlyph {
 }
 
 #[test]
-fn horizontal_fit_pushes_overhang_inside_and_centers_overflow() {
+fn horizontal_fit_pushes_overhang_inside_and_lets_overflow_keep_its_bearings() {
     // Inside the span: bearings are kept.
     assert_eq!(
         fit_horizontally(&[glyph(2.0, &[9, 9, 9])], 11.0, false),
@@ -1032,14 +1034,18 @@ fn horizontal_fit_pushes_overhang_inside_and_centers_overflow() {
         fit_horizontally(&[glyph(-2.0, &[0, 0, 9, 9])], 11.0, false),
         0.0
     );
-    // Wider than the span with symmetric coverage: centered.
-    assert_eq!(fit_horizontally(&[glyph(0.0, &[9; 15])], 11.0, false), -2.0);
-    // Wider than the span with a faint left column: the faint side is clipped.
-    let mut columns = vec![255; 12];
-    columns[0] = 3;
-    assert_eq!(fit_horizontally(&[glyph(0.0, &columns)], 11.0, false), -1.0);
-    columns.reverse();
-    assert_eq!(fit_horizontally(&[glyph(0.0, &columns)], 11.0, false), 0.0);
+    // Wider than the span: drawn as shaped, overflowing the neighbour.
+    assert_eq!(fit_horizontally(&[glyph(0.0, &[9; 15])], 11.0, false), 0.0);
+    assert_eq!(fit_horizontally(&[glyph(-3.0, &[9; 15])], 11.0, false), 0.0);
+    // A combined run is fitted as one unit, not one translation per glyph.
+    assert_eq!(
+        fit_horizontally(
+            &[glyph(-1.0, &[2, 2]), glyph(1.0, &[10, 19, 1])],
+            5.0,
+            false
+        ),
+        1.0
+    );
     // Blank runs never shift.
     assert_eq!(fit_horizontally(&[glyph(3.0, &[0, 0])], 11.0, false), 0.0);
 }
@@ -1057,30 +1063,28 @@ fn ordinary_text_keeps_faint_edge_columns_that_fit() {
 }
 
 #[test]
-fn oversized_run_placement_has_explicit_coverage_and_tie_expectations() {
-    // Three possible 3-column crops retain 14, 31, and 30 units. Keep the middle.
-    assert_eq!(
-        fit_horizontally(&[glyph(-1.0, &[2, 2, 10, 19, 1])], 3.0, false),
-        0.0
-    );
-    // Flat coverage: even overflow centers exactly; odd overflow snaps toward +infinity.
-    assert_eq!(fit_horizontally(&[glyph(0.0, &[9; 7])], 3.0, false), -2.0);
-    assert_eq!(fit_horizontally(&[glyph(0.0, &[9; 6])], 3.0, false), -1.0);
-    // Equal maxima on opposite sides of a worse center choose the lower shift.
-    // Crops starting at 0/1/2 retain 20/11/20 respectively.
-    assert_eq!(
-        fit_horizontally(&[glyph(0.0, &[10, 1, 9, 1, 10])], 3.0, false),
-        -2.0
-    );
-    // A combined run is fitted as one unit, not one translation per glyph.
-    assert_eq!(
-        fit_horizontally(
-            &[glyph(-1.0, &[2, 2]), glyph(1.0, &[10, 19, 1])],
-            3.0,
-            false
-        ),
-        0.0
-    );
+fn symbols_before_blank_cells_may_spread_into_them() {
+    let row = |text: &str| -> Vec<TerminalCell> { text.chars().map(TerminalCell::from).collect() };
+    // A symbol before a space spreads; before text or at the row's end it does not.
+    assert_eq!(visual_columns(&row("→ "), 0, 1), 2);
+    assert_eq!(visual_columns(&row("→x"), 0, 1), 1);
+    assert_eq!(visual_columns(&row("→"), 0, 1), 1);
+    assert_eq!(visual_columns(&row(" →"), 1, 1), 1);
+    // Runs of symbols stay one cell each so they keep their alignment...
+    assert_eq!(visual_columns(&row("→→ "), 1, 1), 1);
+    // ...unless the previous symbol is a Powerline graphic.
+    assert_eq!(visual_columns(&row("\u{e0b0}→ "), 1, 1), 2);
+    // Ordinary text and declared wide cells keep their occupancy.
+    assert_eq!(visual_columns(&row("W "), 0, 1), 1);
+    assert_eq!(visual_columns(&row("∑ "), 0, 1), 1);
+    let wide = [
+        TerminalCell::wide("🙂", 2),
+        TerminalCell::new(" "),
+        TerminalCell::new(" "),
+    ];
+    assert_eq!(visual_columns(&wide, 0, 2), 2);
+    assert!(is_symbol("🙂") && is_symbol("↔") && is_symbol("★") && is_symbol("\u{e0b0}"));
+    assert!(!is_symbol("∑") && !is_symbol("◆") && !is_symbol("⣿") && !is_symbol("─"));
 }
 
 #[test]
@@ -1168,7 +1172,7 @@ fn snapping_and_clipping_keep_glyphs_that_fit_inside_their_cell() {
         width: 11.0,
         height: 20.0,
     };
-    let (clipped, _) = clip_glyph_to_cell(glyph, Vec4::new(0.0, 0.0, 1.0, 1.0), cell).unwrap();
+    let (clipped, _) = clip_glyph_to_row(glyph, Vec4::new(0.0, 0.0, 1.0, 1.0), cell).unwrap();
     let snapped = snap_geometry(clipped);
     assert_eq!(
         (snapped.x, snapped.y, snapped.width, snapped.height),
@@ -1181,7 +1185,7 @@ fn snapping_and_clipping_keep_glyphs_that_fit_inside_their_cell() {
         width: 11.0,
         height: 20.0,
     };
-    let (clipped, uv) = clip_glyph_to_cell(glyph, Vec4::new(0.0, 0.0, 1.0, 1.0), cell).unwrap();
+    let (clipped, uv) = clip_glyph_to_row(glyph, Vec4::new(0.0, 0.0, 1.0, 1.0), cell).unwrap();
     assert_eq!(clipped.height, 19.0);
     assert!((uv.w - 0.95).abs() < 1e-6, "{uv:?}");
     // Halves snap consistently: a rectangle at .5 keeps its size.
@@ -1480,8 +1484,8 @@ fn font_driven_cells_refit_the_font_after_physical_pixel_rounding() {
 }
 
 #[test]
-fn fallback_glyph_bitmaps_are_clipped_to_their_terminal_cells() {
-    let clipped = clip_glyph_to_cell(
+fn glyph_bitmaps_are_clipped_to_their_row_band() {
+    let clipped = clip_glyph_to_row(
         PixelGeometry {
             x: -2.0,
             y: 3.0,
@@ -1492,24 +1496,26 @@ fn fallback_glyph_bitmaps_are_clipped_to_their_terminal_cells() {
         PixelGeometry {
             x: 0.0,
             y: 0.0,
-            width: 10.0,
+            width: 100.0,
             height: 10.0,
         },
     )
-    .expect("the glyph overlaps the cell");
+    .expect("the glyph overlaps the row");
 
+    // Ink past the row's bottom or the texture's edge is dropped; columns
+    // past the glyph's own cell are kept.
     assert_eq!(
         clipped.0,
         PixelGeometry {
             x: 0.0,
             y: 3.0,
-            width: 10.0,
+            width: 14.0,
             height: 7.0,
         }
     );
-    assert!(clipped.1.abs_diff_eq(Vec4::new(0.2, 0.2, 0.7, 0.41), 1e-6));
+    assert!(clipped.1.abs_diff_eq(Vec4::new(0.2, 0.2, 0.9, 0.41), 1e-6));
     assert!(
-        clip_glyph_to_cell(
+        clip_glyph_to_row(
             PixelGeometry {
                 x: 20.0,
                 y: 20.0,
@@ -2147,4 +2153,135 @@ fn retained_geometry_does_not_keep_surface_content_alive() {
     assert!(geometry.is_current());
     app.world_mut().despawn(entity);
     assert!(!geometry.is_current());
+}
+
+/// Ink rectangle of the cached run for `text` over `columns` cells, in cell
+/// coordinates before the uniform text offset, read back from the unified
+/// atlas the way the scene draws it.
+fn cached_ink(app: &App, entity: Entity, text: &str, columns: u16) -> Rect {
+    let state = app.world().get::<BatchMainState>(entity).unwrap();
+    let index = state
+        .shapes
+        .lookup(&ResolvedStyle::plain(), text, columns)
+        .unwrap_or_else(|| panic!("{text:?} over {columns} cells is cached"));
+    let images = app.world().resource::<Assets<Image>>();
+    let atlas = images.get(&state.glyph_atlas.image).unwrap();
+    let data = atlas.data.as_ref().unwrap();
+    let mut ink: Option<Rect> = None;
+    for glyph in &state.shapes.entries[index] {
+        assert_eq!(glyph.texture, state.glyph_atlas.image.id());
+        let rect = glyph.uv * GLYPH_ATLAS_SIZE as f32;
+        for y in 0..glyph.size.y as u32 {
+            for x in 0..glyph.size.x as u32 {
+                let offset =
+                    ((rect.y as u32 + y) * GLYPH_ATLAS_SIZE + rect.x as u32 + x) as usize * 4;
+                if data[offset + 3] == 0 {
+                    continue;
+                }
+                let pixel = glyph.offset + Vec2::new(x as f32, y as f32);
+                let pixel = Rect::from_corners(pixel, pixel + Vec2::ONE);
+                ink = Some(ink.map_or(pixel, |ink| ink.union(pixel)));
+            }
+        }
+    }
+    ink.unwrap_or_else(|| panic!("{text:?} has ink"))
+}
+
+#[test]
+fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
+    let mut app = text_app();
+    // Regular Iosevka's double-advance `↔∑∞◆★`: symbols and ordinary text
+    // whose ink is twice as wide as the one cell the terminal assigns them.
+    let regular = app
+        .world_mut()
+        .resource_mut::<Assets<Font>>()
+        .add(Font::from_bytes(
+            include_bytes!("../../../assets/fonts/fidelity/FidelityWideSymbols.ttf").to_vec(),
+        ));
+    let surface = TerminalSurface::new((8, 1));
+    write_text(&surface, "↔ ↔↔∑ ★x");
+    let entity = app
+        .world_mut()
+        .spawn((
+            TerminalRenderer::new(surface.clone()),
+            TerminalRenderConfig {
+                font: super::super::FontFaces::regular(regular),
+                sizing: TerminalSizing::FitCellWidth(Vec2::new(11.0, 20.0)),
+                ..default()
+            },
+        ))
+        .id();
+    for _ in 0..6 {
+        app.update();
+    }
+    let raster = app
+        .world()
+        .get::<BatchMainState>(entity)
+        .unwrap()
+        .raster_config;
+    let cell = raster.cell_size;
+    assert!(raster.font_size > 20.0, "{raster:?}");
+    let inside = |ink: Rect, columns: f32| {
+        ink.min.x >= 0.0
+            && ink.max.x <= columns * cell.x
+            && ink.min.y + raster.glyph_offset >= 0.0
+            && ink.max.y + raster.glyph_offset <= cell.y
+    };
+
+    // A symbol before a blank cell keeps its size and spreads into that cell.
+    let spread = cached_ink(&app, entity, "↔", 2);
+    assert!(
+        spread.width() > cell.x && inside(spread, 2.0),
+        "{spread:?} {cell:?}"
+    );
+    // Before another symbol it is rescaled to its own cell: complete, uniform
+    // and no smaller than needed.
+    let fitted = cached_ink(&app, entity, "↔", 1);
+    assert!(inside(fitted, 1.0), "{fitted:?} {cell:?}");
+    assert!(
+        fitted.width() >= cell.x - 2.0,
+        "{fitted:?} is smaller than needed"
+    );
+    assert!(
+        fitted.height() < spread.height(),
+        "{fitted:?} vs {spread:?}"
+    );
+    let aspect = (fitted.width() / fitted.height()) / (spread.width() / spread.height());
+    assert!(
+        (0.8..=1.25).contains(&aspect),
+        "non-uniform rescale: {aspect}"
+    );
+    let star = cached_ink(&app, entity, "★", 1);
+    assert!(
+        inside(star, 1.0) && star.width() >= cell.x - 2.0,
+        "{star:?}"
+    );
+    // Ordinary text is drawn as shaped; the wide `∑` overflows its neighbour.
+    let sum = cached_ink(&app, entity, "∑", 1);
+    assert!(sum.width() > cell.x && sum.min.x >= 0.0, "{sum:?} {cell:?}");
+    assert!(
+        app.world()
+            .get::<BatchMainState>(entity)
+            .unwrap()
+            .shapes
+            .lookup(&ResolvedStyle::plain(), "∑", 2)
+            .is_none()
+    );
+
+    // Blanking the cell after `★` widens its allowance: a new shape; the
+    // one-cell shape is kept for when the neighbour is written again.
+    surface.update(|u| {
+        u.set_cell((7, 0), &TerminalCell::new(" "));
+    });
+    app.update();
+    let stats = *app.world().get::<TerminalStats>(entity).unwrap();
+    assert_eq!((stats.shape_misses, stats.changed_rows), (1, 1), "{stats}");
+    let spread_star = cached_ink(&app, entity, "★", 2);
+    assert!(spread_star.width() > star.width() && inside(spread_star, 2.0));
+    surface.update(|u| {
+        u.set_cell((7, 0), &TerminalCell::new("x"));
+    });
+    app.update();
+    let stats = *app.world().get::<TerminalStats>(entity).unwrap();
+    assert_eq!((stats.shape_misses, stats.changed_rows), (0, 1), "{stats}");
 }

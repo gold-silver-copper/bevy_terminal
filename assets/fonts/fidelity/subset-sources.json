@@ -28,5 +28,17 @@
     "output": "FidelityColorEmoji.ttf",
     "family": "Fidelity Color Emoji",
     "text": "🙂🚀🎉👍🏽🇺🇸❤️♥️👩‍💻👨‍👩‍👧‍👦☕️1️⃣🏳️‍🌈"
+  },
+  {
+    "repository": "be5invis/Iosevka",
+    "revision": "v34.8.1",
+    "archive": "https://github.com/be5invis/Iosevka/releases/download/v34.8.1/PkgTTF-Iosevka-34.8.1.zip",
+    "archive_member": "Iosevka-Regular.ttf",
+    "sha256": "8b6065f04ca4ff4ce95ae48cf9f2f31b584823557adc38ec817dbe6f3745624b",
+    "input_name": "Iosevka-Regular.ttf",
+    "output": "../../../crates/bevy_terminal/assets/fonts/fidelity/FidelityWideSymbols.ttf",
+    "family": "Fidelity Wide Symbols",
+    "text": "()0W[]_agjpqy{|}ÅÉẪ↔∑∞█◆★⠿⣿",
+    "layout_features": []
   }
 ]

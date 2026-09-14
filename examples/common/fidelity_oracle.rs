@@ -2,6 +2,11 @@
 //!
 //! This uses Bevy's font rasterizer, but none of the terminal renderer's
 //! measurement probes, fitting, geometry, atlas copy, or clipping functions.
+//! The expected placement of a run restates the renderer's contract from
+//! Ghostty's rules: ordinary text keeps its rasterized shape and bearings
+//! (pushed inside a span it fits, overflowing one it does not); symbols are
+//! scaled down uniformly, only as far as needed to fit the cells they may
+//! occupy, about their center, then pushed inside; ink is confined to its row.
 
 use bevy::{
     ecs::system::SystemParam,
@@ -239,64 +244,283 @@ impl Rasterizer<'_> {
     }
 }
 
+/// Codepoints constrained as symbols, after Ghostty: arrows, enclosed
+/// alphanumerics, miscellaneous symbols, dingbats, pictographs, emoticons,
+/// transport and map symbols, and private use. Restated here so the
+/// expectation does not depend on the renderer's classification.
+pub fn is_symbol(symbol: &str) -> bool {
+    symbol.chars().next().is_some_and(|c| {
+        matches!(
+            u32::from(c),
+            0x2190..=0x21ff
+                | 0x2460..=0x24ff
+                | 0x2600..=0x26ff
+                | 0x2700..=0x27bf
+                | 0xe000..=0xf8ff
+                | 0x1f100..=0x1f1ff
+                | 0x1f300..=0x1f5ff
+                | 0x1f600..=0x1f64f
+                | 0x1f680..=0x1f6ff
+                | 0xf0000..=0xffffd
+                | 0x100000..=0x10fffd
+        )
+    })
+}
+
+/// Box drawing: strokes whose sub-pixel overshoot must not shift them.
+pub fn is_box_drawing(symbol: &str) -> bool {
+    let mut chars = symbol.chars();
+    matches!(chars.next(), Some('\u{2500}'..='\u{257f}')) && chars.next().is_none()
+}
+
+/// Grid graphics the renderer clips to their cells (box drawing, shades,
+/// legacy computing, Powerline).
+pub fn is_graphics(symbol: &str) -> bool {
+    let mut chars = symbol.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        return false;
+    };
+    matches!(
+        u32::from(c),
+        0x2500..=0x257f | 0x2591..=0x2593 | 0x1fb00..=0x1fbff | 0x1cc00..=0x1cebf | 0xe0b0..=0xe0d7
+    )
+}
+
+/// Cells the anchor at `column` occupies: its declared span, cut at the row's
+/// end and at the first cell that is not its continuation.
+pub fn span(cells: &[TerminalCell], column: usize) -> u32 {
+    let declared = usize::from(cells[column].columns()).min(cells.len() - column);
+    (1..declared)
+        .take_while(|offset| cells[column + offset].is_continuation())
+        .count() as u32
+        + 1
+}
+
+/// Cells the run at `column` may visually occupy, after Ghostty's
+/// `constraintWidth`: its span, or two cells for a one-cell symbol
+/// before a blank cell that is not the row's last cell and does not follow
+/// another symbol (Powerline graphics excepted).
+pub fn visual_columns(cells: &[TerminalCell], column: usize) -> u32 {
+    let span = span(cells, column);
+    if span != 1 || column + 1 >= cells.len() || !is_symbol(cells[column].symbol()) {
+        return span;
+    }
+    let previous = column.checked_sub(1).map(|c| cells[c].symbol());
+    if previous.is_some_and(|p| {
+        is_symbol(p)
+            && !p
+                .chars()
+                .next()
+                .is_some_and(|c| matches!(u32::from(c), 0xe0b0..=0xe0d7))
+    }) {
+        return 1;
+    }
+    let next = cells[column + 1].symbol();
+    if next.is_empty() || next == " " || next == "\u{2002}" {
+        2
+    } else {
+        1
+    }
+}
+
+/// Expected placement of one cell's run, from raw rasters and Ghostty's rules.
+pub struct Placement {
+    /// The run's raster at the size it is expected to be drawn at.
+    pub reference: Reference,
+    /// Whole-pixel translation from the run's line origin to the cell origin.
+    pub shift: IVec2,
+    /// Whether the symbol was rescaled to fit.
+    pub scaled: bool,
+    /// Ink size of the unconstrained raster, for judging a rescale.
+    pub unconstrained: IVec2,
+}
+
+impl Placement {
+    /// The ink rectangle relative to the cell origin.
+    pub fn ink(&self) -> Option<(IVec2, IVec2)> {
+        self.reference
+            .ink_bounds()
+            .map(|(min, max)| (min + self.shift, max + self.shift))
+    }
+}
+
+impl Rasterizer<'_> {
+    /// Places `cell` drawn over `columns` cells of `cell_size` physical
+    /// pixels, on the terminal's shared `baseline`. Ordinary text keeps its
+    /// shape and bearings, pushed inside the span when it overhangs one it
+    /// fits. A symbol is scaled down uniformly, in whole-pixel font sizes,
+    /// only as far as its ink needs to fit the cells, about its center, and
+    /// then pushed inside them (leading edges win).
+    pub fn place(
+        &mut self,
+        cell: &TerminalCell,
+        config: &TerminalRenderConfig,
+        font_size: f32,
+        cell_size: UVec2,
+        columns: u32,
+        baseline: i32,
+    ) -> Result<Placement, String> {
+        let mut reference = self.shape(cell, config, font_size, cell_size.y as f32)?;
+        let dy = baseline - reference.baseline.round() as i32;
+        let bounds = IVec2::new((cell_size.x * columns) as i32, cell_size.y as i32);
+        let ink = |reference: &Reference| reference.ink_bounds().ok_or("empty raster");
+        let (min, max) = ink(&reference)?;
+        let unconstrained = max - min;
+        if !is_symbol(cell.symbol()) {
+            let dx = if is_box_drawing(cell.symbol()) {
+                reference.fitting_shift_of(reference.stroke_extents(), bounds.x as u32)
+            } else {
+                reference.fitting_shift(bounds.x as u32)
+            }
+            .unwrap_or(0);
+            return Ok(Placement {
+                reference,
+                shift: IVec2::new(dx, dy),
+                scaled: false,
+                unconstrained,
+            });
+        }
+        let target = min + max + IVec2::new(0, 2 * dy);
+        let mut shift = IVec2::new(0, dy);
+        let mut size = font_size;
+        for round in 0..3 {
+            let (min, max) = ink(&reference)?;
+            let factor = (bounds.as_vec2() / (max - min).as_vec2()).min_element();
+            if factor >= 1.0 || round == 2 || size <= 1.0 {
+                break;
+            }
+            let next = (size * factor).floor();
+            let next = if next < size { next } else { size - 1.0 }.max(1.0);
+            let rescaled = self.shape(cell, config, next, cell_size.y as f32)?;
+            let Some((rmin, rmax)) = rescaled
+                .ink_bounds()
+                .filter(|(rmin, rmax)| (rmax - rmin).cmplt(max - min).any())
+            else {
+                break;
+            };
+            size = next;
+            reference = rescaled;
+            shift = ((target - (rmin + rmax)).as_vec2() * 0.5 + 0.5)
+                .floor()
+                .as_ivec2();
+        }
+        let (min, max) = ink(&reference)?;
+        shift -= (max + shift - bounds).max(IVec2::ZERO);
+        shift += (-(min + shift)).max(IVec2::ZERO);
+        Ok(Placement {
+            reference,
+            shift,
+            scaled: size < font_size,
+            unconstrained,
+        })
+    }
+}
+
+/// Number of pixels differing by more than one sRGB code value in any
+/// channel (CPU/GPU UNORM conversion rounding), never a silhouette threshold.
+pub fn differing_pixels(expected: &[[u8; 3]], actual: &[[u8; 3]]) -> usize {
+    assert_eq!(expected.len(), actual.len());
+    expected
+        .iter()
+        .zip(actual)
+        .filter(|(e, a)| e.iter().zip(*a).any(|(e, a)| e.abs_diff(*a) > 1))
+        .count()
+}
+
+/// One glyph texel blended over a stored sRGB pixel the way the renderer's
+/// quads blend: straight alpha in linear light, then 8-bit sRGB storage.
+fn blend(ink: Vec4, background: [u8; 3]) -> [u8; 3] {
+    if ink.w == 0.0 {
+        return background;
+    }
+    let bg = LinearRgba::from(Srgba::rgb(
+        f32::from(background[0]) / 255.0,
+        f32::from(background[1]) / 255.0,
+        f32::from(background[2]) / 255.0,
+    ));
+    let srgb = Srgba::from(LinearRgba::rgb(
+        ink.x + bg.red * (1.0 - ink.w),
+        ink.y + bg.green * (1.0 - ink.w),
+        ink.z + bg.blue * (1.0 - ink.w),
+    ))
+    .to_u8_array();
+    [srgb[0], srgb[1], srgb[2]]
+}
+
 impl Reference {
-    /// Compares full RGB coverage, not just a count or thresholded silhouette.
-    /// One sRGB code value accommodates CPU/GPU UNORM conversion rounding.
-    pub fn differences(
-        &self,
-        actual: &[[u8; 3]],
-        size: UVec2,
-        shift: IVec2,
-        background: [u8; 3],
-    ) -> usize {
-        assert_eq!(actual.len(), (size.x * size.y) as usize);
-        actual
-            .iter()
-            .enumerate()
-            .filter(|(index, actual)| {
-                let p = IVec2::new(
-                    (*index as u32 % size.x) as i32,
-                    (*index as u32 / size.x) as i32,
-                );
-                actual
-                    .iter()
-                    .zip(self.pixel(p - shift, background))
-                    .any(|(a, b)| a.abs_diff(b) > 1)
-            })
-            .count()
+    /// Draws this run at `shift` onto `canvas` (a row band of `size`), one
+    /// quad after the others already drawn: texels outside the canvas (past
+    /// the row or the texture edge) are dropped, texels over earlier runs
+    /// blend over them.
+    pub fn composite(&self, canvas: &mut [[u8; 3]], size: UVec2, shift: IVec2) {
+        self.composite_within(canvas, size, shift, 0..size.x as i32);
     }
 
-    /// An oversized run must still be an unchanged crop of its source pixels.
-    /// Exhaustive translation search is intentionally independent of production
-    /// fitting's per-column coverage scoring. Vertical placement is fixed by
-    /// configured typographic metrics, never fitted per character.
-    pub fn matching_crop(
+    /// [`Reference::composite`] with the ink also clipped to the pixel columns
+    /// `columns` (the cells of a grid graphic).
+    pub fn composite_within(
         &self,
-        actual: &[[u8; 3]],
+        canvas: &mut [[u8; 3]],
         size: UVec2,
-        vertical_shift: i32,
-        background: [u8; 3],
-    ) -> Option<IVec2> {
-        let (min, max) = self.ink_bounds()?;
-        if let Some(x) = self.fitting_shift(size.x) {
-            let shift = IVec2::new(x, vertical_shift);
-            return (self.differences(actual, size, shift, background) == 0).then_some(shift);
+        shift: IVec2,
+        columns: std::ops::Range<i32>,
+    ) {
+        assert_eq!(canvas.len(), (size.x * size.y) as usize);
+        for y in 0..self.size.y {
+            for x in 0..self.size.x {
+                let ink = self.rgba[(y * self.size.x + x) as usize];
+                let p = self.origin + UVec2::new(x, y).as_ivec2() + shift;
+                if ink.w == 0.0
+                    || !columns.contains(&p.x)
+                    || p.x < 0
+                    || p.y < 0
+                    || p.x >= size.x as i32
+                    || p.y >= size.y as i32
+                {
+                    continue;
+                }
+                let dest = &mut canvas[(p.y as u32 * size.x + p.x as u32) as usize];
+                *dest = blend(ink, *dest);
+            }
         }
-        let a = -min.x;
-        let b = size.x as i32 - max.x;
-        (a.min(b)..=a.max(b))
-            .map(|x| IVec2::new(x, vertical_shift))
-            .find(|shift| self.differences(actual, size, *shift, background) == 0)
     }
 
     /// Preserve bearings when they fit; otherwise the minimum translation
     /// that encloses all source ink. Oversized runs have no such translation.
     pub fn fitting_shift(&self, width: u32) -> Option<i32> {
-        let (min, max) = self.ink_bounds()?;
+        self.fitting_shift_of(self.ink_bounds()?, width)
+    }
+
+    fn fitting_shift_of(&self, (min, max): (IVec2, IVec2), width: u32) -> Option<i32> {
         if max.x - min.x > width as i32 {
             return None;
         }
         Some(0.clamp(-min.x, width as i32 - max.x))
+    }
+
+    /// Ink bounds of a box-drawing stroke without a single faint outermost
+    /// column on either side: strokes are drawn a little past their advance
+    /// so neighbours overlap, and that rasterized overshoot must not move the
+    /// stroke off the grid.
+    pub fn stroke_extents(&self) -> (IVec2, IVec2) {
+        let (min, max) = self.ink_bounds().expect("inked stroke");
+        let coverage = |x: i32| -> f32 {
+            (0..self.size.y)
+                .map(|y| self.rgba[(y * self.size.x + (x - self.origin.x) as u32) as usize].w)
+                .sum()
+        };
+        let peak = (min.x..max.x).map(coverage).fold(0.0_f32, f32::max);
+        let left = if coverage(min.x) < peak {
+            min.x + 1
+        } else {
+            min.x
+        };
+        let right = if coverage(max.x - 1) < peak {
+            max.x - 1
+        } else {
+            max.x
+        };
+        (IVec2::new(left, min.y), IVec2::new(right, max.y))
     }
 
     pub fn ink_bounds(&self) -> Option<(IVec2, IVec2)> {
@@ -321,21 +545,7 @@ impl Reference {
         } else {
             Vec4::ZERO
         };
-        if ink.w == 0.0 {
-            return background;
-        }
-        let bg = LinearRgba::from(Srgba::rgb(
-            f32::from(background[0]) / 255.0,
-            f32::from(background[1]) / 255.0,
-            f32::from(background[2]) / 255.0,
-        ));
-        let srgb = Srgba::from(LinearRgba::rgb(
-            ink.x + bg.red * (1.0 - ink.w),
-            ink.y + bg.green * (1.0 - ink.w),
-            ink.z + bg.blue * (1.0 - ink.w),
-        ))
-        .to_u8_array();
-        [srgb[0], srgb[1], srgb[2]]
+        blend(ink, background)
     }
 }
 
@@ -424,59 +634,73 @@ mod tests {
     fn equal_ink_counts_do_not_hide_changed_shapes_or_missing_pixels() {
         let glyph = reference(IVec2::ZERO, UVec2::new(2, 2), &[1.0, 0.0, 1.0, 1.0]);
         let size = UVec2::new(3, 2);
-        let mut pixels = render(&glyph, size, IVec2::ZERO);
-        assert_eq!(
-            glyph.matching_crop(&pixels, size, 0, [40, 44, 64]),
-            Some(IVec2::ZERO)
-        );
+        let expected = render(&glyph, size, IVec2::ZERO);
+        let mut pixels = expected.clone();
+        assert_eq!(differing_pixels(&expected, &pixels), 0);
         pixels.swap(0, 1); // Three ink pixels remain, but the shape changes.
-        assert!(
-            glyph
-                .matching_crop(&pixels, size, 0, [40, 44, 64])
-                .is_none()
-        );
+        assert_eq!(differing_pixels(&expected, &pixels), 2);
         pixels[1] = [40, 44, 64];
-        assert!(
-            glyph
-                .matching_crop(&pixels, size, 0, [40, 44, 64])
-                .is_none()
-        );
+        assert_eq!(differing_pixels(&expected, &pixels), 1);
     }
 
     #[test]
-    fn oversized_crops_preserve_pixels_and_the_shared_vertical_position() {
+    fn composites_drop_ink_outside_the_row_and_blend_later_runs_over_earlier_ones() {
         let glyph = reference(
             IVec2::new(-1, -1),
             UVec2::new(4, 2),
             &[0.2, 0.4, 0.6, 0.8, 1.0, 0.0, 0.3, 1.0],
         );
-        let size = UVec2::new(3, 3);
-        let pixels = render(&glyph, size, IVec2::new(0, 1));
-        assert!(
-            glyph
-                .matching_crop(&pixels, size, 1, [40, 44, 64])
-                .is_some()
-        );
-        assert!(
-            glyph
-                .matching_crop(&pixels, size, 0, [40, 44, 64])
-                .is_none()
-        );
+        let size = UVec2::new(3, 2);
+        let bg = [40, 44, 64];
+        let mut canvas = vec![bg; 6];
+        // Shifted down by one, the glyph's rows land on both canvas rows and
+        // its first column (x = -1) is dropped; every kept texel is the
+        // single-blend value, transparent texels leave the background.
+        glyph.composite(&mut canvas, size, IVec2::new(0, 1));
+        assert_eq!(canvas, render(&glyph, size, IVec2::new(0, 1)));
+        assert_eq!(canvas[3], bg);
+        assert_eq!(canvas[5], [255; 3]);
+        // Unshifted, the glyph's top row lies above the canvas and is dropped;
+        // its second row lands on the canvas's first row.
+        let mut upper = vec![bg; 6];
+        glyph.composite(&mut upper, size, IVec2::ZERO);
+        assert_eq!(&upper[3..], &[bg; 3]);
+        assert_eq!(&upper[..3], &render(&glyph, size, IVec2::new(0, 1))[3..]);
+        // A later run over the same pixel blends over the stored 8-bit value.
+        let overlay = reference(IVec2::ZERO, UVec2::ONE, &[0.5]);
+        let under = canvas[0];
+        overlay.composite(&mut canvas, size, IVec2::ZERO);
+        assert_eq!(canvas[0], overlay.pixel(IVec2::ZERO, under));
+        assert_ne!(canvas[0], under);
     }
 
     #[test]
     fn color_tolerance_is_one_code_value_not_a_silhouette_threshold() {
         let glyph = reference(IVec2::ZERO, UVec2::ONE, &[0.5]);
-        let mut pixels = render(&glyph, UVec2::ONE, IVec2::ZERO);
+        let expected = render(&glyph, UVec2::ONE, IVec2::ZERO);
+        let mut pixels = expected.clone();
         pixels[0][0] += 1;
-        assert_eq!(
-            glyph.differences(&pixels, UVec2::ONE, IVec2::ZERO, [40, 44, 64]),
-            0
-        );
+        assert_eq!(differing_pixels(&expected, &pixels), 0);
         pixels[0][0] += 1;
+        assert_eq!(differing_pixels(&expected, &pixels), 1);
+    }
+
+    #[test]
+    fn symbols_before_blank_cells_may_spread_and_ordinary_text_may_not() {
+        let row = |text: &str| -> Vec<TerminalCell> {
+            text.chars()
+                .map(|c| TerminalCell::new(&c.to_string()))
+                .collect()
+        };
+        assert_eq!(visual_columns(&row("→ "), 0), 2);
+        assert_eq!(visual_columns(&row("→x"), 0), 1);
+        assert_eq!(visual_columns(&row("→"), 0), 1);
+        assert_eq!(visual_columns(&row("→→ "), 1), 1);
+        assert_eq!(visual_columns(&row("\u{e0b0}→ "), 1), 2);
+        assert_eq!(visual_columns(&row("∑ "), 0), 1);
         assert_eq!(
-            glyph.differences(&pixels, UVec2::ONE, IVec2::ZERO, [40, 44, 64]),
-            1
+            visual_columns(&[TerminalCell::wide("🙂", 2), TerminalCell::new(" ")], 0),
+            2
         );
     }
 
@@ -488,7 +712,7 @@ mod tests {
         assert_eq!(glyph.pixel(IVec2::ZERO, [0, 0, 255]), [188, 0, 188]);
         assert_ne!(glyph.pixel(IVec2::ZERO, [0, 0, 255]), [128, 0, 128]);
         assert_eq!(glyph.pixel(IVec2::ONE, [4, 8, 12]), [4, 8, 12]);
-        assert!(glyph.differences(&[[188, 188, 255]], UVec2::ONE, IVec2::ZERO, [0, 0, 255]) > 0);
+        assert_eq!(differing_pixels(&[[188, 0, 188]], &[[188, 188, 255]]), 1);
     }
 
     #[test]

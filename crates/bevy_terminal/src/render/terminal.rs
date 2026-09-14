@@ -144,6 +144,13 @@ impl TerminalGeometry {
         self.physical_font_size / self.raster_scale
     }
 
+    /// Physical font size glyphs are rasterized at; exact, unlike
+    /// `font_size() * raster_scale()`.
+    #[must_use]
+    pub const fn physical_font_size(&self) -> f32 {
+        self.physical_font_size
+    }
+
     /// Grid fitting the available logical space, bounded by surface limits.
     #[must_use]
     pub fn grid_for(&self, logical_size: Vec2) -> GridSize {

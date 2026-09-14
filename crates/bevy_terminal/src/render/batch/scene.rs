@@ -1,10 +1,14 @@
 //! CPU scene construction, glyph fitting, and quad geometry.
-use super::shaping::{CachedGlyph, ShapeCaches, UnifiedGlyphAtlas, cached_shape, is_box_drawing};
+use super::shaping::{
+    CachedGlyph, ShapeCaches, UnifiedGlyphAtlas, cached_shape, is_box_drawing, is_graphics,
+    is_powerline, is_symbol,
+};
 use super::{
     BatchScene, BlinkPhases, DrawBatch, PixelGeometry, QuadInstance, RasterMetrics, ResolvedStyle,
     TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext, cell_span,
     cursor_should_be_visible, terminal_pixel_size,
 };
+use crate::scene::TerminalCell;
 use bevy::prelude::*;
 
 #[derive(Default)]
@@ -228,8 +232,10 @@ pub(super) fn build_scene(
                     ));
                 }
             } else if symbol != " " && !symbol.is_empty() {
+                let columns = visual_columns(cells, column, width);
                 let shaped = cached_shape(
                     symbol,
+                    columns as u16,
                     style,
                     config,
                     raster,
@@ -243,15 +249,28 @@ pub(super) fn build_scene(
                     column as f32 * raster.cell_size.x,
                     f32::from(row) * raster.cell_size.y,
                 );
-                let cell_bounds = PixelGeometry {
-                    x: anchor.x,
-                    y: anchor.y,
-                    width: width as f32 * raster.cell_size.x,
-                    height: raster.cell_size.y,
+                // Rows are the unit of repaint, so ink is confined to its row
+                // but may run past its cells: wider runs draw over the
+                // neighbours, later cells on top, as Ghostty draws them. Grid
+                // graphics keep the per-cell clip so overshoot cannot seam.
+                let row_bounds = if is_graphics(symbol) {
+                    PixelGeometry {
+                        x: anchor.x,
+                        y: anchor.y,
+                        width: columns as f32 * raster.cell_size.x,
+                        height: raster.cell_size.y,
+                    }
+                } else {
+                    PixelGeometry {
+                        x: 0.0,
+                        y: anchor.y,
+                        width: size.x,
+                        height: raster.cell_size.y,
+                    }
                 };
                 let box_drawing = is_box_drawing(symbol);
                 let shift = Vec2::new(
-                    fit_horizontally(&shaped, cell_bounds.width, box_drawing),
+                    fit_horizontally(&shaped, columns as f32 * raster.cell_size.x, box_drawing),
                     if box_drawing {
                         raster.box_offset
                     } else {
@@ -265,8 +284,7 @@ pub(super) fn build_scene(
                         width: glyph.size.x,
                         height: glyph.size.y,
                     };
-                    if let Some((geometry, uv)) =
-                        clip_glyph_to_cell(geometry, glyph.uv, cell_bounds)
+                    if let Some((geometry, uv)) = clip_glyph_to_row(geometry, glyph.uv, row_bounds)
                     {
                         glyphs.push((
                             glyph.texture,
@@ -375,12 +393,36 @@ pub(super) fn build_scene(
     }
 }
 
-/// Horizontal shift (whole pixels) that keeps a run's bitmaps inside the
-/// `span` it is drawn in: a run that fits but overhangs one side (an italic
-/// or a negative bearing) is pushed inside; a run inside the span keeps its
-/// bearings; a run wider than the span (a fallback family with a larger
-/// advance, a wide italic) is placed so the clipped columns carry the least
-/// coverage — centered when the sides are equally faint.
+/// Number of cells a run at `column` may visually occupy, after Ghostty's
+/// `constraintWidth`: its declared `span`, except that a one-cell symbol
+/// ([`is_symbol`]) followed by a blank cell may spread into that cell, unless
+/// it is the row's last cell or directly follows another symbol that is not a
+/// Powerline graphic (so runs of icons stay aligned). Logical occupancy is
+/// unchanged: the blank neighbour still belongs to the terminal.
+pub(super) fn visual_columns(cells: &[TerminalCell], column: usize, span: usize) -> usize {
+    if span != 1 || column + 1 >= cells.len() || !is_symbol(cells[column].symbol()) {
+        return span;
+    }
+    if column > 0 {
+        let previous = cells[column - 1].symbol();
+        if is_symbol(previous) && !is_powerline(previous) {
+            return 1;
+        }
+    }
+    let next = cells[column + 1].symbol();
+    if next.is_empty() || next == " " || next == "\u{2002}" {
+        2
+    } else {
+        1
+    }
+}
+
+/// Horizontal shift (whole pixels) applied to a run drawn over `span` pixels:
+/// a run that fits but overhangs one side (an italic or a negative bearing) is
+/// pushed inside; a run inside the span keeps its bearings; a run wider than
+/// the span (a fallback family with a larger advance, a wide italic, a symbol
+/// that could not be rescaled) keeps its bearings too and overflows, as
+/// Ghostty draws unconstrained glyphs.
 ///
 /// # Sub-pixel overshoot
 ///
@@ -392,9 +434,9 @@ pub(super) fn build_scene(
 /// below, which is exactly the misalignment the overshoot exists to prevent.
 /// For a single box-drawing character, an outside column with coverage below
 /// the run's strongest column is treated as overshoot: the run keeps its
-/// bearings and the per-cell clip drops the column. Ordinary text does not
-/// use this allowance: every ink column that fits is retained. A full-strength
-/// column outside the span is real overhang and is still pushed inside.
+/// bearings and the graphics clip drops the column. Ordinary text does not
+/// use this allowance. A full-strength column outside the span is real
+/// overhang and is still pushed inside.
 pub(super) fn fit_horizontally(glyphs: &[CachedGlyph], span: f32, box_drawing: bool) -> f32 {
     let mut left = f32::INFINITY;
     let mut right = f32::NEG_INFINITY;
@@ -410,54 +452,14 @@ pub(super) fn fit_horizontally(glyphs: &[CachedGlyph], span: f32, box_drawing: b
     } else {
         (left, right)
     };
-    if right <= left {
+    if right - left > span {
         0.0
-    } else if right - left <= span {
-        if left < 0.0 {
-            super::metrics::snap(-left)
-        } else if right > span {
-            super::metrics::snap(span - right)
-        } else {
-            0.0
-        }
+    } else if left < 0.0 {
+        super::metrics::snap(-left)
+    } else if right > span {
+        super::metrics::snap(span - right)
     } else {
-        // Try every whole shift that keeps the run covering the span and keep the
-        // one retaining the most coverage; ties resolve toward the centered shift.
-        let centered = super::metrics::snap((span - (right - left)) / 2.0 - left);
-        let lowest = super::metrics::snap(span - right);
-        let highest = super::metrics::snap(-left);
-        let retained = |shift: f32| -> u64 {
-            glyphs
-                .iter()
-                .map(|glyph| {
-                    let start = glyph.offset.x + shift;
-                    glyph
-                        .columns
-                        .iter()
-                        .enumerate()
-                        .filter(|(index, _)| {
-                            let x = start + *index as f32;
-                            x >= 0.0 && x < span
-                        })
-                        .map(|(_, coverage)| u64::from(*coverage))
-                        .sum::<u64>()
-                })
-                .sum()
-        };
-        let mut best = centered;
-        let mut best_retained = retained(centered);
-        let mut shift = lowest;
-        while shift <= highest {
-            let value = retained(shift);
-            if value > best_retained
-                || (value == best_retained && (shift - centered).abs() < (best - centered).abs())
-            {
-                best = shift;
-                best_retained = value;
-            }
-            shift += 1.0;
-        }
-        best
+        0.0
     }
 }
 
@@ -530,7 +532,10 @@ pub(super) fn glyph_quad(
     }
 }
 
-pub(super) fn clip_glyph_to_cell(
+/// Crops a glyph quad to the band it is drawn in (its row, or its cells for
+/// grid graphics), adjusting its atlas coordinates so the visible texels stay
+/// in place.
+pub(super) fn clip_glyph_to_row(
     glyph: PixelGeometry,
     uv: Vec4,
     cell: PixelGeometry,

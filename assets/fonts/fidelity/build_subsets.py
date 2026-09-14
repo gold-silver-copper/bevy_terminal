@@ -7,10 +7,12 @@ The source directory also supports full-font versus subset raster verification.
 """
 
 import hashlib
+import io
 import json
 from pathlib import Path
 import sys
 import urllib.request
+import zipfile
 
 import fontTools
 from fontTools import subset
@@ -24,12 +26,23 @@ outputs = {}
 for source in json.loads((root / "subset-sources.json").read_text()):
     original = cache / source["input_name"]
     if not original.exists():
-        original.write_bytes((root / source["local"]).read_bytes() if "local" in source
-                             else urllib.request.urlopen(source["url"]).read())
+        if "local" in source:
+            data = (root / source["local"]).read_bytes()
+        elif "archive" in source:
+            archive = zipfile.ZipFile(io.BytesIO(urllib.request.urlopen(source["archive"]).read()))
+            member = [n for n in archive.namelist()
+                      if n.rsplit("/", 1)[-1] == source["archive_member"]]
+            assert len(member) == 1, member
+            data = archive.read(member[0])
+        else:
+            data = urllib.request.urlopen(source["url"]).read()
+        original.write_bytes(data)
     assert hashlib.sha256(original.read_bytes()).hexdigest() == source["sha256"]
     font = TTFont(original, recalcTimestamp=False)
     options = subset.Options()
-    options.layout_features = ["*"]
+    # Single-glyph fixtures need no substitution/positioning tables; keeping
+    # every feature of a large font would multiply the subset's size.
+    options.layout_features = source.get("layout_features", ["*"])
     options.name_IDs = ["*"]
     options.name_languages = ["*"]
     options.name_legacy = True
@@ -50,7 +63,7 @@ for source in json.loads((root / "subset-sources.json").read_text()):
         cff.fontNames = [names[6]]
         cff.topDictIndex[0].FullName = names[4]
         cff.topDictIndex[0].FamilyName = names[1]
-    path = root / source["output"]
+    path = (root / source["output"]).resolve()
     font.save(path)
     outputs[path.name] = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                           "bytes": path.stat().st_size}

@@ -12,11 +12,11 @@ it does not emulate a terminal, manage a PTY, or forward input.
 | `bevy_terminal` | Shared terminal surface, font measurement, rendering, output geometry |
 | `bevy_terminal_ratatui` | Ratatui backend and optional ergonomic terminal wrapper |
 
-Version 0.7.4 targets Bevy 0.19, Ratatui 0.30.2, and Rust 1.95 or newer.
+Version 0.7.5 targets Bevy 0.19, Ratatui 0.30.2, and Rust 1.95 or newer.
 
 ```toml
 [dependencies]
-bevy_terminal_ratatui = "0.7.4"
+bevy_terminal_ratatui = "0.7.5"
 ```
 
 ## Drawing and rendering
@@ -134,8 +134,8 @@ enable the appropriate Bevy features in the application itself.
 - `TerminalSizing::FromFont` derives cells from font size and line height.
 - `TerminalSizing::FitCellWidth` fits the font to a cell width and grows height
   to contain its line box.
-- `TerminalSizing::Fixed` uses explicit cell and font sizes, fitting/clipping
-  glyphs to that grid.
+- `TerminalSizing::Fixed` uses explicit cell and font sizes; the row clips
+  taller ink.
 
 Cells snap to physical pixels. Wide glyphs occupy explicit continuation cells,
 and shaping stays anchored to grid columns. The renderer supports ANSI/indexed/RGB
@@ -217,12 +217,14 @@ cargo run --example glyph_fidelity -- --check --font all --scale all  # GPU read
 cargo test --test glyph_fidelity -- --ignored                         # the same check as an integration test
 ```
 
-`--check` compares GPU pixels with raw Bevy glyph-atlas coverage, independently
-of terminal fitting and clipping. Ordinary text that fits must retain its shape;
-oversized ink and deliberately compact cells must match an unchanged crop at a
-shared typographic baseline. The comparison permits one sRGB code value for CPU/GPU
-conversion rounding. Solid blocks, half-block joins, and line panels have strict
-continuity checks at 1×, 1.5×, 2×, and 3×.
+`--check` compares GPU pixels with rows composed from raw Bevy glyph-atlas
+coverage under Ghostty's placement rules, independently of the renderer's
+fitting: ordinary text at its rasterized size on a shared typographic baseline,
+symbols scaled down only as needed to fit the cells they may occupy, ink
+confined to its row, wider runs overflowing their neighbours. Every content
+cell, blank ones included, must match within one sRGB code value (CPU/GPU
+conversion rounding). Solid blocks, half-block joins, and line panels have
+strict continuity checks at 1×, 1.5×, 2×, and 3×.
 
 Checks disable host font discovery and use bundled faces plus a monochrome emoji
 fallback. Unsupported characters are reported as font-coverage gaps, separately

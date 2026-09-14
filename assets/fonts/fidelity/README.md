@@ -12,18 +12,22 @@ without host fonts. It is a test/example asset, not a renderer dependency.
 
 `glyph_coverage` uses the following renamed subsets. Full source files are
 revision/hash pinned in `subset-sources.json`; generated hashes and sizes are
-in `subset-hashes.json`. Together the subsets occupy about 172 KiB.
+in `subset-hashes.json`. Together the subsets occupy about 185 KiB.
 
 | Fixture | Source | License |
 | --- | --- | --- |
 | FidelityASCII.ttf | Bundled Cascadia Mono regular, with ASCII and the block measurement glyph retained | [Cascadia OFL](../cascadia-mono/LICENSE), Copyright Microsoft Corporation |
 | FidelityCJK.otf | Noto Sans CJK SC regular at `f8d157532fbfaeda587e826d4cd5b21a49186f7c` | [OFL](Noto-OFL.txt), Copyright 2014–2021 Adobe |
 | FidelityColorEmoji.ttf | Noto Color Emoji at `8998f5dd683424a73e2314a8c1f1e359c19e8742` | [OFL](Noto-OFL.txt), Copyright 2022 Google Inc. |
+| [`crates/bevy_terminal/assets/fonts/fidelity/FidelityWideSymbols.ttf`](../../../crates/bevy_terminal/assets/fonts/fidelity/README.md) | Iosevka Regular 34.8.1 (release `PkgTTF-Iosevka-34.8.1.zip`) | [OFL](../../../crates/bevy_terminal/assets/fonts/fidelity/OFL.txt), Copyright 2015–2026 Renzhi Li |
 
 The ASCII fixture forces non-ASCII script/emoji samples through explicit
 fallbacks. The CJK fixture retains the CJK, Hangul, and full-width samples.
 The CBDT/CBLC color fixture retains selected emoji, variation selectors,
 modifiers, flags, and joined sequences, including the full layout closure.
+The wide-symbols fixture keeps regular Iosevka's double-advance `↔∑∞◆★`
+(one-cell symbols and text whose ink is two cells wide), braille, and the
+measurement probes; it lives in the core crate so its unit tests can use it.
 The existing DejaVu Sans Mono asset supplies required Latin/Greek/combining
 fallback coverage. Original copyright and license name-table records are kept;
 modified fonts use distinct family and PostScript names.

@@ -65,7 +65,8 @@ font/shaping failures, missing text resources, and device texture limits.
 
 - `grid()`: measured columns and rows.
 - `size()`: physical image dimensions.
-- `logical_size()`, `cell_size()`, `font_size()`: logical pixel measurements.
+- `logical_size()`, `cell_size()`, `font_size()`: logical pixel measurements;
+  `physical_font_size()`: the exact rasterization size.
 - `raster_scale()`: physical-to-logical pixel ratio.
 - `grid_for(available_size)`: a bounded grid fitting a logical rectangle.
 - `is_current()` and `matches_surface(...)`: source/generation validation.
@@ -107,7 +108,23 @@ text-edge pixels are preserved whenever the run fits its cell span.
 Styled and fallback runs share the configured text baseline. Fallback glyphs
 do not change cell measurements when the displayed content changes.
 Font-driven sizing accepts a line-height multiplier; values below one can clip
-outer ink intentionally. Fixed geometry fits/clips glyphs to the specified cells.
+outer ink intentionally. Fixed geometry keeps the specified cells.
+
+Glyph constraints follow Ghostty. Ordinary text is drawn as rasterized: a run
+that overhangs a span it fits is pushed inside, a wider run (a fallback face
+with a larger advance, Iosevka's two-cell `∑`) overflows its neighbours, later
+cells drawn on top. Symbols (arrows, dingbats, miscellaneous symbols, enclosed
+alphanumerics, pictographs, emoticons, transport, private use) are scaled down
+uniformly, only as far as needed to fit their cells, and pushed inside them; a
+symbol before a blank cell may spread into it unless it follows another
+symbol. Rescaled symbols use whole-pixel font sizes. Ink is confined to its
+row, which is the unit of repaint; emoji are not enlarged to fill their cells.
+Grid graphics (box drawing, shades, legacy computing, Powerline) keep the
+per-cell clip. Ordinary text wider than its cells (Iosevka's `∑ ∞ ◆`) is
+visibly different from earlier releases, which cropped it.
+
+The crate is MIT licensed; the test fonts under `assets/fonts` are bundled
+under their own licenses (OFL 1.1) and are used only by tests.
 
 `FontFaces` selects regular, bold, italic, and bold-italic sources. Missing faces
 can request weight/style from fallback faces. Supply Bevy `Font` assets, generic

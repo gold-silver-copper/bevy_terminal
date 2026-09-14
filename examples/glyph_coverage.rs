@@ -58,6 +58,20 @@ const COLOR: &[&str] = &[
     "🏳\u{fe0f}\u{200d}🌈",
 ];
 const TEXT_PRESENTATION: &[&str] = &["❤\u{fe0e}", "♥\u{fe0e}", "☕\u{fe0e}"];
+/// Regular Iosevka's double-advance glyphs in cells of one column, laid out
+/// from column 2 with the neighbours that decide how they may be drawn: a
+/// symbol before a blank spreads into it, before text it is fitted to its
+/// cell, and ordinary text overflows either way.
+const WIDE_SYMBOLS: &[&[&str]] = &[
+    &["↔"],
+    &["↔", "a"],
+    &["↔", "↔"],
+    &["★", "|"],
+    &["∑"],
+    &["∞", "◆"],
+    &["⣿"],
+    &["W"],
+];
 
 #[derive(Component)]
 struct Case {
@@ -65,10 +79,13 @@ struct Case {
     required_font: u64,
     color: bool,
     palette: u16,
-    samples: &'static [&'static str],
+    /// One row per sample; the cells of a sample start at column 2.
+    samples: Vec<Vec<&'static str>>,
     scale: f32,
     scale_index: usize,
     face_ids: [u64; 4],
+    /// The regular face the font-switch phase replaces the primary with.
+    replacement: (Handle<Font>, u64),
     last: Option<(Handle<Image>, TerminalGeometry, Vec<u8>)>,
 }
 #[derive(Resource, Default, Clone)]
@@ -81,8 +98,6 @@ struct Frame {
     ticks: u32,
     phase: usize,
 }
-#[derive(Resource)]
-struct Replacement(Handle<Font>, u64);
 const PHASES: &[&str] = &[
     "roomy",
     "same-pixels",
@@ -102,7 +117,13 @@ fn flags(index: usize) -> StyleFlags {
         StyleFlags::BOLD | StyleFlags::ITALIC,
     ][index % 4]
 }
-fn paint(surface: &TerminalSurface, samples: &[&str], name: &str, replace: bool, palette: u16) {
+fn paint(
+    surface: &TerminalSurface,
+    samples: &[Vec<&str>],
+    name: &str,
+    replace: bool,
+    palette: u16,
+) {
     surface.update(|writer| {
         for y in 0..samples.len() as u16 + 2 {
             for x in 0..8 {
@@ -117,33 +138,37 @@ fn paint(surface: &TerminalSurface, samples: &[&str], name: &str, replace: bool,
                 );
             }
         }
-        for (index, symbol) in samples.iter().enumerate() {
+        for (index, cells) in samples.iter().enumerate() {
             if replace && index % 2 == 1 {
                 continue;
             }
-            let symbol = if replace { "a\u{301}" } else { symbol };
             let y = index as u16 + 1;
-            let [r, g, b] = BACKGROUNDS[((2 + y + palette) % 2) as usize];
-            let style = TerminalStyle {
-                foreground: if name.starts_with("color") && !replace {
-                    TerminalColor::Rgb(30, 240, 90)
-                } else {
-                    TerminalColor::Rgb(255, 255, 255)
-                },
-                background: TerminalColor::Rgb(r, g, b),
-                flags: if name == "mixed" && !replace {
-                    flags(index)
-                } else {
-                    StyleFlags::empty()
-                },
-                ..default()
-            };
+            let cells: &[&str] = if replace { &["a\u{301}"] } else { cells };
             let span = if !replace && (name == "cjk" || name.starts_with("color")) {
                 2
             } else {
                 1
             };
-            writer.set_cell((2, y), &TerminalCell::wide(symbol, span).with_style(style));
+            let mut x = 2;
+            for symbol in cells {
+                let [r, g, b] = BACKGROUNDS[((x + y + palette) % 2) as usize];
+                let style = TerminalStyle {
+                    foreground: if name.starts_with("color") && !replace {
+                        TerminalColor::Rgb(30, 240, 90)
+                    } else {
+                        TerminalColor::Rgb(255, 255, 255)
+                    },
+                    background: TerminalColor::Rgb(r, g, b),
+                    flags: if name == "mixed" && !replace {
+                        flags(index)
+                    } else {
+                        StyleFlags::empty()
+                    },
+                    ..default()
+                };
+                writer.set_cell((x, y), &TerminalCell::wide(symbol, span).with_style(style));
+                x += span;
+            }
         }
     });
 }
@@ -248,7 +273,16 @@ fn main() {
         &mut app,
         include_bytes!("../assets/fonts/hack/Hack-Regular.ttf"),
     );
-    app.insert_resource(Replacement(replacement, replacement_id));
+    let (wide, wide_id) = add_font(
+        &mut app,
+        include_bytes!("../crates/bevy_terminal/assets/fonts/fidelity/FidelityWideSymbols.ttf"),
+    );
+    // Switching the wide font to Iosevka Fixed keeps every sample covered
+    // while its one-advance symbols need no fitting any more.
+    let (fixed, fixed_id) = add_font(
+        &mut app,
+        include_bytes!("../assets/fonts/iosevka-fixed/IosevkaFixed-Regular.ttf"),
+    );
     let scales = args
         .windows(2)
         .find(|a| a[0] == "--scale")
@@ -256,21 +290,41 @@ fn main() {
             vec![a[1].parse::<f32>().expect("numeric scale")]
         });
     for (scale_index, scale) in scales.into_iter().enumerate() {
+        let single = |samples: &[&'static str]| -> Vec<Vec<&'static str>> {
+            samples.iter().map(|symbol| vec![*symbol]).collect()
+        };
         for (name, samples, font, color, palette) in [
-            ("cjk", CJK, fallbacks[0].1, false, 0),
-            ("marks", MARKS, fallbacks[1].1, false, 0),
-            ("presentation", TEXT_PRESENTATION, fallbacks[1].1, false, 0),
-            ("color", COLOR, fallbacks[2].1, true, 0),
-            ("color-alt", COLOR, fallbacks[2].1, true, 1),
-            ("mixed", MIXED, 0, false, 0),
-            ("blocks", &["█"][..], 0, false, 0),
+            ("cjk", single(CJK), fallbacks[0].1, false, 0),
+            ("marks", single(MARKS), fallbacks[1].1, false, 0),
+            (
+                "presentation",
+                single(TEXT_PRESENTATION),
+                fallbacks[1].1,
+                false,
+                0,
+            ),
+            ("color", single(COLOR), fallbacks[2].1, true, 0),
+            ("color-alt", single(COLOR), fallbacks[2].1, true, 1),
+            ("mixed", single(MIXED), 0, false, 0),
+            ("blocks", single(&["█"]), 0, false, 0),
+            (
+                "wide-symbols",
+                WIDE_SYMBOLS.iter().map(|row| row.to_vec()).collect(),
+                wide_id,
+                false,
+                0,
+            ),
         ] {
             if name == "presentation" && !args.iter().any(|arg| arg == "--text-presentation") {
                 continue;
             }
             let surface = TerminalSurface::new((8, samples.len() as u16 + 2));
-            paint(&surface, samples, name, false, palette);
-            let mut faces = FontFaces::regular(primary.clone());
+            paint(&surface, &samples, name, false, palette);
+            let mut faces = FontFaces::regular(if name == "wide-symbols" {
+                wide.clone()
+            } else {
+                primary.clone()
+            });
             if name == "mixed" {
                 faces.bold = Some(bold.clone().into());
                 faces.italic = Some(italic.clone().into());
@@ -296,11 +350,16 @@ fn main() {
                     required_font: font,
                     color,
                     palette,
-                    samples,
                     scale,
                     scale_index,
                     face_ids: [primary_id, bold_id, italic_id, bold_italic_id],
+                    replacement: if name == "wide-symbols" {
+                        (fixed.clone(), fixed_id)
+                    } else {
+                        (replacement.clone(), replacement_id)
+                    },
                     last: None,
+                    samples: samples.clone(),
                 },
             ));
         }
@@ -350,7 +409,6 @@ fn check(
     )>,
     mut oracle: Rasterizer,
     output: Res<Output>,
-    replacement: Res<Replacement>,
     mut exit: MessageWriter<AppExit>,
 ) {
     frame.ticks += 1;
@@ -381,7 +439,7 @@ fn check(
         let cell = (geometry.cell_size() * geometry.raster_scale())
             .round()
             .as_uvec2();
-        let font_size = geometry.font_size() * geometry.raster_scale();
+        let font_size = geometry.physical_font_size();
         if let Some((image, last, _)) = &case.last {
             assert_eq!(
                 texture.image, *image,
@@ -424,12 +482,12 @@ fn check(
         );
         let baseline = oracle.baseline(&config, font_size, cell.y as f32).unwrap();
         let snapshot = renderer.surface().snapshot();
-        for (index, symbol) in case.samples.iter().enumerate() {
+        for (index, cells) in case.samples.iter().enumerate() {
             let y = index as u16 + 1;
             let expected = if frame.phase >= 6 {
                 if index % 2 == 1 { " " } else { "a\u{301}" }
             } else {
-                symbol
+                cells[0]
             };
             let anchor = snapshot.cell((2, y)).unwrap();
             let span = if frame.phase < 6 && (case.name == "cjk" || case.color) {
@@ -452,43 +510,54 @@ fn check(
             }
         }
         for y in 0..snapshot.size().height {
-            for x in 0..snapshot.size().width {
-                let source = snapshot.cell((x, y)).unwrap();
-                if source.is_continuation() {
-                    continue;
+            // Every cell of the row must show the row the oracle composes:
+            // ordinary text as rasterized, symbols fitted to the cells they may
+            // occupy, wider runs overflowing blank neighbours, nothing stale.
+            let cells = snapshot.row(y);
+            let row_size = UVec2::new(size.x, cell.y);
+            let background = |x: u16| -> [u8; 3] {
+                let mut anchor = usize::from(x);
+                while anchor > 0 && cells[anchor].is_continuation() {
+                    anchor -= 1;
                 }
-                let TerminalColor::Rgb(r, g, b) = source.style.background else {
+                let TerminalColor::Rgb(r, g, b) = cells[anchor].style.background else {
                     panic!("explicit test background")
                 };
-                let bg = [r, g, b];
-                let span = UVec2::new(cell.x * u32::from(source.columns()), cell.y);
-                let actual: Vec<[u8; 3]> = (0..span.y)
-                    .flat_map(|dy| {
-                        (0..span.x).map(move |dx| {
-                            let start = (u32::from(y) * cell.y + dy) as usize * stride
-                                + (u32::from(x) * cell.x + dx) as usize * 4;
-                            data[start..start + 3].try_into().unwrap()
-                        })
-                    })
-                    .collect();
-                if source.symbol() == " " {
-                    if actual.iter().any(|p| *p != bg) {
-                        failures.push(format!(
-                            "{} blank ({x},{y}) has stale/neighbor ink",
-                            case.name
-                        ));
-                    }
+                [r, g, b]
+            };
+            let mut expected: Vec<[u8; 3]> = (0..row_size.y)
+                .flat_map(|_| (0..row_size.x).map(|x| background((x / cell.x) as u16)))
+                .collect();
+            let mut skipped = vec![false; cells.len()];
+            let mut placements = Vec::new();
+            for (x, source) in cells.iter().enumerate() {
+                if source.is_continuation() || source.symbol() == " " {
                     continue;
                 }
+                let span = fidelity_oracle::span(cells, x) as usize;
                 if source.symbol() == "█" {
-                    if actual.iter().any(|p| *p != [255; 3]) {
+                    let x0 = x as u32 * cell.x;
+                    let solid = (0..cell.y)
+                        .flat_map(|dy| {
+                            (0..cell.x * span as u32).map(move |dx| {
+                                let start = (u32::from(y) * cell.y + dy) as usize * stride
+                                    + (x0 + dx) as usize * 4;
+                                <[u8; 3]>::try_from(&data[start..start + 3]).unwrap()
+                            })
+                        })
+                        .all(|p| p == [255; 3]);
+                    if !solid {
                         failures.push("procedural block did not fill fixed cell".into());
                     }
                     rows.push_str(&format!("{}\t{}\t{y}\tblock\tprocedural-fill\t-\t{baseline}\t{cell:?}\t{font_size}\t-\n",case.name,case.scale));
+                    skipped[x..x + span].fill(true);
                     continue;
                 }
-                let reference = match oracle.shape(source, &config, font_size, cell.y as f32) {
-                    Ok(reference) => reference,
+                let columns = fidelity_oracle::visual_columns(cells, x);
+                let placement = match oracle
+                    .place(source, &config, font_size, cell, columns, baseline)
+                {
+                    Ok(placement) => placement,
                     Err(error) => {
                         failures.push(format!(
                             "{} {:?}: required raster unavailable: {error}",
@@ -496,15 +565,63 @@ fn check(
                             source.symbol()
                         ));
                         rows.push_str(&format!("{}\t{}\t{y}\t{:?}\trequired-raster-unavailable\t-\t{baseline}\t{cell:?}\t{font_size}\t-\n",case.name,case.scale,source.symbol()));
+                        skipped[x..x + span].fill(true);
                         continue;
                     }
                 };
+                let x0 = (x as u32 * cell.x) as i32;
+                let origin = IVec2::new(x0, 0);
+                if fidelity_oracle::is_graphics(source.symbol()) {
+                    placement.reference.composite_within(
+                        &mut expected,
+                        row_size,
+                        origin + placement.shift,
+                        x0..x0 + (cell.x * columns) as i32,
+                    );
+                } else {
+                    placement.reference.composite(
+                        &mut expected,
+                        row_size,
+                        origin + placement.shift,
+                    );
+                }
+                placements.push((x, span, columns, placement));
+            }
+            let differing_cells: Vec<usize> = (0..cells.len())
+                .filter(|x| !skipped[*x])
+                .filter(|x| {
+                    let x0 = *x as u32 * cell.x;
+                    let region = |pixels: &dyn Fn(u32, u32) -> [u8; 3]| -> Vec<[u8; 3]> {
+                        (0..cell.y)
+                            .flat_map(|dy| (0..cell.x).map(move |dx| pixels(x0 + dx, dy)))
+                            .collect()
+                    };
+                    let expected = region(&|px, py| expected[(py * row_size.x + px) as usize]);
+                    let actual = region(&|px, py| {
+                        let start =
+                            (u32::from(y) * cell.y + py) as usize * stride + px as usize * 4;
+                        <[u8; 3]>::try_from(&data[start..start + 3]).unwrap()
+                    });
+                    fidelity_oracle::differing_pixels(&expected, &actual) > 0
+                })
+                .collect();
+            for x in &differing_cells {
+                let symbol = cells[*x].symbol();
+                failures.push(format!(
+                    "{} ({x},{y}) {symbol:?}: differs from the composed row",
+                    case.name
+                ));
+            }
+            for (x, span, columns, placement) in &placements {
+                let source = &cells[*x];
+                let reference = &placement.reference;
                 let required = if case.name == "mixed" {
                     case.face_ids[(y as usize - 1) % 4]
                 } else {
                     case.required_font
                 };
-                let allowed = |id: u64| id == required || (frame.phase >= 5 && id == replacement.1);
+                let allowed =
+                    |id: u64| id == required || (frame.phase >= 5 && id == case.replacement.1);
                 let font_ok = reference.faces.iter().all(|(id, _)| allowed(*id));
                 if !reference.supported || !font_ok {
                     failures.push(format!(
@@ -526,51 +643,61 @@ fn check(
                         reference.color_glyphs
                     ));
                 }
-                // Every face shares the baseline derived from configured font
-                // metrics, including when compact cells deliberately crop ink.
-                let dy = baseline - reference.baseline.round() as i32;
-                let Some((min, max)) = reference.ink_bounds() else {
+                let Some((min, max)) = placement.ink() else {
                     failures.push("empty required raster".into());
                     continue;
                 };
-                let placement = reference
-                    .fitting_shift(span.x)
-                    .map(|dx| IVec2::new(dx, dy))
-                    .or_else(|| reference.matching_crop(&actual, span, dy, bg));
-                let shift = placement.unwrap_or(IVec2::new(0, dy));
-                let dx = shift.x;
-                let differences = reference.differences(&actual, span, shift, bg);
-                if placement.is_none() || differences > 0 {
-                    failures.push(format!("{} {:?}: {differences} pixel differences at {shift:?}; baseline {} expected {}, ascent {} descent {}, faces {:?}",case.name,source.symbol(),reference.baseline,baseline,reference.ascent,reference.descent,reference.faces));
+                let span_px = IVec2::new((cell.x * *span as u32) as i32, cell.y as i32);
+                if placement.scaled {
+                    let fitted = (max - min).as_vec2();
+                    let full = placement.unconstrained.as_vec2();
+                    let bounds = Vec2::new((cell.x * *columns) as f32, cell.y as f32);
+                    let aspect = (fitted.x / fitted.y) / (full.x / full.y);
+                    let fill = (fitted / bounds).max_element();
+                    if !(0.8..=1.25).contains(&aspect) || fill < 0.85 {
+                        failures.push(format!(
+                            "{} {:?}: rescaled ink {fitted:?} from {full:?} in {bounds:?} (aspect ratio {aspect:.2}, fill {fill:.2})",
+                            case.name,
+                            source.symbol()
+                        ));
+                    }
                 }
-                let clipped = min.x + dx < 0
-                    || max.x + dx > span.x as i32
-                    || min.y + dy < 0
-                    || max.y + dy > span.y as i32;
+                let touched = differing_cells
+                    .iter()
+                    .any(|c| *c >= *x && *c < x + (*columns as usize).max(*span));
                 let classification = if !reference.supported {
                     "unexpected-missing-glyph"
                 } else if !font_ok {
                     "unexpected-font"
                 } else if !color_ok {
                     "required-color-failure"
-                } else if placement.is_none() || differences > 0 {
+                } else if touched {
                     "rendering-failure"
-                } else if clipped {
+                } else if placement.scaled {
+                    "verified-fit"
+                } else if max.x > span_px.x || min.x < 0 {
+                    if *columns as usize > *span {
+                        "verified-spread"
+                    } else {
+                        "verified-overflow"
+                    }
+                } else if min.y < 0 || max.y > span_px.y {
                     "verified-crop"
                 } else {
                     "required-success"
                 };
-                rows.push_str(&format!("{}\t{}\t{y}\t{:?}\t{classification}\t{:?}\t{baseline}\t{cell:?}\t{font_size}\t{shift:?}\n",case.name,case.scale,source.symbol(),reference.faces));
-                if y > 1 && differences == 0 {
+                rows.push_str(&format!("{}\t{}\t{y}\t{:?}\t{classification}\t{:?}\t{baseline}\t{cell:?}\t{font_size}\t{:?}\n",case.name,case.scale,source.symbol(),reference.faces,placement.shift));
+                if y > 1 && !touched {
                     continue;
                 }
-                let name = format!("{}-{}x-{y}", case.name, case.scale);
+                let name = format!("{}-{}x-{y}-{x}", case.name, case.scale);
+                let bg = background(*x as u16);
                 let raw_reference: Vec<u8> = (0..reference.size.y)
-                    .flat_map(|y| {
+                    .flat_map(|py| {
                         (0..reference.size.x)
-                            .flat_map(|x| {
+                            .flat_map(|px| {
                                 let p = reference
-                                    .pixel(reference.origin + UVec2::new(x, y).as_ivec2(), bg);
+                                    .pixel(reference.origin + UVec2::new(px, py).as_ivec2(), bg);
                                 [p[0], p[1], p[2], 255]
                             })
                             .collect::<Vec<_>>()
@@ -581,28 +708,32 @@ fn check(
                     reference.size,
                     raw_reference,
                 );
-                fidelity_oracle::save_detail(
-                    &out.join(format!("{name}-actual.png")),
-                    span,
-                    actual
-                        .iter()
-                        .flat_map(|p| [p[0], p[1], p[2], 255])
-                        .collect(),
-                );
-                let expected: Vec<u8> = (0..span.y)
-                    .flat_map(|y| {
-                        (0..span.x)
-                            .flat_map(|x| {
-                                let p = reference.pixel(UVec2::new(x, y).as_ivec2() - shift, bg);
+                let x0 = *x as u32 * cell.x;
+                let width = cell.x * (*columns).max(*span as u32);
+                let region_size = UVec2::new(width.min(row_size.x - x0), cell.y);
+                let region = |pixels: &dyn Fn(u32, u32) -> [u8; 3]| -> Vec<u8> {
+                    (0..region_size.y)
+                        .flat_map(|dy| {
+                            (0..region_size.x).flat_map(move |dx| {
+                                let p = pixels(x0 + dx, dy);
                                 [p[0], p[1], p[2], 255]
                             })
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
+                        })
+                        .collect()
+                };
+                fidelity_oracle::save_detail(
+                    &out.join(format!("{name}-actual.png")),
+                    region_size,
+                    region(&|px, py| {
+                        let start =
+                            (u32::from(y) * cell.y + py) as usize * stride + px as usize * 4;
+                        <[u8; 3]>::try_from(&data[start..start + 3]).unwrap()
+                    }),
+                );
                 fidelity_oracle::save_detail(
                     &out.join(format!("{name}-reference.png")),
-                    span,
-                    expected,
+                    region_size,
+                    region(&|px, py| expected[(py * row_size.x + px) as usize]),
                 );
             }
         }
@@ -628,10 +759,10 @@ fn check(
                     font_size: 18.75,
                 };
             }
-            4 => config.font = FontFaces::regular(replacement.0.clone()),
+            4 => config.font = FontFaces::regular(case.replacement.0.clone()),
             5 => paint(
                 renderer.surface(),
-                case.samples,
+                &case.samples,
                 case.name,
                 true,
                 case.palette,
@@ -692,6 +823,14 @@ mod tests {
                 "noto-emoji-NotoColorEmoji.ttf",
                 include_bytes!("../assets/fonts/fidelity/FidelityColorEmoji.ttf").as_slice(),
                 COLOR,
+            ),
+            (
+                "Iosevka-Regular.ttf",
+                include_bytes!(
+                    "../crates/bevy_terminal/assets/fonts/fidelity/FidelityWideSymbols.ttf"
+                )
+                .as_slice(),
+                &["↔", "∑", "∞", "◆", "★", "⣿", "W", "a", "█"],
             ),
         ] {
             let mut app = App::new();

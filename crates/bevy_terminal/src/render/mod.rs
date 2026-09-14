@@ -164,8 +164,9 @@ impl<T: Into<FontSource>> From<T> for FontFaces {
 /// How requested logical sizes determine the terminal's measured geometry.
 ///
 /// The renderer snaps cells to physical pixels. Font-driven and width-fitted
-/// modes then refit the font advance to that width, preventing seams. Glyph
-/// fitting preserves the font's line box and clips fallback overhang to cells.
+/// modes then refit the font advance to that width, preventing seams. Ordinary
+/// text keeps the font's line box and its rasterized size; symbols are scaled
+/// down to their cells as Ghostty constrains them; ink is confined to its row.
 /// Read effective dimensions from [`TerminalTexture::measured`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TerminalSizing {
@@ -182,8 +183,8 @@ pub enum TerminalSizing {
     /// Fit the font to this logical cell width. Height is a minimum and grows
     /// to contain the font's line box.
     FitCellWidth(Vec2),
-    /// Explicit logical cell and font sizes. Cells snap to physical pixels;
-    /// glyphs exceeding them are fitted and clipped without growing the cell.
+    /// Explicit logical cell and font sizes. Cells snap to physical pixels and
+    /// never grow: taller ink is clipped to the row.
     Fixed {
         /// Logical dimensions of one cell.
         cell_size: Vec2,

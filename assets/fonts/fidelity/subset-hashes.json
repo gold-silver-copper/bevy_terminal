@@ -10,5 +10,9 @@
   "FidelityColorEmoji.ttf": {
     "sha256": "8b7440d53774c2cc94e9a5eac10ca50d2ece07b6d8502e5d0dac48ce175361bb",
     "bytes": 137524
+  },
+  "FidelityWideSymbols.ttf": {
+    "sha256": "69bef091f45e39b0fdcf65b95ab9a352deb3dd3a8737f73b29c61e44bda566d0",
+    "bytes": 13384
   }
 }
