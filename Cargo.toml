@@ -25,6 +25,7 @@ exclude = [
     "tests/glyph_fidelity.rs",
     "CLEANUP_PROGRESS.md",
     "*_PROMPT.md",
+    "HANDOFF_*.md",
     "assets/fonts/*",
     "!assets/fonts/jetbrains-mono",
 ]
