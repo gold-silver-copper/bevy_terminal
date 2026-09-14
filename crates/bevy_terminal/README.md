@@ -66,7 +66,8 @@ font/shaping failures, missing text resources, and device texture limits.
 - `grid()`: measured columns and rows.
 - `size()`: physical image dimensions.
 - `logical_size()`, `cell_size()`, `font_size()`: logical pixel measurements;
-  `physical_font_size()`: the exact rasterization size.
+  `physical_cell_size()` and `physical_font_size()`: the exact physical cell and
+  rasterization size.
 - `raster_scale()`: physical-to-logical pixel ratio.
 - `grid_for(available_size)`: a bounded grid fitting a logical rectangle.
 - `is_current()` and `matches_surface(...)`: source/generation validation.

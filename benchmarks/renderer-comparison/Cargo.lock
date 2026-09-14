@@ -1574,7 +1574,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_terminal"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "bevy",
  "bitflags 2.13.1",
@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_terminal_ratatui"
-version = "0.7.5"
+version = "0.7.7"
 dependencies = [
  "bevy",
  "bevy_terminal",

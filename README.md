@@ -12,11 +12,11 @@ it does not emulate a terminal, manage a PTY, or forward input.
 | `bevy_terminal` | Shared terminal surface, font measurement, rendering, output geometry |
 | `bevy_terminal_ratatui` | Ratatui backend and optional ergonomic terminal wrapper |
 
-Version 0.7.5 targets Bevy 0.19, Ratatui 0.30.2, and Rust 1.95 or newer.
+Version 0.7.7 targets Bevy 0.19, Ratatui 0.30.2, and Rust 1.95 or newer.
 
 ```toml
 [dependencies]
-bevy_terminal_ratatui = "0.7.5"
+bevy_terminal_ratatui = "0.7.7"
 ```
 
 ## Drawing and rendering

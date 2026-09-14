@@ -151,6 +151,13 @@ impl TerminalGeometry {
         self.physical_font_size
     }
 
+    /// Physical cell size in whole pixels; exact, unlike
+    /// `cell_size() * raster_scale()`. `size()` is the grid times this.
+    #[must_use]
+    pub const fn physical_cell_size(&self) -> Vec2 {
+        self.physical_cell_size
+    }
+
     /// Grid fitting the available logical space, bounded by surface limits.
     #[must_use]
     pub fn grid_for(&self, logical_size: Vec2) -> GridSize {

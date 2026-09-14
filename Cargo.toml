@@ -4,7 +4,7 @@ resolver = "3"
 
 [package]
 name = "bevy_terminal_ratatui"
-version = "0.7.5"
+version = "0.7.7"
 edition = "2024"
 rust-version = "1.95"
 description = "A Ratatui backend for the bevy_terminal Bevy terminal renderer"
@@ -43,7 +43,7 @@ scrolling-regions = ["ratatui/scrolling-regions"]
 timings = ["bevy_terminal/timings"]
 
 [dependencies]
-bevy_terminal = { version = "0.7.6", path = "crates/bevy_terminal", default-features = false }
+bevy_terminal = { version = "0.7.7", path = "crates/bevy_terminal", default-features = false }
 # Only for the `Component` derive on `RatatuiTerminal`; the version is pinned by `bevy_terminal`.
 bevy = { version = "0.19", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["std", "underline-color"] }

@@ -1,6 +1,6 @@
 [package]
 name = "bevy_terminal"
-version = "0.7.6"
+version = "0.7.7"
 edition = "2024"
 rust-version = "1.95"
 description = "A low-level terminal cell renderer built on Bevy text and the render world"
