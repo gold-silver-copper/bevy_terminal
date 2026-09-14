@@ -1007,6 +1007,8 @@ fn run_checks(
                         }
                     };
                     if !placement.reference.supported {
+                        // A font-coverage gap: the cell itself is not judged, but
+                        // its `.notdef` raster is drawn and may reach its neighbours.
                         if interior {
                             unsupported += 1;
                             diagnostics.push_str(&format!(
@@ -1018,8 +1020,6 @@ fn run_checks(
                             }
                         }
                         skipped[column..column + span].fill(true);
-                        column += span;
-                        continue;
                     }
                     let Some((min, max)) = placement.ink() else {
                         if interior {
@@ -1045,23 +1045,26 @@ fn run_checks(
                             origin + placement.shift,
                         );
                     }
-                    if !interior {
+                    if !interior || !placement.reference.supported {
                         column += span;
                         continue;
                     }
-                    // A rescaled symbol must be a uniformly shrunk, complete
-                    // copy of the unconstrained raster that fills the limiting
-                    // dimension of its cells; this is not derived from the
-                    // renderer's or the oracle's fitting arithmetic.
+                    // A rescaled symbol must be the unconstrained raster shrunk
+                    // uniformly by about the ratio that makes it fit: never
+                    // larger, and no more than 15% (a whole-pixel font-size
+                    // step plus hinting) and two pixels smaller per axis. This
+                    // is not derived from the renderer's or the oracle's
+                    // fitting arithmetic.
                     if placement.scaled {
                         let fitted = (max - min).as_vec2();
                         let full = placement.unconstrained.as_vec2();
                         let bounds = Vec2::new((cell.x * columns) as f32, cell.y as f32);
-                        let aspect = (fitted.x / fitted.y) / (full.x / full.y);
-                        let fill = (fitted / bounds).max_element();
-                        if !(0.8..=1.25).contains(&aspect) || fill < 0.85 {
+                        let expected_size = full * (bounds / full).min_element().min(1.0);
+                        let too_large = (fitted - expected_size).max_element() > 2.0;
+                        let too_small = (expected_size * 0.85 - fitted).max_element() > 2.0;
+                        if too_large || too_small {
                             problems.push(format!(
-                                "{symbol:?} at ({column},{row}): rescaled ink {fitted:?} from {full:?} in {bounds:?} (aspect ratio {aspect:.2}, fill {fill:.2})"
+                                "{symbol:?} at ({column},{row}): rescaled ink {fitted:?} from {full:?} in {bounds:?}, expected about {expected_size:?}"
                             ));
                         }
                     }

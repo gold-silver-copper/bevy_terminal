@@ -661,11 +661,12 @@ fn check(
                     let fitted = (max - min).as_vec2();
                     let full = placement.unconstrained.as_vec2();
                     let bounds = Vec2::new((cell.x * *columns) as f32, cell.y as f32);
-                    let aspect = (fitted.x / fitted.y) / (full.x / full.y);
-                    let fill = (fitted / bounds).max_element();
-                    if !(0.8..=1.25).contains(&aspect) || fill < 0.85 {
+                    let expected_size = full * (bounds / full).min_element().min(1.0);
+                    let too_large = (fitted - expected_size).max_element() > 2.0;
+                    let too_small = (expected_size * 0.85 - fitted).max_element() > 2.0;
+                    if too_large || too_small {
                         failures.push(format!(
-                            "{} {:?}: rescaled ink {fitted:?} from {full:?} in {bounds:?} (aspect ratio {aspect:.2}, fill {fill:.2})",
+                            "{} {:?}: rescaled ink {fitted:?} from {full:?} in {bounds:?}, expected about {expected_size:?}",
                             case.name,
                             source.symbol()
                         ));

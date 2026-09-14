@@ -2285,3 +2285,52 @@ fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
     let stats = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!((stats.shape_misses, stats.changed_rows), (0, 1), "{stats}");
 }
+
+#[test]
+fn debug_marks_run() {
+    let mut app = text_app();
+    let regular = app
+        .world_mut()
+        .resource_mut::<Assets<Font>>()
+        .add(Font::from_bytes(
+            include_bytes!("../../../../../assets/fonts/hack/Hack-Regular.ttf").to_vec(),
+        ));
+    let surface = TerminalSurface::new((4, 1));
+    surface.update(|u| {
+        u.set_cell((0, 0), &TerminalCell::new("e\u{30a}"));
+        u.set_cell((2, 0), &TerminalCell::new("x"));
+    });
+    let entity = app
+        .world_mut()
+        .spawn((
+            TerminalRenderer::new(surface.clone()),
+            TerminalRenderConfig {
+                font: super::super::FontFaces::regular(regular),
+                sizing: TerminalSizing::Fixed {
+                    cell_size: Vec2::new(9.0, 18.0),
+                    font_size: 18.0,
+                },
+                ..default()
+            },
+        ))
+        .id();
+    for _ in 0..6 {
+        app.update();
+    }
+    let state = app.world().get::<BatchMainState>(entity).unwrap();
+    eprintln!("raster {:?}", state.raster_config);
+    let index = state
+        .shapes
+        .lookup(&ResolvedStyle::plain(), "e\u{30a}", 1)
+        .unwrap();
+    for g in &state.shapes.entries[index] {
+        eprintln!(
+            "glyph offset {:?} size {:?} ink {:?} columns {:?}",
+            g.offset, g.size, g.ink, g.columns
+        );
+    }
+    eprintln!(
+        "fit {}",
+        fit_horizontally(&state.shapes.entries[index], 9.0, false)
+    );
+}
