@@ -964,6 +964,7 @@ fn run_checks(
                         (0..row_size.x).map(|x| checker_rgb(anchors[(x / cell.x) as usize], *row))
                     })
                     .collect();
+                let mut layers = vec![0u8; expected.len()];
                 let mut skipped = vec![false; cells.len()];
                 // Compose the whole row (edge columns can reach the interior);
                 // compare only the interior.
@@ -1031,6 +1032,7 @@ fn run_checks(
                     if fidelity_oracle::is_graphics(&symbol) {
                         placement.reference.composite_within(
                             &mut expected,
+                            &mut layers,
                             row_size,
                             origin + placement.shift,
                             x0..x0 + (cell.x * columns) as i32,
@@ -1100,8 +1102,17 @@ fn run_checks(
                     let expected_cell = region(&|x, y| expected[(y * row_size.x + x) as usize]);
                     let actual_cell =
                         region(&|x, y| texel(data, *size, x, u32::from(*row) * cell.y + y));
-                    let differences =
-                        fidelity_oracle::differing_pixels(&expected_cell, &actual_cell);
+                    let layers = &layers;
+                    let tolerance: Vec<u8> = (0..cell.y)
+                        .flat_map(|y| {
+                            (0..cell.x).map(move |x| layers[(y * row_size.x + x0 + x) as usize])
+                        })
+                        .collect();
+                    let differences = fidelity_oracle::differing_pixels_within(
+                        &expected_cell,
+                        &actual_cell,
+                        &tolerance,
+                    );
                     if (saved < 3 && differences != 0) || symbol == "W" {
                         let rgba = |pixels: &[[u8; 3]]| -> Vec<u8> {
                             pixels

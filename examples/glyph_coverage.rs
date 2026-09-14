@@ -3,6 +3,7 @@
 //! `--text-presentation` also requires VS15 text fallback. This strict capability
 //! probe currently fails in Parley 0.9 and is reported separately from the
 //! supported required suite; see the coverage report for the upstream evidence.
+#[allow(dead_code)]
 #[path = "common/fidelity_oracle.rs"]
 mod fidelity_oracle;
 
@@ -528,6 +529,7 @@ fn check(
             let mut expected: Vec<[u8; 3]> = (0..row_size.y)
                 .flat_map(|_| (0..row_size.x).map(|x| background((x / cell.x) as u16)))
                 .collect();
+            let mut layers = vec![0u8; expected.len()];
             let mut skipped = vec![false; cells.len()];
             let mut placements = Vec::new();
             for (x, source) in cells.iter().enumerate() {
@@ -574,6 +576,7 @@ fn check(
                 if fidelity_oracle::is_graphics(source.symbol()) {
                     placement.reference.composite_within(
                         &mut expected,
+                        &mut layers,
                         row_size,
                         origin + placement.shift,
                         x0..x0 + (cell.x * columns) as i32,
@@ -602,7 +605,13 @@ fn check(
                             (u32::from(y) * cell.y + py) as usize * stride + px as usize * 4;
                         <[u8; 3]>::try_from(&data[start..start + 3]).unwrap()
                     });
-                    fidelity_oracle::differing_pixels(&expected, &actual) > 0
+                    let layers = &layers;
+                    let tolerance: Vec<u8> = (0..cell.y)
+                        .flat_map(|dy| {
+                            (0..cell.x).map(move |dx| layers[(dy * row_size.x + x0 + dx) as usize])
+                        })
+                        .collect();
+                    fidelity_oracle::differing_pixels_within(&expected, &actual, &tolerance) > 0
                 })
                 .collect();
             for x in &differing_cells {

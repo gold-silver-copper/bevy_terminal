@@ -419,11 +419,24 @@ impl Rasterizer<'_> {
 /// Number of pixels differing by more than one sRGB code value in any
 /// channel (CPU/GPU UNORM conversion rounding), never a silhouette threshold.
 pub fn differing_pixels(expected: &[[u8; 3]], actual: &[[u8; 3]]) -> usize {
+    differing_pixels_within(expected, actual, &vec![1; expected.len()])
+}
+
+/// [`differing_pixels`] with a per-pixel tolerance: one code value for each
+/// blend a pixel went through, since every draw over an 8-bit target rounds
+/// once more (a run overflowing onto its neighbour's ink).
+pub fn differing_pixels_within(
+    expected: &[[u8; 3]],
+    actual: &[[u8; 3]],
+    tolerance: &[u8],
+) -> usize {
     assert_eq!(expected.len(), actual.len());
+    assert_eq!(expected.len(), tolerance.len());
     expected
         .iter()
         .zip(actual)
-        .filter(|(e, a)| e.iter().zip(*a).any(|(e, a)| e.abs_diff(*a) > 1))
+        .zip(tolerance)
+        .filter(|((e, a), t)| e.iter().zip(*a).any(|(e, a)| e.abs_diff(*a) > (**t).max(1)))
         .count()
 }
 
@@ -453,14 +466,16 @@ impl Reference {
     /// the row or the texture edge) are dropped, texels over earlier runs
     /// blend over them.
     pub fn composite(&self, canvas: &mut [[u8; 3]], size: UVec2, shift: IVec2) {
-        self.composite_within(canvas, size, shift, 0..size.x as i32);
+        self.composite_within(canvas, &mut [], size, shift, 0..size.x as i32);
     }
 
     /// [`Reference::composite`] with the ink also clipped to the pixel columns
-    /// `columns` (the cells of a grid graphic).
+    /// `columns` (the cells of a grid graphic). `layers`, when as large as the
+    /// canvas, counts the blends each pixel went through.
     pub fn composite_within(
         &self,
         canvas: &mut [[u8; 3]],
+        layers: &mut [u8],
         size: UVec2,
         shift: IVec2,
         columns: std::ops::Range<i32>,
@@ -479,8 +494,11 @@ impl Reference {
                 {
                     continue;
                 }
-                let dest = &mut canvas[(p.y as u32 * size.x + p.x as u32) as usize];
-                *dest = blend(ink, *dest);
+                let index = (p.y as u32 * size.x + p.x as u32) as usize;
+                canvas[index] = blend(ink, canvas[index]);
+                if let Some(layer) = layers.get_mut(index) {
+                    *layer = layer.saturating_add(1);
+                }
             }
         }
     }
