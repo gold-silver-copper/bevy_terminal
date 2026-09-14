@@ -416,28 +416,38 @@ impl Rasterizer<'_> {
     }
 }
 
-/// Number of pixels differing by more than one sRGB code value in any
-/// channel (CPU/GPU UNORM conversion rounding), never a silhouette threshold.
+/// Code values of sRGB difference tolerated for one blend: a software Vulkan
+/// rasterizer blends with 8-bit linear precision, which is two code values in
+/// dark sRGB; never a silhouette threshold.
+pub const BLEND_TOLERANCE: u8 = 2;
+
+/// Number of pixels differing by more than [`BLEND_TOLERANCE`] in any channel.
 pub fn differing_pixels(expected: &[[u8; 3]], actual: &[[u8; 3]]) -> usize {
     differing_pixels_within(expected, actual, &vec![1; expected.len()])
 }
 
-/// [`differing_pixels`] with a per-pixel tolerance: one code value for each
-/// blend a pixel went through, since every draw over an 8-bit target rounds
-/// once more (a run overflowing onto its neighbour's ink).
-pub fn differing_pixels_within(
-    expected: &[[u8; 3]],
-    actual: &[[u8; 3]],
-    tolerance: &[u8],
-) -> usize {
+/// [`differing_pixels`] with the number of blends each pixel went through:
+/// every draw over an 8-bit target rounds once more (a run overflowing onto
+/// its neighbour's ink), so each layer adds one code value.
+pub fn differing_pixels_within(expected: &[[u8; 3]], actual: &[[u8; 3]], layers: &[u8]) -> usize {
     assert_eq!(expected.len(), actual.len());
-    assert_eq!(expected.len(), tolerance.len());
+    assert_eq!(expected.len(), layers.len());
     expected
         .iter()
         .zip(actual)
-        .zip(tolerance)
-        .filter(|((e, a), t)| e.iter().zip(*a).any(|(e, a)| e.abs_diff(*a) > (**t).max(1)))
+        .zip(layers)
+        .filter(|((e, a), l)| pixel_difference(e, a) > BLEND_TOLERANCE + l.saturating_sub(1))
         .count()
+}
+
+/// Largest channel difference between two pixels.
+pub fn pixel_difference(expected: &[u8; 3], actual: &[u8; 3]) -> u8 {
+    expected
+        .iter()
+        .zip(actual)
+        .map(|(e, a)| e.abs_diff(*a))
+        .max()
+        .unwrap_or(0)
 }
 
 /// One glyph texel blended over a stored sRGB pixel the way the renderer's
@@ -693,14 +703,18 @@ mod tests {
     }
 
     #[test]
-    fn color_tolerance_is_one_code_value_not_a_silhouette_threshold() {
+    fn color_tolerance_is_a_few_code_values_not_a_silhouette_threshold() {
         let glyph = reference(IVec2::ZERO, UVec2::ONE, &[0.5]);
         let expected = render(&glyph, UVec2::ONE, IVec2::ZERO);
         let mut pixels = expected.clone();
-        pixels[0][0] += 1;
+        pixels[0][0] += BLEND_TOLERANCE;
         assert_eq!(differing_pixels(&expected, &pixels), 0);
         pixels[0][0] += 1;
         assert_eq!(differing_pixels(&expected, &pixels), 1);
+        // A second blend over the pixel earns one more code value.
+        assert_eq!(differing_pixels_within(&expected, &pixels, &[2]), 0);
+        pixels[0][0] += 1;
+        assert_eq!(differing_pixels_within(&expected, &pixels, &[2]), 1);
     }
 
     #[test]

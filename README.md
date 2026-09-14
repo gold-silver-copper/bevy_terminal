@@ -222,8 +222,8 @@ coverage under Ghostty's placement rules, independently of the renderer's
 fitting: ordinary text at its rasterized size on a shared typographic baseline,
 symbols scaled down only as needed to fit the cells they may occupy, ink
 confined to its row, wider runs overflowing their neighbours. Every content
-cell, blank ones included, must match within one sRGB code value (CPU/GPU
-conversion rounding). Solid blocks, half-block joins, and line panels have
+cell, blank ones included, must match within two sRGB code values per blend
+(8-bit linear blending on software Vulkan). Solid blocks, half-block joins, and line panels have
 strict continuity checks at 1×, 1.5×, 2×, and 3×.
 
 Checks disable host font discovery and use bundled faces plus a monochrome emoji

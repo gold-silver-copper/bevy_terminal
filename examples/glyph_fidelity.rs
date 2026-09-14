@@ -24,8 +24,9 @@
 //!   geometry; `--line-height <ratio>` configures `--from-font` cells;
 //! - `--output <dir>` selects the check results and diagnostic image directory;
 //! - `--check` uses only bundled fonts and a separate raw Bevy glyph-atlas
-//!   reference. Every content cell of a checked row must match (within one
-//!   sRGB code value) the row the oracle composes from Ghostty's rules:
+//!   reference. Every content cell of a checked row must match (within a few
+//!   sRGB code values of blend rounding) the row the oracle composes from
+//!   Ghostty's rules:
 //!   ordinary text at its rasterized size on the terminal's shared baseline,
 //!   symbols scaled down only as needed to fit the cells they may occupy, ink
 //!   confined to its row, wider runs overflowing their neighbours. Missing font
@@ -1113,7 +1114,7 @@ fn run_checks(
                         &actual_cell,
                         &tolerance,
                     );
-                    if (saved < 3 && differences != 0) || symbol == "W" {
+                    if differences != 0 || (saved < 3 && symbol == "W") {
                         let rgba = |pixels: &[[u8; 3]]| -> Vec<u8> {
                             pixels
                                 .iter()
@@ -1135,8 +1136,19 @@ fn run_checks(
                     if differences == 0 {
                         continue;
                     }
+                    let worst = expected_cell
+                        .iter()
+                        .zip(&actual_cell)
+                        .enumerate()
+                        .map(|(i, (e, a))| (fidelity_oracle::pixel_difference(e, a), i, e, a))
+                        .max()
+                        .unwrap();
                     let message = format!(
-                        "{symbol:?} at ({column},{row}): {differences} differing pixels in the cell; cell {cell:?}"
+                        "{symbol:?} at ({column},{row}): {differences} differing pixels in the cell; cell {cell:?}; worst at ({},{}) expected {:?} actual {:?}",
+                        worst.1 as u32 % cell.x,
+                        worst.1 as u32 / cell.x,
+                        worst.2,
+                        worst.3
                     );
                     diagnostics.push_str(&format!(
                         "{}\t{}\t{}\tfailure\t{message}\n",
