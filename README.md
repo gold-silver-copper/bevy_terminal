@@ -197,6 +197,15 @@ cargo run --example high_dpi_export
 cargo run --example multiple_terminals_export
 ```
 
+For optimized builds that still rebuild quickly after an edit, use the
+`release-fast` profile (no LTO, 16 codegen units, incremental; binaries land in
+`target/release-fast/`). `release` itself is unchanged:
+
+```text
+cargo run --profile release-fast --example render_test
+cargo run --profile release-fast --example glyph_fidelity -- --check --font all --scale all
+```
+
 `colors_rgb` ports Ratatui's animated RGB example and redraws every cell on
 every frame, making it a live renderer-throughput stress test. Its title bar
 reports the fitted grid size and per-frame renderer statistics.

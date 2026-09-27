@@ -64,3 +64,11 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 all = "warn"
+
+# Optimized builds for day-to-day development: no LTO and split codegen,
+# with incremental compilation, so rebuilds after an edit take seconds.
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
