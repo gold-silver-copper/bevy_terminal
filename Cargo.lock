@@ -1564,7 +1564,10 @@ version = "0.7.7"
 dependencies = [
  "bevy",
  "bitflags 2.13.1",
+ "fontique",
  "skrifa 0.42.1",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

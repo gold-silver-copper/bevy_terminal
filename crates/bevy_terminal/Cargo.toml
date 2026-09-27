@@ -36,6 +36,10 @@ skrifa = { version = "0.42", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
+# Host-independent font collections for the glyph placement probe.
+fontique = { version = "0.9", default-features = false }
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
 
 [lints.rust]
 missing_docs = "warn"

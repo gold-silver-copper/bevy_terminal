@@ -26,6 +26,8 @@ exclude = [
     "CLEANUP_PROGRESS.md",
     "*_PROMPT.md",
     "HANDOFF_*.md",
+    "GHOSTTY_PARITY_*",
+    "ghostty-parity/**",
     "assets/fonts/*",
     "!assets/fonts/jetbrains-mono",
 ]

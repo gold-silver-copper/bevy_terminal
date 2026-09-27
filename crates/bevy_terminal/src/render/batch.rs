@@ -869,4 +869,6 @@ fn sync_batch_terminal(
 }
 
 #[cfg(test)]
+mod probe;
+#[cfg(test)]
 mod tests;

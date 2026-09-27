@@ -25,6 +25,9 @@ pub(super) struct SceneScratch {
     pub(super) decorations: Vec<QuadInstance>,
     pub(super) cursor: Vec<QuadInstance>,
     pub(super) styles: Vec<ResolvedStyle>,
+    /// Glyphs of the last full scene before clipping, recorded for the probe.
+    #[cfg(test)]
+    pub(super) probe: Option<Vec<super::probe::ProbeGlyph>>,
 }
 
 impl SceneScratch {
@@ -139,6 +142,13 @@ pub(super) fn build_scene(
     let size = terminal_pixel_size(snapshot.size(), &raster).as_vec2();
     let raster_scale = raster.scale;
     scratch.clear();
+    #[cfg(test)]
+    let mut probe = scratch.probe.take().map(|mut probe| {
+        if full {
+            probe.clear();
+        }
+        probe
+    });
     scratch.styles.reserve(usize::from(snapshot.size().width));
     let SceneScratch {
         backgrounds,
@@ -149,6 +159,7 @@ pub(super) fn build_scene(
         decorations,
         cursor,
         styles,
+        ..
     } = scratch;
 
     for &row in rows {
@@ -284,6 +295,22 @@ pub(super) fn build_scene(
                         width: glyph.size.x,
                         height: glyph.size.y,
                     };
+                    #[cfg(test)]
+                    if full && let Some(probe) = probe.as_mut() {
+                        probe.push(super::probe::ProbeGlyph {
+                            symbol: symbol.to_owned(),
+                            row,
+                            column: column as u16,
+                            columns: columns as u16,
+                            graphics: is_graphics(symbol),
+                            color: !glyph.alpha_mask,
+                            texture: glyph.texture,
+                            uv: glyph.uv,
+                            geometry,
+                            clip: row_bounds,
+                            shift: shift.x,
+                        });
+                    }
                     if let Some((geometry, uv)) = clip_glyph_to_row(geometry, glyph.uv, row_bounds)
                     {
                         glyphs.push((
@@ -364,6 +391,10 @@ pub(super) fn build_scene(
         ));
     }
 
+    #[cfg(test)]
+    {
+        scratch.probe = probe;
+    }
     stats.solid_quads =
         u32::try_from(backgrounds.len() + decorations.len() + cursor.len()).unwrap_or(u32::MAX);
     stats.glyph_quads = u32::try_from(glyphs.len()).unwrap_or(u32::MAX);
