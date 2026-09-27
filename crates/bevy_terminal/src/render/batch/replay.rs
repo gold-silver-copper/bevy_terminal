@@ -469,3 +469,43 @@ fn rows_without_overflow_repaint_only_themselves() {
             .all(|reach| *reach == RowReach::default())
     );
 }
+
+#[test]
+fn overflowing_coverage_is_corrected_against_each_background_it_covers() {
+    let mut replay = Replay::new("cascadia-mono", (3, 3), TerminalSizing::font(24.0), 1.0);
+    let (above, own) = (background(200, 30, 30), background(20, 20, 120));
+    replay.write(0, "   ", above);
+    replay.write(1, " Z\u{302}\u{303}\u{304}\u{306}\u{307} ", own);
+    replay.write(2, "   ", above);
+    replay.app.update();
+    let state = replay
+        .app
+        .world()
+        .get::<BatchMainState>(replay.entity)
+        .unwrap();
+    let scene = state.pending.as_ref().expect("a scene");
+    let luminance = |style: TerminalStyle| {
+        super::scene::luminance(
+            crate::render::TerminalTheme::default().background(style.background),
+        )
+    };
+    let backgrounds: Vec<f32> = scene
+        .batches
+        .iter()
+        .filter(|batch| !batch.replace)
+        .flat_map(|batch| {
+            &scene.instances[batch.start as usize..(batch.start + batch.count) as usize]
+        })
+        .filter(|quad| quad.uv.w >= 0.0 && quad.color.w >= 0.0)
+        .map(|quad| quad.background)
+        .collect();
+    assert!(
+        backgrounds
+            .iter()
+            .any(|b| (b - luminance(own)).abs() < 1e-6)
+            && backgrounds
+                .iter()
+                .any(|b| (b - luminance(above)).abs() < 1e-6),
+        "the stacked marks over the row above blend against its background: {backgrounds:?}"
+    );
+}
