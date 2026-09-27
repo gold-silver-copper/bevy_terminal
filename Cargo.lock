@@ -1580,6 +1580,7 @@ dependencies = [
  "fontique",
  "palette",
  "ratatui",
+ "skrifa 0.42.1",
 ]
 
 [[package]]

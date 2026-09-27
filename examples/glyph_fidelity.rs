@@ -949,6 +949,9 @@ fn run_checks(
         let expected_baseline = oracle
             .baseline(config, font_size, cell.y as f32)
             .expect("configured baseline reference");
+        let face = oracle
+            .face(config, font_size, cell, expected_baseline)
+            .expect("configured face box");
         // Compose the whole texture the way a full scene draws it: every
         // row's runs in row-major order, later cells over earlier ones, ink
         // clipped only by the texture (grid graphics by their cells), so
@@ -992,14 +995,26 @@ fn run_checks(
                     continue;
                 }
                 let columns = fidelity_oracle::visual_columns(cells, column);
-                let placement = oracle.place(
-                    &cells[column],
-                    config,
-                    font_size,
-                    cell,
-                    columns,
-                    expected_baseline,
-                );
+                let placement = oracle
+                    .place(
+                        &cells[column],
+                        config,
+                        font_size,
+                        cell,
+                        columns,
+                        expected_baseline,
+                        face,
+                    )
+                    .map(|mut placement| {
+                        if !fidelity_oracle::is_graphics(&symbol)
+                            && let Some((min, max)) = placement.ink()
+                        {
+                            let x0 = (column as u32 * cell.x) as i32;
+                            placement.shift.x +=
+                                fidelity_oracle::edge_shift(x0 + min.x, x0 + max.x, size.x as i32);
+                        }
+                        placement
+                    });
                 if let Ok(placement) = &placement {
                     let origin = IVec2::new(
                         (column as u32 * cell.x) as i32,
@@ -1098,22 +1113,18 @@ fn run_checks(
                     if !interior || !placement.reference.supported {
                         continue;
                     }
-                    // A rescaled symbol must be the unconstrained raster shrunk
-                    // uniformly by about the ratio that makes it fit: never
-                    // larger, and no more than 15% (a whole-pixel font-size
-                    // step plus hinting) and two pixels smaller per axis. This
-                    // is not derived from the renderer's or the oracle's
-                    // fitting arithmetic.
-                    if placement.scaled {
-                        let fitted = (max - min).as_vec2();
-                        let full = placement.unconstrained.as_vec2();
-                        let bounds = Vec2::new((cell.x * columns) as f32, cell.y as f32);
-                        let expected_size = full * (bounds / full).min_element().min(1.0);
-                        let too_large = (fitted - expected_size).max_element() > 2.0;
-                        let too_small = (expected_size * 0.85 - fitted).max_element() > 2.0;
+                    // A rescaled run must reach about Ghostty's target size:
+                    // never more than two pixels larger, and no more than 15%
+                    // (a whole-pixel font-size step plus hinting) and two
+                    // pixels smaller per axis.
+                    if let (true, Some(target)) = (placement.scaled, placement.target) {
+                        let fitted = placement.measured;
+                        let full = placement.unconstrained;
+                        let too_large = (fitted - target).max_element() > 2.0;
+                        let too_small = (target * 0.85 - fitted).max_element() > 2.0;
                         if too_large || too_small {
                             problems.push(format!(
-                                "{symbol:?} at ({column},{row}): rescaled ink {fitted:?} from {full:?} in {bounds:?}, expected about {expected_size:?}"
+                                "{symbol:?} at ({column},{row}): rescaled box {fitted:?} from {full:?}, expected about {target:?}"
                             ));
                         }
                     }

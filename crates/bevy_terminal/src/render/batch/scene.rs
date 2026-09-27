@@ -586,7 +586,11 @@ impl RowPainter<'_, '_> {
                 });
                 let box_drawing = is_box_drawing(symbol);
                 let shift = Vec2::new(
-                    fit_horizontally(&shaped, columns as f32 * raster.cell_size.x, box_drawing),
+                    if cells_clip.is_some() {
+                        fit_horizontally(&shaped, columns as f32 * raster.cell_size.x, box_drawing)
+                    } else {
+                        edge_shift(&shaped, cell_x, size.x)
+                    },
                     if box_drawing {
                         raster.box_offset
                     } else {
@@ -706,7 +710,32 @@ pub(super) fn visual_columns(cells: &[TerminalCell], column: usize, span: usize)
     }
 }
 
-/// Horizontal shift (whole pixels) applied to a run drawn over `span` pixels:
+/// Whole-pixel shift keeping a run drawn at `x` inside a texture `width`
+/// pixels wide. Ordinary text keeps its bearings, like Ghostty, and overflows
+/// into neighbouring cells; only ink that would cross the texture's outer
+/// edge, where Ghostty has window padding, is pushed back in. A run wider
+/// than the texture keeps its place.
+pub(super) fn edge_shift(glyphs: &[CachedGlyph], x: f32, width: f32) -> f32 {
+    let (left, right) = glyphs
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(l, r), g| {
+            (
+                l.min(x + g.offset.x + g.ink.0),
+                r.max(x + g.offset.x + g.ink.1),
+            )
+        });
+    if right <= left || right - left > width {
+        0.0
+    } else if left < 0.0 {
+        super::metrics::snap(-left)
+    } else if right > width {
+        super::metrics::snap(width - right)
+    } else {
+        0.0
+    }
+}
+
+/// Horizontal shift (whole pixels) applied to a grid graphic drawn over `span` pixels:
 /// a run that fits but overhangs one side (an italic or a negative bearing) is
 /// pushed inside; a run inside the span keeps its bearings; a run wider than
 /// the span (a fallback family with a larger advance, a wide italic, a symbol

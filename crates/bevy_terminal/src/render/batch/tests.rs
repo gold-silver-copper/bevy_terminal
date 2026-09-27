@@ -30,6 +30,7 @@ fn unsuccessful_atlas_insertion_preserves_packing_state() {
         y: 0,
         width: 8,
         height: 8,
+        scaled: UVec2::ZERO,
     };
     assert!(atlas.cache(source, &mut images).is_none());
     assert!(
@@ -1621,6 +1622,7 @@ fn unified_atlas_copies_each_bevy_glyph_once_and_reuses_its_uv() {
         y: 1,
         width: 1,
         height: 1,
+        scaled: UVec2::ZERO,
     };
 
     let first = atlas.cache(glyph, &mut images).expect("glyph should fit");

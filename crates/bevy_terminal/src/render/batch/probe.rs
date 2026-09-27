@@ -101,6 +101,10 @@ fn samples() -> Vec<(String, StyleFlags)> {
             "┌─┬─┐ ╭╮╰╯ ⣿⡿⠿⢿ ░▒▓ \u{e0b0}\u{e0b2} ━┃╋",
             StyleFlags::empty(),
         ),
+        (
+            "\u{f408} \u{e60b} x\u{f408}x \u{e0c0}\u{e0c0} ☰ x☰x \u{f408}\u{f408}",
+            StyleFlags::empty(),
+        ),
         (edge.as_str(), StyleFlags::empty()),
         (edge.as_str(), ITALIC),
         ("gjpqy ÅÉ q\u{307}\u{328} ع ح Ẫ", StyleFlags::empty()),
@@ -226,8 +230,20 @@ pub(super) fn isolate_fonts(app: &mut App) {
             &["Latn", "Grek", "Cyrl", "Zyyy", "Zinh"][..],
         ),
         ("fidelity/FidelityColorEmoji.ttf", &[][..]),
+        (
+            "fidelity/FidelityNerdSymbols.ttf",
+            &["Latn", "Zyyy", "Zzzz"][..],
+        ),
     ] {
-        let font = Font::from_bytes(asset(path));
+        let font = Font::from_bytes(if path.starts_with("fidelity/FidelityNerd") {
+            std::fs::read(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/fonts/fidelity/FidelityNerdSymbols.ttf"
+            ))
+            .unwrap()
+        } else {
+            asset(path)
+        });
         let families = cx.collection.register_fonts(font.data, None);
         for script in scripts {
             cx.collection.append_fallbacks(
@@ -290,6 +306,8 @@ pub(super) struct ProbeEntry {
     pub(super) lost_edge: u32,
     /// How far ink reaches past the cell box: top, bottom, left, right.
     pub(super) outside: [i32; 4],
+    /// Ink bounds relative to the cell origin: left, top, right, bottom.
+    pub(super) bounds: [i32; 4],
     pub(super) shift: f32,
 }
 
@@ -369,6 +387,7 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
                     columns: glyph.columns,
                     class: glyph.class(),
                     outside: [i32::MIN; 4],
+                    bounds: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
                     shift: glyph.shift,
                     ..default()
                 });
@@ -415,6 +434,13 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
                 for (side, over) in entry.outside.iter_mut().zip(over) {
                     *side = (*side).max(over as i32);
                 }
+                let (cx, cy) = ((x - cell_box.x) as i32, (y - cell_box.y) as i32);
+                entry.bounds = [
+                    entry.bounds[0].min(cx),
+                    entry.bounds[1].min(cy),
+                    entry.bounds[2].max(cx + 1),
+                    entry.bounds[3].max(cy + 1),
+                ];
             }
         }
     }
@@ -460,7 +486,7 @@ pub(super) fn matrix() -> Vec<ProbeCase> {
     cases
 }
 
-pub(super) const REPORT_HEADER: &str = "font\tsize\tscale\tline_height\tcell\tsymbol\trow\tcolumn\tcolumns\tclass\tink\tlost_clip\tlost_edge\tout_top\tout_bottom\tout_left\tout_right\tshift_x\n";
+pub(super) const REPORT_HEADER: &str = "font\tsize\tscale\tline_height\tcell\tsymbol\trow\tcolumn\tcolumns\tclass\tink\tlost_clip\tlost_edge\tout_top\tout_bottom\tout_left\tout_right\tshift_x\tink_left\tink_top\tink_right\tink_bottom\n";
 pub(super) const SUMMARY_HEADER: &str = "font\tsize\tscale\tline_height\tcell\tgraphemes\tclipped\tlost_clip\tedge_clipped\tlost_edge\ttext_shifted\ttext_shift_px\toverflowing\n";
 
 /// Appends the notable entries of one run and its summary line.
@@ -489,13 +515,18 @@ pub(super) fn report(
             shifted += 1;
             shift_px += entry.shift.abs();
         }
-        if entry.lost_clip == 0 && entry.lost_edge == 0 && !outside && entry.shift == 0.0 {
+        if entry.lost_clip == 0
+            && entry.lost_edge == 0
+            && !outside
+            && entry.shift == 0.0
+            && std::env::var_os("BEVY_TERMINAL_PROBE_ALL").is_none()
+        {
             continue;
         }
         let [top, bottom, left, right] = entry.outside;
         writeln!(
             report,
-            "{}\t{cell}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{top}\t{bottom}\t{left}\t{right}\t{}",
+            "{}\t{cell}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{top}\t{bottom}\t{left}\t{right}\t{}\t{}",
             case.label,
             entry.symbol,
             entry.row,
@@ -505,7 +536,8 @@ pub(super) fn report(
             entry.ink,
             entry.lost_clip,
             entry.lost_edge,
-            entry.shift
+            entry.shift,
+            entry.bounds.map(|v| v.to_string()).join("\t"),
         )
         .unwrap();
     }
@@ -586,4 +618,74 @@ fn glyph_ink_is_clipped_only_at_the_texture_edges() {
             case.label
         );
     }
+}
+
+#[test]
+fn placement_follows_ghostty_rules() {
+    let files = BUNDLED
+        .iter()
+        .find(|(dir, _)| *dir == "jetbrains-mono")
+        .unwrap()
+        .1;
+    let case = ProbeCase {
+        label: "jetbrains-mono 24px 2x".into(),
+        font: ProbeFont::Bundled("jetbrains-mono", files),
+        font_size: 24.0,
+        scale: 2.0,
+        line_height: 1.0,
+    };
+    let result = run(&case);
+    let cell = result.cell.as_ivec2();
+    let last = i32::from(WIDTH) - 1;
+    let find = |symbol: &str, row: u16, column: u16| {
+        result
+            .entries
+            .iter()
+            .find(|entry| entry.symbol == symbol && entry.row == row && entry.column == column)
+            .unwrap_or_else(|| panic!("{symbol:?} at ({column},{row})"))
+    };
+    // Ordinary text keeps its bearings; only the texture's edges push it in.
+    for entry in result.entries.iter().filter(|entry| entry.class == "text") {
+        let at_edge = entry.column == 0 || i32::from(entry.column) == last;
+        assert!(
+            entry.shift == 0.0 || at_edge,
+            "{:?} at ({},{}) shifted by {}",
+            entry.symbol,
+            entry.column,
+            entry.row,
+            entry.shift
+        );
+    }
+    assert!(find("j", 13, 0).shift > 0.0 || find("j", 13, 0).bounds[0] >= 0);
+    assert!(find("W", 14, WIDTH - 1).bounds[2] <= cell.x);
+    // Colour emoji cover two cells with 2.5% side padding, centered.
+    let rocket = find("🚀", 9, 4);
+    let width = rocket.bounds[2] - rocket.bounds[0];
+    assert!(
+        width >= cell.x * 2 * 9 / 10 && width <= cell.x * 2,
+        "🚀 is {width} px wide over two {} px cells",
+        cell.x
+    );
+    assert!(rocket.bounds[0] > 0 && rocket.bounds[2] < cell.x * 2);
+    // Nerd Fonts: `fit_cover1` fits one cell; a blank neighbour leaves the
+    // size alone and left-aligns; stretched glyphs cover their cells exactly.
+    let icon = find("\u{f408}", 12, 5);
+    assert!(
+        icon.bounds[0] >= 0 && icon.bounds[2] <= cell.x,
+        "{:?}",
+        icon.bounds
+    );
+    assert!(icon.bounds[2] - icon.bounds[0] >= cell.x - 2);
+    let spread = find("\u{f408}", 12, 0);
+    assert_eq!(spread.bounds[0], 0);
+    assert!(spread.bounds[2] > cell.x, "{:?}", spread.bounds);
+    assert_eq!(find("\u{e0c0}", 12, 8).bounds, [0, 0, cell.x, cell.y]);
+    assert_eq!(find("\u{e0c0}", 12, 9).bounds, [0, 0, 2 * cell.x, cell.y]);
+    // Symbols fit the face box of their cells.
+    let arrow = find("←", 8, 0);
+    assert!(
+        arrow.bounds[0] >= 0 && arrow.bounds[2] <= cell.x,
+        "{:?}",
+        arrow.bounds
+    );
 }

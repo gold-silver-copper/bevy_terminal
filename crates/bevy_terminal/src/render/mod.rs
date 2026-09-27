@@ -165,9 +165,10 @@ impl<T: Into<FontSource>> From<T> for FontFaces {
 ///
 /// The renderer snaps cells to physical pixels. Font-driven and width-fitted
 /// modes then refit the font advance to that width, preventing seams. Ordinary
-/// text keeps the font's line box and its rasterized size; symbols are scaled
-/// down to their cells as Ghostty constrains them; ink that leaves its row
-/// overflows into the neighbouring rows, and only the texture's edges clip it.
+/// text keeps the font's line box, its rasterized size and its bearings;
+/// symbols, emoji and Nerd Fonts icons are constrained to the primary face's
+/// box as Ghostty constrains them; ink that leaves its cell or row overflows
+/// into its neighbours, and only the texture's edges clip it.
 /// Read effective dimensions from [`TerminalTexture::measured`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TerminalSizing {

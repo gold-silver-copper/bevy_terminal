@@ -228,8 +228,10 @@ cargo test --test glyph_fidelity -- --ignored                         # the same
 
 `--check` compares GPU pixels with rows composed from raw Bevy glyph-atlas
 coverage under Ghostty's placement rules, independently of the renderer's
-fitting: ordinary text at its rasterized size on a shared typographic baseline,
-symbols scaled down only as needed to fit the cells they may occupy, ink
+fitting: ordinary text at its rasterized size and bearings on a shared
+typographic baseline, centered in cells wider than the face, symbols scaled
+down only as needed to fit the face box of the cells they may occupy, colour
+glyphs covering it, ink
 overflowing neighbouring cells and rows (only the texture's edges clip it),
 later runs drawn over earlier ones. Every content
 cell, blank ones included, must match within two sRGB code values per blend
@@ -245,6 +247,7 @@ are written to `target/glyph-fidelity-check` (override with `--output`).
 cargo run --example glyph_fidelity -- --check --font all --scale all --from-font 23
 cargo run --example glyph_fidelity -- --check --font all --scale all --from-font 23 --line-height 0.85
 cargo run --example glyph_fidelity -- --check --font all --scale all --fixed-cell 9x18 --font-size 18
+cargo run --example glyph_fidelity -- --check --font all --scale all --fixed-cell 14x24 --font-size 16
 cargo test --example glyph_fidelity  # reference-oracle regressions
 ```
 

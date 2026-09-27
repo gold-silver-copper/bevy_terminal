@@ -1,7 +1,10 @@
 //! Retained-state synchronization and render scheduling.
 
+mod constraint;
 mod gpu;
 pub(super) mod metrics;
+#[rustfmt::skip]
+mod nerd_font;
 mod scene;
 mod shaping;
 use gpu::{

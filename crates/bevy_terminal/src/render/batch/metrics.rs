@@ -1,4 +1,5 @@
 //! Font measurement and effective raster geometry.
+use super::constraint::Metrics as FaceMetrics;
 use super::shaping::shape_run;
 use super::{ResolvedStyle, TerminalRenderConfig, TextContext};
 use crate::render::{FontFaces, TerminalSizing};
@@ -229,16 +230,31 @@ pub(super) struct RasterMetrics {
     pub(super) glyph_offset: f32,
     /// Box-drawing glyphs retain their grid alignment independently of text.
     pub(super) box_offset: f32,
+    /// Ghostty's grid metrics of the primary face, for glyph constraints.
+    pub(super) face: FaceMetrics,
+    /// Whole-pixel shift centering text in a cell wider than the face's
+    /// advance, as Ghostty centers it (explicit `Fixed` cells).
+    pub(super) face_dx: f32,
 }
 
 pub(super) fn physical_config(logical: LogicalMetrics, raster_scale: f32) -> RasterMetrics {
+    let cell_size = (logical.cell_size * raster_scale).round().max(Vec2::ONE);
+    let font_size = (logical.font_size * raster_scale).max(1.0);
     RasterMetrics {
         scale: raster_scale,
-        cell_size: (logical.cell_size * raster_scale).round().max(Vec2::ONE),
-        font_size: (logical.font_size * raster_scale).max(1.0),
+        cell_size,
+        font_size,
         baseline: 0.0,
         glyph_offset: 0.0,
         box_offset: 0.0,
+        face: FaceMetrics::new(
+            (f64::from(cell_size.x), f64::from(cell_size.y)),
+            f64::from(cell_size.x),
+            f64::from(cell_size.y),
+            0.0,
+            0.75 * f64::from(font_size),
+        ),
+        face_dx: 0.0,
     }
 }
 
@@ -255,9 +271,21 @@ pub(super) fn font_size_for_cell(
         })
 }
 
-/// The regular face's line box (ascent + descent + leading) in physical
-/// pixels at `font_size`, read from the font's metrics tables the way
-/// terminal emulators size their rows (`OS/2` typographic metrics when the
+/// Vertical metrics of the regular face in physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct FaceLineMetrics {
+    /// Ascent + descent + line gap: the face's line box.
+    pub(super) height: f32,
+    /// The typographic line gap (leading).
+    pub(super) line_gap: f32,
+    /// The height of capital letters, estimated as 75% of the ascent (as
+    /// Ghostty does) when the font does not record it.
+    pub(super) cap_height: f32,
+}
+
+/// The regular face's line box (ascent + descent + leading) and cap height
+/// in physical pixels at `font_size`, read from the font's metrics tables the
+/// way terminal emulators size their rows (`OS/2` typographic metrics when the
 /// font asks for them, `hhea` otherwise). `None` when the face cannot be
 /// resolved or loaded, in which case the block-glyph measurement stands alone.
 pub(super) fn font_line_box(
@@ -265,7 +293,7 @@ pub(super) fn font_line_box(
     font_size: f32,
     fonts: &Assets<Font>,
     font_cx: &mut FontCx,
-) -> Option<f32> {
+) -> Option<FaceLineMetrics> {
     use skrifa::MetadataProvider as _;
     // A font asset is registered in the collection under its alias; every
     // other source resolves through Bevy's generic-family mapping.
@@ -300,12 +328,21 @@ pub(super) fn font_line_box(
         skrifa::instance::Size::new(font_size),
         skrifa::instance::LocationRef::default(),
     );
-    let height = metrics.ascent + metrics.descent.abs() + metrics.leading.max(0.0);
+    let line_gap = metrics.leading.max(0.0);
+    let height = metrics.ascent + metrics.descent.abs() + line_gap;
     debug!(
         "bevy_terminal: line box of {family:?} at {font_size:.2}px: ascent {} descent {} leading {} upem {} -> {height:.2}px",
         metrics.ascent, metrics.descent, metrics.leading, metrics.units_per_em
     );
-    (height.is_finite() && height > 0.0).then_some(height)
+    let cap_height = metrics
+        .cap_height
+        .filter(|cap| *cap > 0.0)
+        .unwrap_or(0.75 * metrics.ascent);
+    (height.is_finite() && height > 0.0).then_some(FaceLineMetrics {
+        height,
+        line_gap,
+        cap_height,
+    })
 }
 
 /// ASCII glyphs whose ink must stay inside a cell: descenders, ascenders and
@@ -346,13 +383,19 @@ pub(super) fn refine_metrics(
     // back (block elements are geometry and tile regardless).
     let may_grow = matches!(config.sizing, super::super::TerminalSizing::FitCellWidth(_))
         || (font_driven && line_height >= 1.0);
+    let face_line = font_line_box(config, raster.font_size, cx.fonts, cx.font_cx);
     if (may_grow || font_driven)
-        && let Some(line_box) = font_line_box(config, raster.font_size, cx.fonts, cx.font_cx)
+        && let Some(face_line) = face_line
     {
-        raster.cell_size.y = raster.cell_size.y.max((line_box * line_height).ceil());
+        raster.cell_size.y = raster
+            .cell_size
+            .y
+            .max((face_line.height * line_height).ceil());
     }
     let mut block = None;
     let mut text_box: Option<GlyphBox> = None;
+    // The regular face's exact ascent, descent and advance.
+    let mut regular = None;
     for _ in 0..FIT_ROUNDS {
         text_box = None;
         for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -362,6 +405,7 @@ pub(super) fn refine_metrics(
             if let Some(run) = shape_run("0", &style, config, raster, Vec2::splat(4096.0), cx) {
                 if !bold && !italic {
                     raster.baseline = run.baseline;
+                    regular = Some((run.ascent, run.descent, run.advance));
                 }
                 let shift = raster.baseline - run.baseline;
                 let line_box = GlyphBox {
@@ -415,6 +459,26 @@ pub(super) fn refine_metrics(
     let [core, accents] = boxes;
     raster.box_offset = vertical_offset(raster.cell_size.y, block, core, accents);
     raster.glyph_offset = vertical_offset(raster.cell_size.y, None, text_box, None);
+    if let Some((ascent, descent, advance)) = regular {
+        // Ghostty's face box: the regular face's line box (ascent, descent and
+        // line gap, split evenly above and below) around the shared baseline.
+        let line_gap = face_line.map_or(0.0, |line| line.line_gap);
+        let cap_height = face_line.map_or(0.75 * ascent, |line| line.cap_height);
+        let face_height = ascent + descent + line_gap;
+        let face_top = raster.baseline + raster.glyph_offset - ascent - line_gap / 2.0;
+        raster.face = FaceMetrics::new(
+            (f64::from(raster.cell_size.x), f64::from(raster.cell_size.y)),
+            f64::from(advance),
+            f64::from(face_height),
+            f64::from(raster.cell_size.y - face_top - face_height),
+            f64::from(cap_height),
+        );
+        raster.face_dx = if advance < raster.cell_size.x {
+            ((raster.cell_size.x - advance) / 2.0).round()
+        } else {
+            0.0
+        };
+    }
     debug!(
         "bevy_terminal: cell {}x{}px font {:.2}px block {:?} core {:?} accents {:?} offset {}",
         raster.cell_size.x,

@@ -1,4 +1,5 @@
 //! Glyph rasterization, shape lookup, and atlas storage.
+use super::constraint::{Align, Constraint, GlyphSize, Size};
 use super::metrics::{GlyphBox, column_coverage};
 use super::{
     GLYPH_ATLAS_SIZE, GLYPH_FORMAT, RasterMetrics, ResolvedStyle, TerminalRenderConfig,
@@ -23,6 +24,10 @@ pub(super) struct ShapedRun {
     pub(super) baseline: f32,
     /// Pixel enclosure of the resolved face's typographic ascent/descent.
     pub(super) line_box: GlyphBox,
+    /// The line's typographic ascent and descent and its advance.
+    pub(super) ascent: f32,
+    pub(super) descent: f32,
+    pub(super) advance: f32,
 }
 
 /// Shapes and rasterizes `text` in `style` at the physical metrics; the
@@ -89,6 +94,9 @@ pub(super) fn shape_run(
             top: (metrics.baseline - metrics.ascent).floor(),
             bottom: (metrics.baseline + metrics.descent).ceil(),
         },
+        ascent: metrics.ascent,
+        descent: metrics.descent,
+        advance: metrics.advance,
     })
 }
 
@@ -145,8 +153,8 @@ pub(super) fn is_graphics(text: &str) -> bool {
     )
 }
 
-/// Upper bound on rescales of one symbol: hinting makes ink extents
-/// discontinuous in font size, so a rescaled symbol is measured again.
+/// Upper bound on further rescales of one constrained run: hinting makes ink
+/// extents discontinuous in font size, so a rescaled run is measured again.
 const SYMBOL_RESCALES: usize = 2;
 
 /// Complete nontransparent ink of a shaped run, in the run's own pixel
@@ -232,6 +240,103 @@ pub(super) struct SourceGlyph {
     pub(super) y: u32,
     pub(super) width: u32,
     pub(super) height: u32,
+    /// The size the glyph is resampled to; zero for an unscaled copy.
+    pub(super) scaled: UVec2,
+}
+
+/// The RGBA8 pixels of a Bevy atlas glyph.
+fn source_pixels(source: SourceGlyph, images: &Assets<Image>) -> Option<Vec<u8>> {
+    let image = images.get(source.texture)?;
+    if image.texture_descriptor.format != GLYPH_FORMAT
+        || source.x.checked_add(source.width)? > image.width()
+        || source.y.checked_add(source.height)? > image.height()
+    {
+        return None;
+    }
+    let data = image.data.as_ref()?;
+    let stride = image.width() as usize * 4;
+    let row_bytes = source.width as usize * 4;
+    let mut pixels = Vec::with_capacity(row_bytes * source.height as usize);
+    for row in 0..source.height {
+        let start = (source.y + row) as usize * stride + source.x as usize * 4;
+        pixels.extend_from_slice(data.get(start..start + row_bytes)?);
+    }
+    Some(pixels)
+}
+
+/// Resamples straight-alpha RGBA8 pixels from `from` to `to` with a box
+/// filter (each output pixel averages the source area it covers), in
+/// premultiplied form so transparent texels do not darken edges.
+pub(super) fn resample(pixels: &[u8], from: UVec2, to: UVec2) -> Vec<u8> {
+    // One axis at a time: the weights of each output index over source indices.
+    let weights = |from: u32, to: u32| -> Vec<Vec<(usize, f32)>> {
+        let step = from as f32 / to as f32;
+        (0..to)
+            .map(|i| {
+                let (start, end) = (i as f32 * step, (i + 1) as f32 * step);
+                (start.floor() as u32..(end.ceil() as u32).min(from))
+                    .map(|j| {
+                        let overlap = (end.min(j as f32 + 1.0) - start.max(j as f32)) / step;
+                        (j as usize, overlap)
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let (columns, rows) = (weights(from.x, to.x), weights(from.y, to.y));
+    let premultiplied: Vec<[f32; 4]> = pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| {
+            let a = f32::from(p[3]) / 255.0;
+            [
+                f32::from(p[0]) * a,
+                f32::from(p[1]) * a,
+                f32::from(p[2]) * a,
+                a,
+            ]
+        })
+        .collect();
+    let mut horizontal = vec![[0.0f32; 4]; (to.x * from.y) as usize];
+    for y in 0..from.y as usize {
+        for (x, taps) in columns.iter().enumerate() {
+            let out = &mut horizontal[y * to.x as usize + x];
+            for &(j, w) in taps {
+                let p = premultiplied[y * from.x as usize + j];
+                for c in 0..4 {
+                    out[c] += p[c] * w;
+                }
+            }
+        }
+    }
+    let mut result = Vec::with_capacity((to.x * to.y * 4) as usize);
+    for taps in &rows {
+        for x in 0..to.x as usize {
+            let mut sum = [0.0f32; 4];
+            for &(j, w) in taps {
+                let p = horizontal[j * to.x as usize + x];
+                for c in 0..4 {
+                    sum[c] += p[c] * w;
+                }
+            }
+            let a = sum[3].clamp(0.0, 1.0);
+            let unpremultiply = |v: f32| {
+                if a > 0.0 {
+                    (v / a).round().clamp(0.0, 255.0) as u8
+                } else {
+                    0
+                }
+            };
+            result.extend_from_slice(&[
+                unpremultiply(sum[0]),
+                unpremultiply(sum[1]),
+                unpremultiply(sum[2]),
+                (a * 255.0).round() as u8,
+            ]);
+        }
+    }
+    result
 }
 
 pub(super) struct UnifiedGlyphAtlas {
@@ -251,6 +356,7 @@ impl UnifiedGlyphAtlas {
         }
     }
 
+    /// Copies a Bevy atlas glyph into the atlas, returning its UV rectangle.
     pub(super) fn cache(
         &mut self,
         source: SourceGlyph,
@@ -259,44 +365,68 @@ impl UnifiedGlyphAtlas {
         if let Some(uv) = self.glyphs.get(&source) {
             return Some(*uv);
         }
-        if source.width == 0
-            || source.height == 0
-            || source.width > GLYPH_ATLAS_SIZE - 2
-            || source.height > GLYPH_ATLAS_SIZE - 2
+        let pixels = source_pixels(source, images)?;
+        self.insert(
+            source,
+            UVec2::new(source.width, source.height),
+            &pixels,
+            images,
+        )
+    }
+
+    /// Resamples a Bevy atlas glyph to `scaled` pixels into the atlas,
+    /// returning its UV rectangle and column coverage.
+    pub(super) fn cache_scaled(
+        &mut self,
+        source: SourceGlyph,
+        scaled: UVec2,
+        images: &mut Assets<Image>,
+    ) -> Option<(Vec4, Vec<u32>)> {
+        let key = SourceGlyph { scaled, ..source };
+        let pixels = resample(
+            &source_pixels(source, images)?,
+            UVec2::new(source.width, source.height),
+            scaled,
+        );
+        let uv = match self.glyphs.get(&key) {
+            Some(uv) => *uv,
+            None => self.insert(key, scaled, &pixels, images)?,
+        };
+        let columns = (0..scaled.x as usize)
+            .map(|x| {
+                (0..scaled.y as usize)
+                    .map(|y| u32::from(pixels[(y * scaled.x as usize + x) * 4 + 3]))
+                    .sum()
+            })
+            .collect();
+        Some((uv, columns))
+    }
+
+    fn insert(
+        &mut self,
+        key: SourceGlyph,
+        size: UVec2,
+        pixels: &[u8],
+        images: &mut Assets<Image>,
+    ) -> Option<Vec4> {
+        if size.x == 0
+            || size.y == 0
+            || size.x > GLYPH_ATLAS_SIZE - 2
+            || size.y > GLYPH_ATLAS_SIZE - 2
         {
             return None;
         }
-
         let mut x = self.cursor.x;
         let mut y = self.cursor.y;
         let mut row_height = self.row_height;
-        if x + source.width + 1 > GLYPH_ATLAS_SIZE {
+        if x + size.x + 1 > GLYPH_ATLAS_SIZE {
             x = 1;
             y = y.checked_add(self.row_height + 1)?;
             row_height = 0;
         }
-        if y + source.height + 1 > GLYPH_ATLAS_SIZE {
+        if y + size.y + 1 > GLYPH_ATLAS_SIZE {
             return None;
         }
-
-        let pixels = {
-            let source_image = images.get(source.texture)?;
-            if source_image.texture_descriptor.format != GLYPH_FORMAT
-                || source.x.checked_add(source.width)? > source_image.width()
-                || source.y.checked_add(source.height)? > source_image.height()
-            {
-                return None;
-            }
-            let data = source_image.data.as_ref()?;
-            let source_stride = source_image.width() as usize * 4;
-            let row_bytes = source.width as usize * 4;
-            let mut pixels = Vec::with_capacity(row_bytes * source.height as usize);
-            for row in 0..source.height {
-                let start = (source.y + row) as usize * source_stride + source.x as usize * 4;
-                pixels.extend_from_slice(data.get(start..start + row_bytes)?);
-            }
-            pixels
-        };
 
         let mut atlas = images.get_mut(&self.image)?;
         if atlas.width() != GLYPH_ATLAS_SIZE {
@@ -308,24 +438,24 @@ impl UnifiedGlyphAtlas {
         }
         let data = atlas.data.as_mut()?;
         let atlas_stride = GLYPH_ATLAS_SIZE as usize * 4;
-        let row_bytes = source.width as usize * 4;
-        for row in 0..source.height {
+        let row_bytes = size.x as usize * 4;
+        for row in 0..size.y {
             let source_start = row as usize * row_bytes;
             let target_start = (y + row) as usize * atlas_stride + x as usize * 4;
             data[target_start..target_start + row_bytes]
                 .copy_from_slice(&pixels[source_start..source_start + row_bytes]);
         }
 
-        self.cursor = UVec2::new(x + source.width + 1, y);
-        self.row_height = row_height.max(source.height);
+        self.cursor = UVec2::new(x + size.x + 1, y);
+        self.row_height = row_height.max(size.y);
         let scale = GLYPH_ATLAS_SIZE as f32;
         let uv = Vec4::new(
             x as f32 / scale,
             y as f32 / scale,
-            (x + source.width) as f32 / scale,
-            (y + source.height) as f32 / scale,
+            (x + size.x) as f32 / scale,
+            (y + size.y) as f32 / scale,
         );
-        self.glyphs.insert(source, uv);
+        self.glyphs.insert(key, uv);
         Some(uv)
     }
 
@@ -463,19 +593,170 @@ impl ShapeCaches {
     }
 }
 
+/// The constraint Ghostty applies to a run: emoji-presentation (colour)
+/// glyphs cover their cells, codepoints with Nerd Fonts attributes use them,
+/// other symbols fit, and ordinary text is unconstrained.
+fn constraint_for(text: &str, run: &ShapedRun) -> Option<Constraint> {
+    if run
+        .glyphs
+        .iter()
+        .any(|glyph| !glyph.atlas_info.is_alpha_mask)
+    {
+        return Some(Constraint::EMOJI);
+    }
+    let codepoint = u32::from(text.chars().next()?);
+    Constraint::nerd_font(codepoint).or_else(|| is_symbol(text).then_some(Constraint::SYMBOL))
+}
+
+/// Union of a run's glyph bitmaps in run pixels: the box of a bitmap glyph,
+/// transparent margins included, as Ghostty measures bitmap emoji.
+fn run_bitmaps(run: &ShapedRun) -> Option<Rect> {
+    run.glyphs
+        .iter()
+        .map(|glyph| {
+            let size = glyph.atlas_info.rect.size();
+            let origin = (glyph.position - size * 0.5).map(super::metrics::snap);
+            Rect::from_corners(origin, origin + size)
+        })
+        .reduce(|a, b| a.union(b))
+}
+
+/// A constrained run: the raster to draw, its translation, and for
+/// stretched glyphs the anisotropic scale its measured box still needs.
+struct Fitted {
+    run: ShapedRun,
+    translate: Vec2,
+    stretch: Option<Stretch>,
+}
+
+/// Resampling of a stretched run: its measured box (run pixels) is scaled by
+/// `factors` about its top-left corner.
+#[derive(Clone, Copy)]
+struct Stretch {
+    factors: Vec2,
+    measured: Rect,
+}
+
+/// Applies Ghostty's `constraint` to `run` drawn over `columns` cells.
+///
+/// The constraint's target box comes from Ghostty's arithmetic on the run's
+/// measured box (ink for outlines, whole bitmaps for colour glyphs) and the
+/// face metrics. Uniform scaling re-rasterizes at the whole-pixel font size
+/// just below the target, measured again at most [`SYMBOL_RESCALES`] times
+/// because hinting makes extents discontinuous; the result is aligned to the
+/// target box by the constraint's alignment and snapped to whole pixels.
+/// Stretched glyphs are rasterized at the larger of their two scales and
+/// resampled to the target box when copied to the atlas.
+#[allow(clippy::too_many_arguments)]
+fn fit_run(
+    text: &str,
+    style: &ResolvedStyle,
+    config: &TerminalRenderConfig,
+    raster: RasterMetrics,
+    viewport: Vec2,
+    cx: &mut TextContext<'_>,
+    run: ShapedRun,
+    translate: Vec2,
+    constraint: Constraint,
+    columns: u16,
+) -> Result<Fitted, ShapedRun> {
+    let color = constraint == Constraint::EMOJI;
+    let measure = |run: &ShapedRun, images: &Assets<Image>| {
+        if color {
+            run_bitmaps(run)
+        } else {
+            run_ink(run, images)
+        }
+    };
+    let Some(measured) = measure(&run, cx.images) else {
+        return Err(run);
+    };
+    // Cell pixels (y down) of the scene, which adds the uniform text offset.
+    let offset = Vec2::new(0.0, raster.glyph_offset);
+    let cell_height = f64::from(raster.cell_size.y);
+    let glyph = GlyphSize {
+        width: f64::from(measured.width()),
+        height: f64::from(measured.height()),
+        x: f64::from(measured.min.x + translate.x),
+        y: cell_height - f64::from(measured.max.y + translate.y + offset.y),
+    };
+    let mut target = constraint.constrain(glyph, raster.face, columns.min(2) as u8);
+    if constraint.size != Size::Stretch {
+        target.x += f64::from(raster.face_dx);
+    }
+    let factors = Vec2::new(
+        (target.width / glyph.width) as f32,
+        (target.height / glyph.height) as f32,
+    );
+    let uniform = if constraint.size == Size::Stretch {
+        factors.max_element()
+    } else {
+        factors.y
+    };
+    let target_size = Vec2::new(target.width as f32, target.height as f32);
+    let mut run = run;
+    let mut measured = measured;
+    if (uniform - 1.0).abs() > 1e-3 {
+        let mut request = raster;
+        let mut scale = uniform;
+        for _ in 0..=SYMBOL_RESCALES {
+            let next = (request.font_size * scale)
+                .floor()
+                .clamp(1.0, raster.font_size * 8.0);
+            if next == request.font_size {
+                break;
+            }
+            request.font_size = next;
+            let Some(rescaled) = shape_run(text, style, config, request, viewport, cx) else {
+                return Err(run);
+            };
+            let Some(rescaled_box) = measure(&rescaled, cx.images) else {
+                break;
+            };
+            run = rescaled;
+            measured = rescaled_box;
+            // Hinting can leave a fitted raster a pixel too large; shrink again.
+            let excess = (measured.size() - target_size).max_element();
+            if constraint.size == Size::Stretch || constraint.size == Size::Cover || excess <= 0.5 {
+                break;
+            }
+            scale = (target_size / measured.size())
+                .min_element()
+                .min(1.0 - 1e-3);
+        }
+    }
+    let stretch = (constraint.size == Size::Stretch).then(|| Stretch {
+        factors: target_size / measured.size(),
+        measured,
+    });
+    let drawn = measured.size() * stretch.map_or(Vec2::ONE, |stretch| stretch.factors);
+    // Align the drawn box to the target box along each axis.
+    let left = match constraint.align_horizontal {
+        Align::Start => target.x as f32,
+        Align::End => (target.x + target.width) as f32 - drawn.x,
+        _ => (target.x + target.width / 2.0) as f32 - drawn.x / 2.0,
+    };
+    let bottom = match constraint.align_vertical {
+        Align::Start => target.y as f32,
+        Align::End => (target.y + target.height) as f32 - drawn.y,
+        _ => (target.y + target.height / 2.0) as f32 - drawn.y / 2.0,
+    };
+    let top = raster.cell_size.y - bottom - drawn.y;
+    Ok(Fitted {
+        run,
+        translate: (Vec2::new(left, top) - offset - measured.min).map(super::metrics::snap),
+        stretch,
+    })
+}
+
 /// The cached run for `text` drawn in `style` over `columns` cells, shaping
 /// and rasterizing it on a miss.
 ///
-/// Ordinary text keeps its rasterized size and bearings and shares the
-/// configured primary face's baseline. Symbols ([`is_symbol`]) are constrained
-/// the way Ghostty's `fit` rule constrains them: scaled down uniformly, only as
-/// far as their ink needs to fit the `columns`-wide cell box, about their own
-/// center, and then pushed inside that box (leading edges win). Ghostty's box
-/// is the face's line box; here it is the cell, which encloses it for
-/// font-driven and width-fitted geometry (a compact `Fixed` cell shrinks
-/// symbols further). Rescaling
-/// steps to the next whole-pixel font size below the size that fits, so the
-/// rescaled symbols occupy a bounded number of Bevy font atlases.
+/// Ordinary text keeps its rasterized size and bearings, shares the
+/// configured primary face's baseline, and is centered in cells wider than
+/// the face's advance, as Ghostty draws it. Emoji, Nerd Fonts icons and other
+/// symbols follow Ghostty's constraints (see [`constraint_for`] and
+/// [`fit_run`]) against the primary face's box.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn cached_shape<'a>(
     text: &str,
@@ -493,14 +774,13 @@ pub(super) fn cached_shape<'a>(
         return Cow::Borrowed(&shapes.entries[index]);
     }
     stats.shape_misses = stats.shape_misses.saturating_add(1);
-    let mut request = raster;
-    let Some(mut layout) = shape_run(text, style, config, request, viewport, cx) else {
+    let Some(layout) = shape_run(text, style, config, raster, viewport, cx) else {
         return Cow::Borrowed(&[]);
     };
     // Each independently shaped cell otherwise centers its own fallback face
     // in the line. Ordinary runs share the configured primary face's baseline.
     // This is an integer translation, so rasterization phase is unchanged.
-    let mut translate = Vec2::new(
+    let translate = Vec2::new(
         0.0,
         if is_box_drawing(text) {
             0.0
@@ -508,70 +788,81 @@ pub(super) fn cached_shape<'a>(
             raster.baseline - layout.baseline
         },
     );
-    if is_symbol(text)
-        && let Some(mut ink) = run_ink(&layout, cx.images)
-    {
-        let bounds = Vec2::new(f32::from(columns) * raster.cell_size.x, raster.cell_size.y);
-        // The scene adds the uniform text offset; constrain in cell coordinates.
-        let offset = Vec2::new(0.0, raster.glyph_offset);
-        let target = Rect::from_corners(ink.min + translate + offset, ink.max + translate + offset);
-        for rescale in 0..=SYMBOL_RESCALES {
-            let factor = (bounds / ink.size()).min_element();
-            if factor >= 1.0 {
-                break;
+    // Text is centered in cells wider than the face; constraints position
+    // their glyphs themselves, and grid graphics keep the cell's origin.
+    let centered = Vec2::new(
+        if is_graphics(text) {
+            0.0
+        } else {
+            raster.face_dx
+        },
+        0.0,
+    );
+    let (layout, translate, stretch) = match constraint_for(text, &layout) {
+        Some(constraint) => match fit_run(
+            text, style, config, raster, viewport, cx, layout, translate, constraint, columns,
+        ) {
+            Ok(fitted) => (fitted.run, fitted.translate, fitted.stretch),
+            Err(layout) => {
+                debug!("bevy_terminal: {text:?} could not be measured; drawn unconstrained");
+                (layout, translate + centered, None)
             }
-            if rescale == SYMBOL_RESCALES || request.font_size <= 1.0 {
-                debug!("bevy_terminal: {text:?} still exceeds its cells; drawn as is");
-                break;
-            }
-            let next = (request.font_size * factor).floor();
-            let next = if next < request.font_size {
-                next
-            } else {
-                request.font_size - 1.0
-            }
-            .max(1.0);
-            let rescaled = RasterMetrics {
-                font_size: next,
-                ..request
-            };
-            let Some(rescaled_run) = shape_run(text, style, config, rescaled, viewport, cx) else {
-                return Cow::Borrowed(&[]);
-            };
-            // A rescale that changes nothing (a bitmap strike) or whose ink
-            // cannot be measured keeps the previous raster.
-            let Some(rescaled_ink) = run_ink(&rescaled_run, cx.images)
-                .filter(|rescaled| rescaled.size().cmplt(ink.size()).any())
-            else {
-                break;
-            };
-            request = rescaled;
-            layout = rescaled_run;
-            ink = rescaled_ink;
-            translate = (((target.min + target.max) - (ink.min + ink.max)) * 0.5)
-                .map(super::metrics::snap)
-                - offset;
-        }
-        let overflow = (ink.max + translate + offset - bounds).max(Vec2::ZERO);
-        translate -= overflow;
-        translate += (-(ink.min + translate + offset)).max(Vec2::ZERO);
-    }
+        },
+        None => (layout, translate + centered, None),
+    };
     let cached = layout
         .glyphs
         .into_iter()
         .map(|glyph| {
-            let atlas = cx.images.get(glyph.atlas_info.texture)?;
-            let atlas_size = atlas.texture_descriptor.size;
+            let atlas_size = cx
+                .images
+                .get(glyph.atlas_info.texture)?
+                .texture_descriptor
+                .size;
             let rect = glyph.atlas_info.rect;
             let size = rect.size();
-            let columns = column_coverage(atlas, rect);
             let source = SourceGlyph {
                 texture: glyph.atlas_info.texture,
                 x: rect.min.x as u32,
                 y: rect.min.y as u32,
                 width: size.x as u32,
                 height: size.y as u32,
+                scaled: UVec2::ZERO,
             };
+            // Atlas texels must land on physical pixel boundaries. Bevy's layout positions
+            // can retain fractional shaping offsets even though the glyph bitmap is an
+            // integer-sized raster image.
+            let position = (glyph.position - size * 0.5).map(super::metrics::snap);
+            if let Some(Stretch { factors, measured }) = stretch {
+                // Resample the part of the bitmap inside the measured box so
+                // its ink maps exactly onto the target box.
+                let crop = Rect::from_corners(position, position + size).intersect(measured);
+                if crop.is_empty() {
+                    return Some(None);
+                }
+                let min = ((crop.min - measured.min) * factors).round();
+                let max = ((crop.max - measured.min) * factors).round();
+                let scaled = (max - min).max(Vec2::ONE).as_uvec2();
+                let cropped = SourceGlyph {
+                    x: source.x + (crop.min.x - position.x) as u32,
+                    y: source.y + (crop.min.y - position.y) as u32,
+                    width: crop.width() as u32,
+                    height: crop.height() as u32,
+                    ..source
+                };
+                if let Some((uv, columns)) = glyph_atlas.cache_scaled(cropped, scaled, cx.images) {
+                    return Some(Some(CachedGlyph::new(
+                        glyph_atlas.image.id(),
+                        measured.min + translate + min,
+                        scaled.as_vec2(),
+                        uv,
+                        glyph.atlas_info.is_alpha_mask,
+                        columns,
+                    )));
+                }
+                debug!("bevy_terminal: no atlas space to stretch {text:?}; drawn as rasterized");
+            }
+            let columns = column_coverage(cx.images.get(glyph.atlas_info.texture)?, rect);
             let source_uv = Vec4::new(
                 rect.min.x / atlas_size.width as f32,
                 rect.min.y / atlas_size.height as f32,
@@ -583,19 +874,17 @@ pub(super) fn cached_shape<'a>(
                 .map_or((source.texture, source_uv), |uv| {
                     (glyph_atlas.image.id(), uv)
                 });
-            Some(CachedGlyph::new(
+            Some(Some(CachedGlyph::new(
                 texture,
-                // Atlas texels must land on physical pixel boundaries. Bevy's layout positions
-                // can retain fractional shaping offsets even though the glyph bitmap is an
-                // integer-sized raster image.
-                (glyph.position - size * 0.5).map(super::metrics::snap) + translate,
+                position + translate,
                 size,
                 uv,
                 glyph.atlas_info.is_alpha_mask,
                 columns,
-            ))
+            )))
         })
-        .collect::<Option<Vec<_>>>();
+        .collect::<Option<Vec<_>>>()
+        .map(|glyphs| glyphs.into_iter().flatten().collect::<Vec<_>>());
     let Some(cached) = cached else {
         cx.failure
             .get_or_insert_with(|| format!("glyph atlas unavailable for {:?}", config.font));
@@ -607,6 +896,34 @@ pub(super) fn cached_shape<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resampling_averages_premultiplied_areas() {
+        // A white opaque texel next to a transparent red one halves to white
+        // at half coverage: transparent colour does not bleed in.
+        let pixels = [255, 255, 255, 255, 255, 0, 0, 0];
+        assert_eq!(
+            resample(&pixels, UVec2::new(2, 1), UVec2::ONE),
+            vec![255, 255, 255, 128]
+        );
+        // Enlarging repeats texels; each output keeps its source's value.
+        let enlarged = resample(&pixels, UVec2::new(2, 1), UVec2::new(4, 2));
+        assert_eq!(
+            &enlarged[..16],
+            &[
+                255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0
+            ]
+        );
+        assert_eq!(enlarged[..16], enlarged[16..]);
+        // A fractional step splits a texel between two outputs.
+        let thirds = resample(
+            &[0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0],
+            UVec2::new(3, 1),
+            UVec2::new(2, 1),
+        );
+        let alpha: Vec<u8> = thirds.iter().skip(3).step_by(4).copied().collect();
+        assert_eq!(alpha, [170, 0]);
+    }
 
     #[test]
     fn cache_admits_new_working_sets_and_leaves_oversized_runs_uncached() {

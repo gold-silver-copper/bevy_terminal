@@ -482,6 +482,7 @@ fn check(
             raw,
         );
         let baseline = oracle.baseline(&config, font_size, cell.y as f32).unwrap();
+        let face = oracle.face(&config, font_size, cell, baseline).unwrap();
         let snapshot = renderer.surface().snapshot();
         for (index, cells) in case.samples.iter().enumerate() {
             let y = index as u16 + 1;
@@ -563,9 +564,18 @@ fn check(
                 }
                 let columns = fidelity_oracle::visual_columns(cells, x);
                 let placement = match oracle
-                    .place(source, &config, font_size, cell, columns, baseline)
+                    .place(source, &config, font_size, cell, columns, baseline, face)
                 {
-                    Ok(placement) => placement,
+                    Ok(mut placement) => {
+                        if !fidelity_oracle::is_graphics(source.symbol())
+                            && let Some((min, max)) = placement.ink()
+                        {
+                            let x0 = (x as u32 * cell.x) as i32;
+                            placement.shift.x +=
+                                fidelity_oracle::edge_shift(x0 + min.x, x0 + max.x, size.x as i32);
+                        }
+                        placement
+                    }
                     Err(error) => {
                         failures.push(format!(
                             "{} {:?}: required raster unavailable: {error}",
@@ -672,16 +682,14 @@ fn check(
                     continue;
                 };
                 let span_px = IVec2::new((cell.x * *span as u32) as i32, cell.y as i32);
-                if placement.scaled {
-                    let fitted = (max - min).as_vec2();
-                    let full = placement.unconstrained.as_vec2();
-                    let bounds = Vec2::new((cell.x * *columns) as f32, cell.y as f32);
-                    let expected_size = full * (bounds / full).min_element().min(1.0);
-                    let too_large = (fitted - expected_size).max_element() > 2.0;
-                    let too_small = (expected_size * 0.85 - fitted).max_element() > 2.0;
+                if let (true, Some(target)) = (placement.scaled, placement.target) {
+                    let fitted = placement.measured;
+                    let full = placement.unconstrained;
+                    let too_large = (fitted - target).max_element() > 2.0;
+                    let too_small = (target * 0.85 - fitted).max_element() > 2.0;
                     if too_large || too_small {
                         failures.push(format!(
-                            "{} {:?}: rescaled ink {fitted:?} from {full:?} in {bounds:?}, expected about {expected_size:?}",
+                            "{} {:?}: rescaled box {fitted:?} from {full:?}, expected about {target:?}",
                             case.name,
                             source.symbol()
                         ));
