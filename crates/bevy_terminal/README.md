@@ -108,8 +108,9 @@ in whole pixels. Text and box-drawing alignment are measured separately; faint
 text-edge pixels are preserved whenever the run fits its cell span.
 Styled and fallback runs share the configured text baseline. Fallback glyphs
 do not change cell measurements when the displayed content changes.
-Font-driven sizing accepts a line-height multiplier; values below one can clip
-outer ink intentionally. Fixed geometry keeps the specified cells.
+Font-driven sizing accepts a line-height multiplier; values below one tighten
+rows, and taller ink overflows into the neighbouring rows. Fixed geometry keeps
+the specified cells.
 
 Glyph constraints follow Ghostty. Ordinary text is drawn as rasterized: a run
 that overhangs a span it fits is pushed inside, a wider run (a fallback face
@@ -118,8 +119,11 @@ cells drawn on top. Symbols (arrows, dingbats, miscellaneous symbols, enclosed
 alphanumerics, pictographs, emoticons, transport, private use) are scaled down
 uniformly, only as far as needed to fit their cells, and pushed inside them; a
 symbol before a blank cell may spread into it unless it follows another
-symbol. Rescaled symbols use whole-pixel font sizes. Ink is confined to its
-row, which is the unit of repaint; emoji are not enlarged to fill their cells.
+symbol. Rescaled symbols use whole-pixel font sizes. As in Ghostty, ink is not
+confined to its row: accents, stacked marks and tall scripts overflow into the
+neighbouring rows, and only the texture's edges clip them. Partial repaints
+also redraw the rows that changed ink reaches. Emoji are not enlarged to fill
+their cells.
 Grid graphics (box drawing, shades, legacy computing, Powerline) keep the
 per-cell clip. Ordinary text wider than its cells (Iosevka's `∑ ∞ ◆`) is
 visibly different from earlier releases, which cropped it.

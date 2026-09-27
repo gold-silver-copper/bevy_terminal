@@ -12,7 +12,7 @@ use metrics::{
     LogicalMetrics, RasterMetrics, measure_advance, physical_config, refine_metrics,
     resolve_metrics,
 };
-use scene::{SceneScratch, build_scene};
+use scene::{RowReach, SceneScratch, build_scene};
 use shaping::{ShapeCaches, UnifiedGlyphAtlas};
 
 use std::sync::{
@@ -280,6 +280,8 @@ struct BatchMainState {
     shapes: ShapeCaches,
     glyph_atlas: UnifiedGlyphAtlas,
     scratch: SceneScratch,
+    /// How far each row's drawn ink reaches into its neighbours.
+    reach: Vec<RowReach>,
     blink: BlinkPhases,
 }
 
@@ -315,6 +317,7 @@ impl BatchMainState {
             shapes: ShapeCaches::default(),
             glyph_atlas: UnifiedGlyphAtlas::new(glyph_atlas),
             scratch: SceneScratch::default(),
+            reach: Vec::new(),
             blink: BlinkPhases::default(),
         }
     }
@@ -829,6 +832,7 @@ fn sync_batch_terminal(
         shapes,
         glyph_atlas,
         scratch,
+        reach,
         ..
     } = &mut *state;
     let mut scene = build_scene(
@@ -842,6 +846,7 @@ fn sync_batch_terminal(
         shapes,
         glyph_atlas,
         scratch,
+        reach,
         stats,
         blink,
     );
@@ -856,7 +861,6 @@ fn sync_batch_terminal(
     {
         stats.scene_ns = scene_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
     }
-    stats.changed_rows = u32::try_from(rows.len()).unwrap_or(u32::MAX);
     stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
     state.generation = state.generation.wrapping_add(1);
     scene.submission = Some((state.submitted.clone(), state.generation));
@@ -870,5 +874,7 @@ fn sync_batch_terminal(
 
 #[cfg(test)]
 mod probe;
+#[cfg(test)]
+mod replay;
 #[cfg(test)]
 mod tests;

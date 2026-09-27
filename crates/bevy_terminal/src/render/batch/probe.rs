@@ -199,14 +199,14 @@ pub(super) const BUNDLED: [(&str, [&str; 4]); 6] = [
     ),
 ];
 
-fn asset(path: &str) -> Vec<u8> {
+pub(super) fn asset(path: &str) -> Vec<u8> {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/");
     std::fs::read(format!("{root}{path}")).unwrap_or_else(|error| panic!("{path}: {error}"))
 }
 
 /// Replaces the host collection with bundled fallbacks so the probe does not
 /// depend on installed fonts.
-fn isolate_fonts(app: &mut App) {
+pub(super) fn isolate_fonts(app: &mut App) {
     let mut cx = app.world_mut().resource_mut::<bevy::text::FontCx>();
     cx.collection = fontique::Collection::new(fontique::CollectionOptions {
         system_fonts: false,
@@ -240,7 +240,7 @@ fn isolate_fonts(app: &mut App) {
         .expect("bundled emoji family");
 }
 
-fn load_faces(app: &mut App, font: &ProbeFont) -> FontFaces {
+pub(super) fn load_faces(app: &mut App, font: &ProbeFont) -> FontFaces {
     let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
     match font {
         ProbeFont::Bundled(dir, files) => {
@@ -538,4 +538,52 @@ fn glyph_placement_probe_report() {
     std::fs::write(format!("{directory}/entries.tsv"), &report).unwrap();
     std::fs::write(format!("{directory}/summary.tsv"), &summary).unwrap();
     print!("{summary}");
+}
+
+/// Probe configurations every test run checks: a few families, sizes, scales
+/// and line heights, including a compact row.
+pub(super) fn required_cases() -> Vec<ProbeCase> {
+    [
+        ("cascadia-mono", 24.0, 2.0, 0.85),
+        ("iosevka-fixed", 18.0, 1.0, 1.0),
+        ("hack", 24.0, 1.0, 1.0),
+    ]
+    .into_iter()
+    .map(|(dir, font_size, scale, line_height)| {
+        let files = BUNDLED.iter().find(|(name, _)| *name == dir).unwrap().1;
+        ProbeCase {
+            label: format!("{dir} {font_size}px {scale}x lh {line_height}"),
+            font: ProbeFont::Bundled(dir, files),
+            font_size,
+            scale,
+            line_height,
+        }
+    })
+    .collect()
+}
+
+#[test]
+fn glyph_ink_is_clipped_only_at_the_texture_edges() {
+    for case in required_cases() {
+        let result = run(&case);
+        let clipped: Vec<_> = result
+            .entries
+            .iter()
+            .filter(|entry| entry.class != "graphics" && entry.lost_clip > 0)
+            .map(|entry| format!("{:?} at ({},{})", entry.symbol, entry.column, entry.row))
+            .collect();
+        assert!(
+            clipped.is_empty(),
+            "{}: ink clipped inside the texture: {clipped:?}",
+            case.label
+        );
+        assert!(
+            result
+                .entries
+                .iter()
+                .any(|entry| entry.class == "text" && entry.outside[0] > 0),
+            "{}: the samples must include ink above its row",
+            case.label
+        );
+    }
 }

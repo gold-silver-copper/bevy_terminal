@@ -22,9 +22,15 @@ pub(super) struct SceneScratch {
     /// Indices into `background_rects` emitted for the current row.
     pub(super) current_runs: Vec<usize>,
     pub(super) glyphs: Vec<(AssetId<Image>, QuadInstance)>,
+    /// Glyphs of the laid-out rows before clipping to the repainted bands.
+    pub(super) placed: Vec<PlacedGlyph>,
     pub(super) decorations: Vec<QuadInstance>,
     pub(super) cursor: Vec<QuadInstance>,
     pub(super) styles: Vec<ResolvedStyle>,
+    /// Rows whose bands this scene repaints.
+    pub(super) repaint: Vec<bool>,
+    /// Rows whose backgrounds, glyphs and decorations have been laid out.
+    pub(super) painted: Vec<bool>,
     /// Glyphs of the last full scene before clipping, recorded for the probe.
     #[cfg(test)]
     pub(super) probe: Option<Vec<super::probe::ProbeGlyph>>,
@@ -37,9 +43,12 @@ impl SceneScratch {
         self.prev_runs.clear();
         self.current_runs.clear();
         self.glyphs.clear();
+        self.placed.clear();
         self.decorations.clear();
         self.cursor.clear();
         self.styles.clear();
+        self.repaint.clear();
+        self.painted.clear();
     }
 }
 
@@ -124,23 +133,87 @@ pub(super) fn block_element(symbol: &str) -> Option<&'static [(f32, f32, f32, f3
     }
 }
 
+/// How many rows above and below its own a row's glyph ink reaches.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct RowReach {
+    pub(super) up: u16,
+    pub(super) down: u16,
+}
+
+impl RowReach {
+    /// The rows `row`'s ink covers, cut to a grid `height` rows tall.
+    pub(super) fn rows(self, row: u16, height: u16) -> std::ops::Range<u16> {
+        row.saturating_sub(self.up)..row.saturating_add(self.down).saturating_add(1).min(height)
+    }
+
+    /// The reach of ink spanning `top..bottom` pixels from a row of `cell_height`.
+    fn of(top: f32, bottom: f32, cell_height: f32) -> Self {
+        let rows = |pixels: f32| {
+            (pixels.max(0.0) / cell_height)
+                .ceil()
+                .min(f32::from(u16::MAX)) as u16
+        };
+        Self {
+            up: rows(-top),
+            down: rows(bottom - cell_height),
+        }
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            up: self.up.max(other.up),
+            down: self.down.max(other.down),
+        }
+    }
+}
+
+/// A glyph bitmap placed in texture pixels, before clipping.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PlacedGlyph {
+    pub(super) row: u16,
+    pub(super) texture: AssetId<Image>,
+    pub(super) geometry: PixelGeometry,
+    pub(super) uv: Vec4,
+    pub(super) color: Color,
+    pub(super) alpha_mask: bool,
+    /// Grid graphics keep the clip of the cells they are drawn over.
+    pub(super) cells: Option<PixelGeometry>,
+}
+
+/// Builds the scene that repaints `changed` rows (every row when `full`).
+///
+/// Glyph ink is not confined to its row: like Ghostty, accents, stacked marks
+/// and tall scripts overflow into the rows above and below, and only the
+/// texture's edges clip them. Rows remain the unit of repaint, so a partial
+/// scene must reproduce exactly what a full one draws in the rows it repaints:
+///
+/// - a changed row also repaints the rows its previous and its new ink reach
+///   (`reach` records, per row, how far its drawn ink reaches);
+/// - the repainted bands are cleared and get their backgrounds first, then the
+///   glyphs of every row whose ink reaches a repainted band are drawn, clipped
+///   to those bands, in the row-major order of a full scene, then
+///   decorations and the cursor.
+///
+/// Rows without overflowing ink add no work: their reach is zero, so the
+/// repainted set is the changed set and no neighbour is laid out.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_scene(
     snapshot: &TerminalSnapshot,
     config: &TerminalRenderConfig,
     raster: RasterMetrics,
-    rows: &[u16],
+    changed: &[u16],
     full: bool,
     destination: AssetId<Image>,
     cx: &mut TextContext<'_>,
     shapes: &mut ShapeCaches,
     glyph_atlas: &mut UnifiedGlyphAtlas,
     scratch: &mut SceneScratch,
+    reach: &mut Vec<RowReach>,
     stats: &mut TerminalStats,
     blink: BlinkPhases,
 ) -> BatchScene {
     let size = terminal_pixel_size(snapshot.size(), &raster).as_vec2();
-    let raster_scale = raster.scale;
+    let height = snapshot.size().height;
     scratch.clear();
     #[cfg(test)]
     let mut probe = scratch.probe.take().map(|mut probe| {
@@ -149,206 +222,147 @@ pub(super) fn build_scene(
         }
         probe
     });
-    scratch.styles.reserve(usize::from(snapshot.size().width));
+    if full || reach.len() != usize::from(height) {
+        // Nothing drawn before a full scene survives it.
+        reach.clear();
+        reach.resize(usize::from(height), RowReach::default());
+    }
     let SceneScratch {
         backgrounds,
         background_rects,
         prev_runs,
         current_runs,
         glyphs,
+        placed,
         decorations,
         cursor,
         styles,
+        repaint,
+        painted,
         ..
     } = scratch;
+    repaint.resize(usize::from(height), false);
+    painted.resize(usize::from(height), false);
+    let mut painter = RowPainter {
+        snapshot,
+        config,
+        raster,
+        size,
+        full,
+        blink,
+        cx: &mut *cx,
+        shapes: &mut *shapes,
+        glyph_atlas: &mut *glyph_atlas,
+        stats: &mut *stats,
+        styles: &mut *styles,
+        #[cfg(test)]
+        probe: probe.as_mut(),
+    };
 
-    for &row in rows {
+    // Changed rows and every row their previous ink reached.
+    for &row in changed {
+        for reached in reach[usize::from(row)].rows(row, height) {
+            repaint[usize::from(reached)] = true;
+        }
+    }
+    for &row in changed {
         current_runs.clear();
-        if !full {
-            // Partial repaints interleave a per-row clear with that row's runs,
-            // so later rows' clears would overwrite runs merged upward; merge
-            // vertically only in full rebuilds (which have no per-row clears).
-            background_rects.push((
-                PixelGeometry {
-                    x: 0.0,
-                    y: f32::from(row) * raster.cell_size.y,
-                    width: size.x,
-                    height: raster.cell_size.y,
-                },
-                config.theme.background,
-            ));
-        }
-        let cells = snapshot.row(row);
-        styles.clear();
-        styles.extend(
-            cells
-                .iter()
-                .map(|cell| ResolvedStyle::new(cell, &config.theme)),
-        );
-        let mut background_start = 0;
-        while background_start < styles.len() {
-            let color = styles[background_start].background;
-            let mut background_end = background_start + 1;
-            while background_end < styles.len() && styles[background_end].background == color {
-                background_end += 1;
-            }
-            if full && color == config.theme.background {
-                background_start = background_end;
-                continue;
-            }
-            let geometry = PixelGeometry {
-                x: background_start as f32 * raster.cell_size.x,
-                y: f32::from(row) * raster.cell_size.y,
-                width: (background_end - background_start) as f32 * raster.cell_size.x,
-                height: raster.cell_size.y,
-            };
-            if full {
-                merge_background_rect(background_rects, prev_runs, current_runs, geometry, color);
-            } else {
-                background_rects.push((geometry, color));
-            }
-            background_start = background_end;
-        }
+        painter.backgrounds(row, background_rects, prev_runs, current_runs);
         std::mem::swap(prev_runs, current_runs);
-
-        let mut column = 0;
-        while column < cells.len() {
-            let cell = &cells[column];
-            if cell.is_continuation() {
-                column += 1;
-                continue;
-            }
-            let width = cell_span(cells, column);
-            let style = &styles[column];
-            let symbol = cell.symbol();
-            if style.hidden || blink.hides(style) {
-                column += width;
-                continue;
-            }
-            if let Some(rects) = block_element(symbol) {
-                let cell_x = column as f32 * raster.cell_size.x;
-                let cell_y = f32::from(row) * raster.cell_size.y;
-                let cell_w = width as f32 * raster.cell_size.x;
-                let cell_h = raster.cell_size.y;
-                for &(left, top, right, bottom) in rects {
-                    decorations.push(solid_quad(
-                        PixelGeometry {
-                            x: cell_x + left * cell_w,
-                            y: cell_y + top * cell_h,
-                            width: (right - left) * cell_w,
-                            height: (bottom - top) * cell_h,
-                        },
-                        style.foreground,
-                        size,
-                    ));
-                }
-            } else if symbol != " " && !symbol.is_empty() {
-                let columns = visual_columns(cells, column, width);
-                let shaped = cached_shape(
-                    symbol,
-                    columns as u16,
-                    style,
-                    config,
-                    raster,
-                    size,
-                    cx,
-                    shapes,
-                    glyph_atlas,
-                    stats,
-                );
-                let anchor = Vec2::new(
-                    column as f32 * raster.cell_size.x,
-                    f32::from(row) * raster.cell_size.y,
-                );
-                // Rows are the unit of repaint, so ink is confined to its row
-                // but may run past its cells: wider runs draw over the
-                // neighbours, later cells on top, as Ghostty draws them. Grid
-                // graphics keep the per-cell clip so overshoot cannot seam.
-                let row_bounds = if is_graphics(symbol) {
-                    PixelGeometry {
-                        x: anchor.x,
-                        y: anchor.y,
-                        width: columns as f32 * raster.cell_size.x,
-                        height: raster.cell_size.y,
-                    }
-                } else {
-                    PixelGeometry {
-                        x: 0.0,
-                        y: anchor.y,
-                        width: size.x,
-                        height: raster.cell_size.y,
-                    }
-                };
-                let box_drawing = is_box_drawing(symbol);
-                let shift = Vec2::new(
-                    fit_horizontally(&shaped, columns as f32 * raster.cell_size.x, box_drawing),
-                    if box_drawing {
-                        raster.box_offset
-                    } else {
-                        raster.glyph_offset
-                    },
-                );
-                for glyph in shaped.iter() {
-                    let geometry = PixelGeometry {
-                        x: anchor.x + glyph.offset.x + shift.x,
-                        y: anchor.y + glyph.offset.y + shift.y,
-                        width: glyph.size.x,
-                        height: glyph.size.y,
-                    };
-                    #[cfg(test)]
-                    if full && let Some(probe) = probe.as_mut() {
-                        probe.push(super::probe::ProbeGlyph {
-                            symbol: symbol.to_owned(),
-                            row,
-                            column: column as u16,
-                            columns: columns as u16,
-                            graphics: is_graphics(symbol),
-                            color: !glyph.alpha_mask,
-                            texture: glyph.texture,
-                            uv: glyph.uv,
-                            geometry,
-                            clip: row_bounds,
-                            shift: shift.x,
-                        });
-                    }
-                    if let Some((geometry, uv)) = clip_glyph_to_row(geometry, glyph.uv, row_bounds)
-                    {
-                        glyphs.push((
-                            glyph.texture,
-                            glyph_quad(geometry, uv, style.foreground, glyph.alpha_mask, size),
-                        ));
-                    }
-                }
-            }
-            let decoration_x = column as f32 * raster.cell_size.x;
-            let decoration_width = width as f32 * raster.cell_size.x;
-            let decoration_thickness = raster_scale.round().max(1.0);
-            if style.underlined {
-                decorations.push(solid_quad(
-                    PixelGeometry {
-                        x: decoration_x,
-                        y: f32::from(row) * raster.cell_size.y
-                            + (raster.cell_size.y - 2.0 * decoration_thickness).max(0.0),
-                        width: decoration_width,
-                        height: decoration_thickness,
-                    },
-                    style.underline,
-                    size,
+        let first = placed.len();
+        painter.cells(row, placed, Some(decorations));
+        painted[usize::from(row)] = true;
+        let cell_height = raster.cell_size.y;
+        let row_top = f32::from(row) * cell_height;
+        let row_reach = placed[first..]
+            .iter()
+            .filter(|glyph| glyph.cells.is_none())
+            .fold(RowReach::default(), |reach, glyph| {
+                reach.union(RowReach::of(
+                    glyph.geometry.y - row_top,
+                    glyph.geometry.y + glyph.geometry.height - row_top,
+                    cell_height,
+                ))
+            });
+        reach[usize::from(row)] = row_reach;
+        for reached in row_reach.rows(row, height) {
+            repaint[usize::from(reached)] = true;
+        }
+    }
+    // Unchanged rows repainted because changed ink reaches or reached them.
+    let mut reordered = false;
+    for row in 0..height {
+        if repaint[usize::from(row)] && !painted[usize::from(row)] {
+            painter.backgrounds(row, background_rects, prev_runs, current_runs);
+            painter.cells(row, placed, Some(decorations));
+            painted[usize::from(row)] = true;
+            reordered = true;
+        }
+    }
+    // Unchanged rows whose ink reaches into a repainted band.
+    for row in 0..height {
+        let row_reach = reach[usize::from(row)];
+        if !painted[usize::from(row)]
+            && row_reach != RowReach::default()
+            && row_reach
+                .rows(row, height)
+                .any(|reached| repaint[usize::from(reached)])
+        {
+            painter.cells(row, placed, None);
+            reordered = true;
+        }
+    }
+    let painted_rows = painted.iter().filter(|painted| **painted).count();
+    if reordered {
+        // A full scene draws glyphs in row-major order; the sort is stable.
+        placed.sort_by_key(|glyph| glyph.row);
+    }
+    for glyph in placed.iter() {
+        let color = glyph.color;
+        let mut push = |band: PixelGeometry| {
+            let band = match glyph.cells {
+                Some(cells) => intersect(band, cells),
+                None => Some(band),
+            };
+            if let Some((geometry, uv)) =
+                band.and_then(|band| clip_glyph_to_row(glyph.geometry, glyph.uv, band))
+            {
+                glyphs.push((
+                    glyph.texture,
+                    glyph_quad(geometry, uv, color, glyph.alpha_mask, size),
                 ));
             }
-            if style.crossed_out {
-                decorations.push(solid_quad(
-                    PixelGeometry {
-                        x: decoration_x,
-                        y: f32::from(row) * raster.cell_size.y + raster.cell_size.y * 0.55,
-                        width: decoration_width,
-                        height: decoration_thickness,
-                    },
-                    style.foreground,
-                    size,
-                ));
+        };
+        if full {
+            push(PixelGeometry {
+                x: 0.0,
+                y: 0.0,
+                width: size.x,
+                height: size.y,
+            });
+            continue;
+        }
+        // Clip to each run of repainted rows the bitmap covers.
+        let cell_height = raster.cell_size.y;
+        let first = (glyph.geometry.y / cell_height).floor().max(0.0) as u16;
+        let last =
+            (((glyph.geometry.y + glyph.geometry.height) / cell_height).ceil() as u16).min(height);
+        let mut row = first;
+        while row < last {
+            if !repaint[usize::from(row)] {
+                row += 1;
+                continue;
             }
-            column += width;
+            let start = row;
+            while row < last && repaint[usize::from(row)] {
+                row += 1;
+            }
+            push(PixelGeometry {
+                x: 0.0,
+                y: f32::from(start) * cell_height,
+                width: size.x,
+                height: f32::from(row - start) * cell_height,
+            });
         }
     }
 
@@ -360,10 +374,10 @@ pub(super) fn build_scene(
 
     if cursor_should_be_visible(snapshot)
         && !blink.cursor_hidden
-        && (full || rows.contains(&snapshot.cursor_position().y))
+        && repaint[usize::from(snapshot.cursor_position().y)]
     {
         let position = snapshot.cursor_position();
-        let cursor_thickness = raster_scale.round().max(1.0) * 2.0;
+        let cursor_thickness = raster.scale.round().max(1.0) * 2.0;
         let (x, y, width, height) = match config.cursor.style {
             super::super::CursorStyle::Block => (0.0, 0.0, raster.cell_size.x, raster.cell_size.y),
             super::super::CursorStyle::Bar => (
@@ -395,6 +409,7 @@ pub(super) fn build_scene(
     {
         scratch.probe = probe;
     }
+    stats.changed_rows = u32::try_from(painted_rows).unwrap_or(u32::MAX);
     stats.solid_quads =
         u32::try_from(backgrounds.len() + decorations.len() + cursor.len()).unwrap_or(u32::MAX);
     stats.glyph_quads = u32::try_from(glyphs.len()).unwrap_or(u32::MAX);
@@ -422,6 +437,249 @@ pub(super) fn build_scene(
         clear_color: config.theme.background,
         requires_prepared_assets: false,
     }
+}
+
+/// Lays out the rows of one scene.
+struct RowPainter<'a, 'w> {
+    snapshot: &'a TerminalSnapshot,
+    config: &'a TerminalRenderConfig,
+    raster: RasterMetrics,
+    size: Vec2,
+    full: bool,
+    blink: BlinkPhases,
+    cx: &'a mut TextContext<'w>,
+    shapes: &'a mut ShapeCaches,
+    glyph_atlas: &'a mut UnifiedGlyphAtlas,
+    stats: &'a mut TerminalStats,
+    styles: &'a mut Vec<ResolvedStyle>,
+    #[cfg(test)]
+    probe: Option<&'a mut Vec<super::probe::ProbeGlyph>>,
+}
+
+impl RowPainter<'_, '_> {
+    fn resolve_styles(&mut self, row: u16) {
+        self.styles.clear();
+        self.styles.extend(
+            self.snapshot
+                .row(row)
+                .iter()
+                .map(|cell| ResolvedStyle::new(cell, &self.config.theme)),
+        );
+    }
+
+    /// Records the band clear (partial scenes) and background runs of `row`,
+    /// merging runs with identical runs of the previous row in full scenes.
+    fn backgrounds(
+        &mut self,
+        row: u16,
+        rects: &mut Vec<(PixelGeometry, Color)>,
+        prev_runs: &[usize],
+        current_runs: &mut Vec<usize>,
+    ) {
+        let raster = self.raster;
+        let theme_background = self.config.theme.background;
+        if !self.full {
+            // Partial repaints interleave a per-row clear with that row's runs,
+            // so later rows' clears would overwrite runs merged upward; merge
+            // vertically only in full rebuilds (which have no per-row clears).
+            rects.push((
+                PixelGeometry {
+                    x: 0.0,
+                    y: f32::from(row) * raster.cell_size.y,
+                    width: self.size.x,
+                    height: raster.cell_size.y,
+                },
+                theme_background,
+            ));
+        }
+        self.resolve_styles(row);
+        let styles = &*self.styles;
+        let mut start = 0;
+        while start < styles.len() {
+            let color = styles[start].background;
+            let mut end = start + 1;
+            while end < styles.len() && styles[end].background == color {
+                end += 1;
+            }
+            if !(self.full && color == theme_background) {
+                let geometry = PixelGeometry {
+                    x: start as f32 * raster.cell_size.x,
+                    y: f32::from(row) * raster.cell_size.y,
+                    width: (end - start) as f32 * raster.cell_size.x,
+                    height: raster.cell_size.y,
+                };
+                if self.full {
+                    merge_background_rect(rects, prev_runs, current_runs, geometry, color);
+                } else {
+                    rects.push((geometry, color));
+                }
+            }
+            start = end;
+        }
+    }
+
+    /// Places `row`'s glyphs into `placed`; with `decorations`, also records
+    /// its block elements, underlines and strike-throughs.
+    fn cells(
+        &mut self,
+        row: u16,
+        placed: &mut Vec<PlacedGlyph>,
+        mut decorations: Option<&mut Vec<QuadInstance>>,
+    ) {
+        self.resolve_styles(row);
+        let raster = self.raster;
+        let size = self.size;
+        let cells = self.snapshot.row(row);
+        let mut column = 0;
+        while column < cells.len() {
+            let cell = &cells[column];
+            if cell.is_continuation() {
+                column += 1;
+                continue;
+            }
+            let width = cell_span(cells, column);
+            let style = &self.styles[column];
+            let symbol = cell.symbol();
+            if style.hidden || self.blink.hides(style) {
+                column += width;
+                continue;
+            }
+            let cell_x = column as f32 * raster.cell_size.x;
+            let cell_y = f32::from(row) * raster.cell_size.y;
+            if let Some(rects) = block_element(symbol) {
+                if let Some(decorations) = decorations.as_deref_mut() {
+                    let cell_w = width as f32 * raster.cell_size.x;
+                    let cell_h = raster.cell_size.y;
+                    for &(left, top, right, bottom) in rects {
+                        decorations.push(solid_quad(
+                            PixelGeometry {
+                                x: cell_x + left * cell_w,
+                                y: cell_y + top * cell_h,
+                                width: (right - left) * cell_w,
+                                height: (bottom - top) * cell_h,
+                            },
+                            style.foreground,
+                            size,
+                        ));
+                    }
+                }
+            } else if symbol != " " && !symbol.is_empty() {
+                let columns = visual_columns(cells, column, width);
+                let shaped = cached_shape(
+                    symbol,
+                    columns as u16,
+                    style,
+                    self.config,
+                    raster,
+                    size,
+                    self.cx,
+                    self.shapes,
+                    self.glyph_atlas,
+                    self.stats,
+                );
+                // Grid graphics keep the per-cell clip so overshoot cannot seam.
+                let cells_clip = is_graphics(symbol).then_some(PixelGeometry {
+                    x: cell_x,
+                    y: cell_y,
+                    width: columns as f32 * raster.cell_size.x,
+                    height: raster.cell_size.y,
+                });
+                let box_drawing = is_box_drawing(symbol);
+                let shift = Vec2::new(
+                    fit_horizontally(&shaped, columns as f32 * raster.cell_size.x, box_drawing),
+                    if box_drawing {
+                        raster.box_offset
+                    } else {
+                        raster.glyph_offset
+                    },
+                );
+                for glyph in shaped.iter() {
+                    let geometry = PixelGeometry {
+                        x: cell_x + glyph.offset.x + shift.x,
+                        y: cell_y + glyph.offset.y + shift.y,
+                        width: glyph.size.x,
+                        height: glyph.size.y,
+                    };
+                    #[cfg(test)]
+                    if self.full
+                        && let Some(probe) = self.probe.as_deref_mut()
+                    {
+                        probe.push(super::probe::ProbeGlyph {
+                            symbol: symbol.to_owned(),
+                            row,
+                            column: column as u16,
+                            columns: columns as u16,
+                            graphics: cells_clip.is_some(),
+                            color: !glyph.alpha_mask,
+                            texture: glyph.texture,
+                            uv: glyph.uv,
+                            geometry,
+                            clip: cells_clip.unwrap_or(PixelGeometry {
+                                x: 0.0,
+                                y: 0.0,
+                                width: size.x,
+                                height: size.y,
+                            }),
+                            shift: shift.x,
+                        });
+                    }
+                    placed.push(PlacedGlyph {
+                        row,
+                        texture: glyph.texture,
+                        geometry,
+                        uv: glyph.uv,
+                        color: style.foreground,
+                        alpha_mask: glyph.alpha_mask,
+                        cells: cells_clip,
+                    });
+                }
+            }
+            if let Some(decorations) = decorations.as_deref_mut() {
+                let decoration_x = column as f32 * raster.cell_size.x;
+                let decoration_width = width as f32 * raster.cell_size.x;
+                let decoration_thickness = raster.scale.round().max(1.0);
+                if style.underlined {
+                    decorations.push(solid_quad(
+                        PixelGeometry {
+                            x: decoration_x,
+                            y: cell_y + (raster.cell_size.y - 2.0 * decoration_thickness).max(0.0),
+                            width: decoration_width,
+                            height: decoration_thickness,
+                        },
+                        style.underline,
+                        size,
+                    ));
+                }
+                if style.crossed_out {
+                    decorations.push(solid_quad(
+                        PixelGeometry {
+                            x: decoration_x,
+                            y: cell_y + raster.cell_size.y * 0.55,
+                            width: decoration_width,
+                            height: decoration_thickness,
+                        },
+                        style.foreground,
+                        size,
+                    ));
+                }
+            }
+            column += width;
+        }
+    }
+}
+
+/// The overlap of two rectangles, if any.
+fn intersect(a: PixelGeometry, b: PixelGeometry) -> Option<PixelGeometry> {
+    let left = a.x.max(b.x);
+    let top = a.y.max(b.y);
+    let right = (a.x + a.width).min(b.x + b.width);
+    let bottom = (a.y + a.height).min(b.y + b.height);
+    (right > left && bottom > top).then_some(PixelGeometry {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
 }
 
 /// Number of cells a run at `column` may visually occupy, after Ghostty's

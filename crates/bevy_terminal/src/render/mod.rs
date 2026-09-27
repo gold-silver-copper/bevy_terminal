@@ -166,14 +166,16 @@ impl<T: Into<FontSource>> From<T> for FontFaces {
 /// The renderer snaps cells to physical pixels. Font-driven and width-fitted
 /// modes then refit the font advance to that width, preventing seams. Ordinary
 /// text keeps the font's line box and its rasterized size; symbols are scaled
-/// down to their cells as Ghostty constrains them; ink is confined to its row.
+/// down to their cells as Ghostty constrains them; ink that leaves its row
+/// overflows into the neighbouring rows, and only the texture's edges clip it.
 /// Read effective dimensions from [`TerminalTexture::measured`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TerminalSizing {
     /// Derive cells from a logical font size and line-height multiplier.
     /// Width follows the font advance; height follows ascent, descent and
-    /// leading. Multipliers below one intentionally clip outer ink. Block
-    /// elements still tile because they are rendered as geometry.
+    /// leading. Multipliers below one tighten rows; taller ink overflows into
+    /// the neighbouring rows. Block elements still tile because they are
+    /// rendered as geometry.
     FromFont {
         /// Requested logical font size.
         font_size: f32,
@@ -184,7 +186,7 @@ pub enum TerminalSizing {
     /// to contain the font's line box.
     FitCellWidth(Vec2),
     /// Explicit logical cell and font sizes. Cells snap to physical pixels and
-    /// never grow: taller ink is clipped to the row.
+    /// never grow: taller ink overflows into the neighbouring rows.
     Fixed {
         /// Logical dimensions of one cell.
         cell_size: Vec2,

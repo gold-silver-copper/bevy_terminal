@@ -6,7 +6,9 @@
 //! Ghostty's rules: ordinary text keeps its rasterized shape and bearings
 //! (pushed inside a span it fits, overflowing one it does not); symbols are
 //! scaled down uniformly, only as far as needed to fit the cells they may
-//! occupy, about their center, then pushed inside; ink is confined to its row.
+//! occupy, about their center, then pushed inside; ink overflows neighbouring
+//! cells and rows, and only the texture's edges (or a grid graphic's cells)
+//! clip it.
 
 use bevy::{
     ecs::system::SystemParam,
@@ -471,17 +473,23 @@ fn blend(ink: Vec4, background: [u8; 3]) -> [u8; 3] {
 }
 
 impl Reference {
-    /// Draws this run at `shift` onto `canvas` (a row band of `size`), one
-    /// quad after the others already drawn: texels outside the canvas (past
-    /// the row or the texture edge) are dropped, texels over earlier runs
-    /// blend over them.
+    /// Draws this run at `shift` onto `canvas` (of `size`), one quad after
+    /// the others already drawn: texels outside the canvas are dropped, texels
+    /// over earlier runs blend over them.
     pub fn composite(&self, canvas: &mut [[u8; 3]], size: UVec2, shift: IVec2) {
-        self.composite_within(canvas, &mut [], size, shift, 0..size.x as i32);
+        self.composite_within(
+            canvas,
+            &mut [],
+            size,
+            shift,
+            0..size.x as i32,
+            0..size.y as i32,
+        );
     }
 
-    /// [`Reference::composite`] with the ink also clipped to the pixel columns
-    /// `columns` (the cells of a grid graphic). `layers`, when as large as the
-    /// canvas, counts the blends each pixel went through.
+    /// [`Reference::composite`] with the ink also clipped to the pixel
+    /// `columns` and `rows` (the cells of a grid graphic). `layers`, when as
+    /// large as the canvas, counts the blends each pixel went through.
     pub fn composite_within(
         &self,
         canvas: &mut [[u8; 3]],
@@ -489,6 +497,7 @@ impl Reference {
         size: UVec2,
         shift: IVec2,
         columns: std::ops::Range<i32>,
+        rows: std::ops::Range<i32>,
     ) {
         assert_eq!(canvas.len(), (size.x * size.y) as usize);
         for y in 0..self.size.y {
@@ -497,6 +506,7 @@ impl Reference {
                 let p = self.origin + UVec2::new(x, y).as_ivec2() + shift;
                 if ink.w == 0.0
                     || !columns.contains(&p.x)
+                    || !rows.contains(&p.y)
                     || p.x < 0
                     || p.y < 0
                     || p.x >= size.x as i32

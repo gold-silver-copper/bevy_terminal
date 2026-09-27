@@ -134,8 +134,8 @@ enable the appropriate Bevy features in the application itself.
 - `TerminalSizing::FromFont` derives cells from font size and line height.
 - `TerminalSizing::FitCellWidth` fits the font to a cell width and grows height
   to contain its line box.
-- `TerminalSizing::Fixed` uses explicit cell and font sizes; the row clips
-  taller ink.
+- `TerminalSizing::Fixed` uses explicit cell and font sizes; taller ink
+  overflows into the neighbouring rows.
 
 Cells snap to physical pixels. Wide glyphs occupy explicit continuation cells,
 and shaping stays anchored to grid columns. The renderer supports ANSI/indexed/RGB
@@ -230,7 +230,8 @@ cargo test --test glyph_fidelity -- --ignored                         # the same
 coverage under Ghostty's placement rules, independently of the renderer's
 fitting: ordinary text at its rasterized size on a shared typographic baseline,
 symbols scaled down only as needed to fit the cells they may occupy, ink
-confined to its row, wider runs overflowing their neighbours. Every content
+overflowing neighbouring cells and rows (only the texture's edges clip it),
+later runs drawn over earlier ones. Every content
 cell, blank ones included, must match within two sRGB code values per blend
 (8-bit linear blending on software Vulkan). Solid blocks, half-block joins, and line panels have
 strict continuity checks at 1×, 1.5×, 2×, and 3×.
