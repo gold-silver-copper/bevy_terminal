@@ -534,6 +534,15 @@ fn check(
             })
             .collect();
         let mut layers = vec![0u8; expected.len()];
+        // Luminance of the cell background under each pixel, for the
+        // renderer's linear-corrected blending.
+        let backgrounds: Vec<f32> = expected
+            .iter()
+            .map(|rgb| {
+                let color = LinearRgba::from(Srgba::rgb_u8(rgb[0], rgb[1], rgb[2]));
+                fidelity_oracle::luminance(Vec3::new(color.red, color.green, color.blue))
+            })
+            .collect();
         let mut composed = Vec::new();
         for y in 0..snapshot.size().height {
             let cells = snapshot.row(y);
@@ -589,10 +598,9 @@ fn check(
                 placement.reference.composite_within(
                     &mut expected,
                     &mut layers,
+                    &backgrounds,
                     canvas_size,
                     origin + placement.shift,
-                    0..canvas_size.x as i32,
-                    0..canvas_size.y as i32,
                 );
                 placements.push((x, span, columns, placement));
             }

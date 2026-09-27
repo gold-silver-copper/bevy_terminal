@@ -12,6 +12,31 @@ use crate::render::{BlinkConfig, CursorConfig, RasterConfig, TerminalSizing};
 use crate::scene::{TerminalCell, TerminalColor, TerminalStyle};
 use bevy::ecs::system::SystemState;
 
+/// The shader's linear-corrected coverage (Ghostty's `alpha-blending =
+/// linear-corrected`).
+fn corrected(coverage: f32, foreground: Vec3, background: f32) -> f32 {
+    let linearize = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let unlinearize = |v: f32| {
+        if v <= 0.003_130_8 {
+            v * 12.92
+        } else {
+            v.powf(1.0 / 2.4) * 1.055 - 0.055
+        }
+    };
+    let fg = foreground.dot(Vec3::new(0.2126, 0.7152, 0.0722));
+    if background < 0.0 || (fg - background).abs() <= 0.001 {
+        return coverage;
+    }
+    let blend = linearize(unlinearize(fg) * coverage + unlinearize(background) * (1.0 - coverage));
+    ((blend - background) / (fg - background)).clamp(0.0, 1.0)
+}
+
 /// An 8-bit sRGB RGBA image.
 #[derive(Clone, PartialEq)]
 pub(super) struct Canvas {
@@ -83,7 +108,8 @@ impl Canvas {
                     let offset = ((ty * atlas.width() + tx) * 4) as usize;
                     let sample = decode(data[offset..offset + 4].try_into().unwrap());
                     if quad.color.w >= 0.0 {
-                        quad.color.truncate().extend(quad.color.w * sample.w)
+                        let coverage = corrected(sample.w, quad.color.truncate(), quad.background);
+                        quad.color.truncate().extend(quad.color.w * coverage)
                     } else {
                         sample
                     }

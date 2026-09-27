@@ -235,7 +235,8 @@ glyphs covering it, ink
 overflowing neighbouring cells and rows (only the texture's edges clip it),
 later runs drawn over earlier ones. Every content
 cell, blank ones included, must match within two sRGB code values per blend
-(8-bit linear blending on software Vulkan). Solid blocks, half-block joins, and line panels have
+(8-bit linear blending on software Vulkan), with text coverage blended by
+Ghostty's `linear-corrected` rule against the cell background. Solid blocks, half-block joins, and line panels have
 strict continuity checks at 1×, 1.5×, 2×, and 3×. Grid graphics are drawn
 procedurally, like Ghostty's sprites, and are compared with Ghostty's own
 reference sprite atlases by `cargo test -p bevy_terminal --lib sprite`.

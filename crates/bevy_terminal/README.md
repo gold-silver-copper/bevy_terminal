@@ -135,6 +135,11 @@ Glyph placement follows Ghostty (ported from `renderer/generic.zig`,
 Rescaled glyphs are rasterized again at whole-pixel font sizes; stretched
 glyphs are resampled to their box.
 
+Text is blended like Ghostty's default `alpha-blending = linear-corrected`
+(outside macOS): in linear light, with each glyph's coverage corrected against
+the luminance of the cell background under it, so text keeps the weight of a
+gamma-space blend without its dark fringes. Colour glyphs blend unchanged.
+
 Ink is not confined to its row: accents, stacked marks and tall scripts
 overflow into the neighbouring rows, and only the texture's edges clip them.
 Partial repaints also redraw the rows that changed ink reaches.

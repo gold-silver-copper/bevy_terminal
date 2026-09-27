@@ -31,6 +31,9 @@ pub(super) struct SceneScratch {
     pub(super) repaint: Vec<bool>,
     /// Rows whose backgrounds, glyphs and decorations have been laid out.
     pub(super) painted: Vec<bool>,
+    /// Per painted row, its background runs as `[left, right)` pixels and
+    /// the background's luminance.
+    pub(super) row_backgrounds: Vec<Vec<(f32, f32, f32)>>,
     /// Glyphs of the last full scene before clipping, recorded for the probe.
     #[cfg(test)]
     pub(super) probe: Option<Vec<super::probe::ProbeGlyph>>,
@@ -49,6 +52,9 @@ impl SceneScratch {
         self.styles.clear();
         self.repaint.clear();
         self.painted.clear();
+        for runs in &mut self.row_backgrounds {
+            runs.clear();
+        }
     }
 }
 
@@ -183,10 +189,12 @@ pub(super) fn build_scene(
         styles,
         repaint,
         painted,
+        row_backgrounds,
         ..
     } = scratch;
     repaint.resize(usize::from(height), false);
     painted.resize(usize::from(height), false);
+    row_backgrounds.resize_with(usize::from(height), Vec::new);
     let mut painter = RowPainter {
         snapshot,
         config,
@@ -211,7 +219,13 @@ pub(super) fn build_scene(
     }
     for &row in changed {
         current_runs.clear();
-        painter.backgrounds(row, background_rects, prev_runs, current_runs);
+        painter.backgrounds(
+            row,
+            background_rects,
+            prev_runs,
+            current_runs,
+            &mut row_backgrounds[usize::from(row)],
+        );
         std::mem::swap(prev_runs, current_runs);
         let first = placed.len();
         painter.cells(row, placed, Some(decorations));
@@ -236,7 +250,13 @@ pub(super) fn build_scene(
     let mut reordered = false;
     for row in 0..height {
         if repaint[usize::from(row)] && !painted[usize::from(row)] {
-            painter.backgrounds(row, background_rects, prev_runs, current_runs);
+            painter.backgrounds(
+                row,
+                background_rects,
+                prev_runs,
+                current_runs,
+                &mut row_backgrounds[usize::from(row)],
+            );
             painter.cells(row, placed, Some(decorations));
             painted[usize::from(row)] = true;
             reordered = true;
@@ -260,46 +280,50 @@ pub(super) fn build_scene(
         // A full scene draws glyphs in row-major order; the sort is stable.
         placed.sort_by_key(|glyph| glyph.row);
     }
+    // Each repainted row's part of a glyph is drawn over that row's cell
+    // backgrounds; coverage glyphs are split where the background changes
+    // so every piece is blended against the background under it.
+    let cell_height = raster.cell_size.y;
     for glyph in placed.iter() {
-        let color = glyph.color;
-        let mut push = |band: PixelGeometry| {
-            if let Some((geometry, uv)) = clip_glyph_to_row(glyph.geometry, glyph.uv, band) {
-                glyphs.push((
-                    glyph.texture,
-                    glyph_quad(geometry, uv, color, glyph.alpha_mask, size),
-                ));
-            }
-        };
-        if full {
-            push(PixelGeometry {
-                x: 0.0,
-                y: 0.0,
-                width: size.x,
-                height: size.y,
-            });
-            continue;
-        }
-        // Clip to each run of repainted rows the bitmap covers.
-        let cell_height = raster.cell_size.y;
         let first = (glyph.geometry.y / cell_height).floor().max(0.0) as u16;
         let last =
             (((glyph.geometry.y + glyph.geometry.height) / cell_height).ceil() as u16).min(height);
-        let mut row = first;
-        while row < last {
+        for row in first..last {
             if !repaint[usize::from(row)] {
-                row += 1;
                 continue;
             }
-            let start = row;
-            while row < last && repaint[usize::from(row)] {
-                row += 1;
-            }
-            push(PixelGeometry {
+            let band = PixelGeometry {
                 x: 0.0,
-                y: f32::from(start) * cell_height,
+                y: f32::from(row) * cell_height,
                 width: size.x,
-                height: f32::from(row - start) * cell_height,
-            });
+                height: cell_height,
+            };
+            let Some((piece, uv)) = clip_glyph_to_row(glyph.geometry, glyph.uv, band) else {
+                continue;
+            };
+            if !glyph.alpha_mask {
+                glyphs.push((
+                    glyph.texture,
+                    glyph_quad(piece, uv, glyph.color, false, -1.0, size),
+                ));
+                continue;
+            }
+            for &(left, right, background) in &row_backgrounds[usize::from(row)] {
+                if right <= piece.x || left >= piece.x + piece.width {
+                    continue;
+                }
+                let run = PixelGeometry {
+                    x: left,
+                    width: right - left,
+                    ..band
+                };
+                if let Some((part, uv)) = clip_glyph_to_row(piece, uv, run) {
+                    glyphs.push((
+                        glyph.texture,
+                        glyph_quad(part, uv, glyph.color, true, background, size),
+                    ));
+                }
+            }
         }
     }
 
@@ -412,6 +436,7 @@ impl RowPainter<'_, '_> {
         rects: &mut Vec<(PixelGeometry, Color)>,
         prev_runs: &[usize],
         current_runs: &mut Vec<usize>,
+        luminances: &mut Vec<(f32, f32, f32)>,
     ) {
         let raster = self.raster;
         let theme_background = self.config.theme.background;
@@ -438,6 +463,11 @@ impl RowPainter<'_, '_> {
             while end < styles.len() && styles[end].background == color {
                 end += 1;
             }
+            luminances.push((
+                start as f32 * raster.cell_size.x,
+                end as f32 * raster.cell_size.x,
+                luminance(color),
+            ));
             if !(self.full && color == theme_background) {
                 let geometry = PixelGeometry {
                     x: start as f32 * raster.cell_size.x,
@@ -642,14 +672,18 @@ pub(super) fn solid_quad(geometry: PixelGeometry, color: Color, target: Vec2) ->
         // A negative final UV component lets the unified fragment shader skip the atlas sample.
         uv: Vec4::new(0.0, 0.0, 0.0, -1.0),
         color: color.to_linear().to_f32_array().into(),
+        background: -1.0,
     }
 }
 
+/// A glyph quad; `background` is the luminance of the cell background under
+/// it (coverage glyphs are blended with Ghostty's linear correction).
 pub(super) fn glyph_quad(
     geometry: PixelGeometry,
     uv: Vec4,
     color: Color,
     alpha_mask: bool,
+    background: f32,
     target: Vec2,
 ) -> QuadInstance {
     let mut color = color.to_linear().to_f32_array();
@@ -660,7 +694,14 @@ pub(super) fn glyph_quad(
         rect: clip_rect(snap_geometry(geometry), target),
         uv,
         color: color.into(),
+        background,
     }
+}
+
+/// Linear luminance of a colour, as Ghostty computes it.
+pub(super) fn luminance(color: Color) -> f32 {
+    let linear = color.to_linear();
+    0.2126 * linear.red + 0.7152 * linear.green + 0.0722 * linear.blue
 }
 
 /// Crops a glyph quad to the band it is drawn in (its row, or its cells for

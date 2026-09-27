@@ -148,7 +148,7 @@ pub(super) fn create_pipeline(
         immediate_size: 0,
     });
     let compilation = PipelineCompilationOptions::default();
-    const ATTRIBUTES: [VertexAttribute; 3] = [
+    const ATTRIBUTES: [VertexAttribute; 4] = [
         VertexAttribute {
             format: VertexFormat::Float32x4,
             offset: 0,
@@ -163,6 +163,11 @@ pub(super) fn create_pipeline(
             format: VertexFormat::Float32x4,
             offset: 32,
             shader_location: 2,
+        },
+        VertexAttribute {
+            format: VertexFormat::Float32,
+            offset: 48,
+            shader_location: 3,
         },
     ];
     let vertex_buffers = [RawVertexBufferLayout {
@@ -197,7 +202,7 @@ pub(super) fn create_pipeline(
     })
 }
 
-/// Appends the 48-byte GPU encoding of each instance, writing whole instances
+/// Appends the 52-byte GPU encoding of each instance, writing whole instances
 /// into pre-sized chunks instead of growing the vector one scalar at a time.
 pub(super) fn append_instance_bytes(instances: &[QuadInstance], bytes: &mut Vec<u8>) {
     let start = bytes.len();
@@ -213,18 +218,17 @@ pub(super) fn append_instance_bytes(instances: &[QuadInstance], bytes: &mut Vec<
             instance.uv.to_array(),
             instance.color.to_array(),
         ];
-        for (slot, value) in chunk
-            .as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .zip(values.as_flattened())
-        {
+        let values = values
+            .as_flattened()
+            .iter()
+            .chain(std::iter::once(&instance.background));
+        for (slot, value) in chunk.as_chunks_mut::<4>().0.iter_mut().zip(values) {
             slot.copy_from_slice(&value.to_ne_bytes());
         }
     }
 }
 
-const INSTANCE_BYTES: usize = 48;
+const INSTANCE_BYTES: usize = 52;
 
 #[derive(Debug, PartialEq, Eq)]
 struct UploadSlice {
@@ -485,6 +489,7 @@ struct VertexInput {
     @location(0) rect: vec4<f32>,
     @location(1) uv: vec4<f32>,
     @location(2) color: vec4<f32>,
+    @location(3) background: f32,
 }
 
 struct VertexOutput {
@@ -492,6 +497,7 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) solid: u32,
+    @location(3) @interpolate(flat) background: f32,
 }
 
 @vertex
@@ -506,7 +512,20 @@ fn vertex(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutput
     output.uv = mix(input.uv.xy, input.uv.zw, corner);
     output.color = input.color;
     output.solid = select(0u, 1u, input.uv.w < 0.0);
+    output.background = input.background;
     return output;
+}
+
+fn linearize(v: f32) -> f32 {
+    return select(pow((v + 0.055) / 1.055, 2.4), v / 12.92, v <= 0.04045);
+}
+
+fn unlinearize(v: f32) -> f32 {
+    return select(pow(v, 1.0 / 2.4) * 1.055 - 0.055, v * 12.92, v <= 0.0031308);
+}
+
+fn luminance(color: vec3<f32>) -> f32 {
+    return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
 @fragment
@@ -515,10 +534,20 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
         return input.color;
     }
     let sample = textureSample(glyph_atlas, glyph_sampler, input.uv);
-    if input.color.a >= 0.0 {
-        return vec4<f32>(input.color.rgb, input.color.a * sample.a);
+    if input.color.a < 0.0 {
+        return sample;
     }
-    return sample;
+    // Ghostty's linear-corrected blending: blend in linear light, with the
+    // coverage remapped so the result has the luminance a gamma-space blend
+    // of the text and cell background would have.
+    var coverage = sample.a;
+    let bg_l = input.background;
+    let fg_l = luminance(input.color.rgb);
+    if bg_l >= 0.0 && abs(fg_l - bg_l) > 0.001 {
+        let blend_l = linearize(unlinearize(fg_l) * coverage + unlinearize(bg_l) * (1.0 - coverage));
+        coverage = clamp((blend_l - bg_l) / (fg_l - bg_l), 0.0, 1.0);
+    }
+    return vec4<f32>(input.color.rgb, input.color.a * coverage);
 }
 "#;
 

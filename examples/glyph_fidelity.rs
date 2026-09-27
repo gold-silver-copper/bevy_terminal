@@ -964,6 +964,15 @@ fn run_checks(
             })
             .collect();
         let mut layers = vec![0u8; expected.len()];
+        // Luminance of the cell background under each pixel, for the
+        // renderer's linear-corrected blending.
+        let backgrounds: Vec<f32> = expected
+            .iter()
+            .map(|rgb| {
+                let color = LinearRgba::from(Srgba::rgb_u8(rgb[0], rgb[1], rgb[2]));
+                fidelity_oracle::luminance(Vec3::new(color.red, color.green, color.blue))
+            })
+            .collect();
         let mut procedural = vec![false; expected.len()];
         let mut composed: Vec<Vec<Option<Composed>>> = Vec::new();
         for row in 0..ROWS {
@@ -1027,10 +1036,9 @@ fn run_checks(
                     placement.reference.composite_within(
                         &mut expected,
                         &mut layers,
+                        &backgrounds,
                         canvas_size,
                         origin + placement.shift,
-                        0..canvas_size.x as i32,
-                        0..canvas_size.y as i32,
                     );
                 }
                 row_runs[column] = Some(Composed {

@@ -14,6 +14,7 @@ fn quad(value: f32) -> QuadInstance {
         rect: Vec4::splat(value),
         uv: Vec4::ZERO,
         color: Vec4::ONE,
+        background: value,
     }
 }
 
@@ -1816,12 +1817,13 @@ fn instance_bytes_append_whole_instances_in_order() {
             rect: Vec4::new(1.0, 2.0, 3.0, 4.0),
             uv: Vec4::new(5.0, 6.0, 7.0, 8.0),
             color: Vec4::new(9.0, 10.0, 11.0, 12.0),
+            background: 13.0,
         },
         quad(42.0),
     ];
     let mut bytes = Vec::new();
     append_instance_bytes(&instances, &mut bytes);
-    assert_eq!(bytes.len(), 96);
+    assert_eq!(bytes.len(), 104);
     let floats: Vec<f32> = bytes
         .as_chunks::<4>()
         .0
@@ -1829,16 +1831,17 @@ fn instance_bytes_append_whole_instances_in_order() {
         .map(|chunk| f32::from_ne_bytes(*chunk))
         .collect();
     assert_eq!(
-        &floats[..12],
+        &floats[..13],
         &[
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0
         ]
     );
-    assert_eq!(&floats[12..16], &[42.0; 4]);
+    assert_eq!(&floats[13..17], &[42.0; 4]);
+    assert_eq!(floats[25], 42.0);
     // Appending again extends at the previous end, as the shared staging
     // buffer relies on.
     append_instance_bytes(&instances[1..], &mut bytes);
-    assert_eq!(bytes.len(), 144);
+    assert_eq!(bytes.len(), 156);
 }
 
 #[test]

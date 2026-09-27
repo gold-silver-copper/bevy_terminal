@@ -43,6 +43,8 @@ pub struct Reference {
     pub origin: IVec2,
     pub size: UVec2,
     pub rgba: Vec<Vec4>,
+    /// The run's glyphs, each drawn (and blended) on its own.
+    pub layers: Vec<Layer>,
     pub color_glyphs: usize,
     pub glyph_count: usize,
     pub baseline: f32,
@@ -51,6 +53,16 @@ pub struct Reference {
     pub advance: f32,
     pub faces: Vec<(u64, u32)>,
     pub supported: bool,
+}
+
+/// One glyph bitmap of a run in premultiplied linear RGBA, relative to the
+/// line origin; `mask` glyphs are coverage drawn in the text colour.
+#[derive(Clone, Debug)]
+pub struct Layer {
+    pub origin: IVec2,
+    pub size: UVec2,
+    pub rgba: Vec<Vec4>,
+    pub mask: bool,
 }
 
 impl Rasterizer<'_> {
@@ -167,6 +179,7 @@ impl Rasterizer<'_> {
             origin: IVec2::ZERO,
             size: UVec2::ZERO,
             rgba: Vec::new(),
+            layers: Vec::new(),
             color_glyphs: layout
                 .glyphs
                 .iter()
@@ -226,6 +239,12 @@ impl Rasterizer<'_> {
             let data = image.data.as_ref().ok_or("unreadable glyph atlas")?;
             let rect = glyph.atlas_info.rect;
             let size = rect.size().as_uvec2();
+            let mut layer = Layer {
+                origin,
+                size,
+                rgba: Vec::with_capacity((size.x * size.y) as usize),
+                mask: glyph.atlas_info.is_alpha_mask,
+            };
             for y in 0..size.y {
                 for x in 0..size.x {
                     let source = ((rect.min.y as u32 + y) * image.width() + rect.min.x as u32 + x)
@@ -247,8 +266,10 @@ impl Rasterizer<'_> {
                     let dest =
                         &mut reference.rgba[(target.y * reference.size.x + target.x) as usize];
                     *dest = sample + *dest * (1.0 - sample.w);
+                    layer.rgba.push(sample);
                 }
             }
+            reference.layers.push(layer);
         }
         Ok(reference)
     }
@@ -605,6 +626,26 @@ pub fn pixel_difference(expected: &[u8; 3], actual: &[u8; 3]) -> u8 {
         .unwrap_or(0)
 }
 
+/// Ghostty's `linear-corrected` coverage (`shaders.metal`, `cell_text_fragment`):
+/// the coverage `a` of text of luminance `fg` over a background of luminance
+/// `bg` is remapped so that blending in linear light gives the luminance a
+/// blend of the sRGB-encoded luminances would give. Luminances within 0.001
+/// of each other are left alone.
+pub fn corrected_coverage(a: f32, fg: f32, bg: f32) -> f32 {
+    if (fg - bg).abs() <= 0.001 {
+        return a;
+    }
+    let encode = |v: f32| Srgba::from(LinearRgba::rgb(v, v, v)).red;
+    let decode = |v: f32| LinearRgba::from(Srgba::rgb(v, v, v)).red;
+    let blend = decode(encode(fg) * a + encode(bg) * (1.0 - a));
+    ((blend - bg) / (fg - bg)).clamp(0.0, 1.0)
+}
+
+/// Relative luminance of a linear colour.
+pub fn luminance(color: Vec3) -> f32 {
+    color.dot(Vec3::new(0.2126, 0.7152, 0.0722))
+}
+
 /// One glyph texel blended over a stored sRGB pixel the way the renderer's
 /// quads blend: straight alpha in linear light, then 8-bit sRGB storage.
 fn blend(ink: Vec4, background: [u8; 3]) -> [u8; 3] {
@@ -630,47 +671,48 @@ impl Reference {
     /// the others already drawn: texels outside the canvas are dropped, texels
     /// over earlier runs blend over them.
     pub fn composite(&self, canvas: &mut [[u8; 3]], size: UVec2, shift: IVec2) {
-        self.composite_within(
-            canvas,
-            &mut [],
-            size,
-            shift,
-            0..size.x as i32,
-            0..size.y as i32,
-        );
+        self.composite_within(canvas, &mut [], &[], size, shift);
     }
 
-    /// [`Reference::composite`] with the ink also clipped to the pixel
-    /// `columns` and `rows` (the cells of a grid graphic). `layers`, when as
-    /// large as the canvas, counts the blends each pixel went through.
+    /// [`Reference::composite`] in white text, glyph by glyph. `layers`, when
+    /// as large as the canvas, counts the blends each pixel went through.
+    /// `backgrounds`, when as large as the canvas, holds the luminance of
+    /// the cell background under each pixel, and coverage glyphs are blended
+    /// with Ghostty's linear correction against it.
     pub fn composite_within(
         &self,
         canvas: &mut [[u8; 3]],
         layers: &mut [u8],
+        backgrounds: &[f32],
         size: UVec2,
         shift: IVec2,
-        columns: std::ops::Range<i32>,
-        rows: std::ops::Range<i32>,
     ) {
         assert_eq!(canvas.len(), (size.x * size.y) as usize);
-        for y in 0..self.size.y {
-            for x in 0..self.size.x {
-                let ink = self.rgba[(y * self.size.x + x) as usize];
-                let p = self.origin + UVec2::new(x, y).as_ivec2() + shift;
-                if ink.w == 0.0
-                    || !columns.contains(&p.x)
-                    || !rows.contains(&p.y)
-                    || p.x < 0
-                    || p.y < 0
-                    || p.x >= size.x as i32
-                    || p.y >= size.y as i32
-                {
-                    continue;
-                }
-                let index = (p.y as u32 * size.x + p.x as u32) as usize;
-                canvas[index] = blend(ink, canvas[index]);
-                if let Some(layer) = layers.get_mut(index) {
-                    *layer = layer.saturating_add(1);
+        for layer in &self.layers {
+            for y in 0..layer.size.y {
+                for x in 0..layer.size.x {
+                    let ink = layer.rgba[(y * layer.size.x + x) as usize];
+                    let p = layer.origin + UVec2::new(x, y).as_ivec2() + shift;
+                    if ink.w == 0.0
+                        || p.x < 0
+                        || p.y < 0
+                        || p.x >= size.x as i32
+                        || p.y >= size.y as i32
+                    {
+                        continue;
+                    }
+                    let index = (p.y as u32 * size.x + p.x as u32) as usize;
+                    let ink = match backgrounds.get(index) {
+                        Some(background) if layer.mask => {
+                            let white = Vec3::ONE;
+                            Vec4::splat(corrected_coverage(ink.w, luminance(white), *background))
+                        }
+                        _ => ink,
+                    };
+                    canvas[index] = blend(ink, canvas[index]);
+                    if let Some(layer) = layers.get_mut(index) {
+                        *layer = layer.saturating_add(1);
+                    }
                 }
             }
         }
@@ -744,10 +786,17 @@ mod tests {
     use super::*;
 
     fn reference(origin: IVec2, size: UVec2, alpha: &[f32]) -> Reference {
+        let rgba: Vec<Vec4> = alpha.iter().map(|a| Vec4::splat(*a)).collect();
         Reference {
             origin,
             size,
-            rgba: alpha.iter().map(|a| Vec4::splat(*a)).collect(),
+            layers: vec![Layer {
+                origin,
+                size,
+                rgba: rgba.clone(),
+                mask: true,
+            }],
+            rgba,
             color_glyphs: 0,
             glyph_count: 1,
             baseline: 2.0,
@@ -862,6 +911,22 @@ mod tests {
             visual_columns(&[TerminalCell::wide("🙂", 2), TerminalCell::new(" ")], 0),
             2
         );
+    }
+
+    #[test]
+    fn coverage_glyphs_blend_with_ghosttys_linear_correction() {
+        // White at half coverage over black: a gamma-space blend's luminance
+        // (half the sRGB range), not linear light's 188.
+        let corrected = corrected_coverage(0.5, 1.0, 0.0);
+        assert!((corrected - 0.2140).abs() < 1e-3, "{corrected}");
+        let glyph = reference(IVec2::ZERO, UVec2::ONE, &[0.5]);
+        let mut canvas = vec![[0, 0, 0]];
+        glyph.composite_within(&mut canvas, &mut [], &[0.0], UVec2::ONE, IVec2::ZERO);
+        assert_eq!(canvas, vec![[127; 3]]);
+        // Equal luminances and full or empty coverage are unchanged.
+        assert_eq!(corrected_coverage(0.5, 0.3, 0.3005), 0.5);
+        assert!((corrected_coverage(1.0, 1.0, 0.2) - 1.0).abs() < 1e-6);
+        assert!(corrected_coverage(0.0, 1.0, 0.2).abs() < 1e-6);
     }
 
     #[test]

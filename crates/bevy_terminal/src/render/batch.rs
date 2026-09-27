@@ -343,6 +343,9 @@ struct QuadInstance {
     rect: Vec4,
     uv: Vec4,
     color: Vec4,
+    /// Linear luminance of the cell background under a coverage glyph, for
+    /// Ghostty's linear-corrected blending; negative for no correction.
+    background: f32,
 }
 
 struct BatchScene {
