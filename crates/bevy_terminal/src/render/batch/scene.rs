@@ -1,8 +1,8 @@
 //! CPU scene construction, glyph fitting, and quad geometry.
 use super::shaping::{
-    CachedGlyph, ShapeCaches, UnifiedGlyphAtlas, cached_shape, is_box_drawing, is_graphics,
-    is_powerline, is_symbol,
+    CachedGlyph, ShapeCaches, UnifiedGlyphAtlas, cached_shape, is_powerline, is_symbol,
 };
+use super::sprite::sprite_codepoint;
 use super::{
     BatchScene, BlinkPhases, DrawBatch, PixelGeometry, QuadInstance, RasterMetrics, ResolvedStyle,
     TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext, cell_span,
@@ -79,60 +79,6 @@ pub(super) fn merge_background_rect(
     current_runs.push(rects.len() - 1);
 }
 
-/// Solid rectangles, as fractions of the cell `(left, top, right, bottom)`,
-/// for a Unicode Block Elements symbol (U+2580..U+259F, shades excluded).
-///
-/// Drawing these from geometry instead of the font, as Ghostty does, makes
-/// halves, eighths and quadrants tile the cell exactly whatever the font's
-/// block glyphs look like: a cell sized to the font's line box no longer
-/// leaves a seam under a shorter `█`, and fonts with no block glyphs at all
-/// still render them.
-pub(super) fn block_element(symbol: &str) -> Option<&'static [(f32, f32, f32, f32)]> {
-    const FULL: &[(f32, f32, f32, f32)] = &[(0.0, 0.0, 1.0, 1.0)];
-    macro_rules! rects {
-        ($($r:expr),* $(,)?) => {{
-            const R: &[(f32, f32, f32, f32)] = &[$($r),*];
-            Some(R)
-        }};
-    }
-    let mut chars = symbol.chars();
-    let (Some(c), None) = (chars.next(), chars.next()) else {
-        return None;
-    };
-    match c {
-        '\u{2580}' => rects![(0.0, 0.0, 1.0, 0.5)],
-        '\u{2581}' => rects![(0.0, 7.0 / 8.0, 1.0, 1.0)],
-        '\u{2582}' => rects![(0.0, 6.0 / 8.0, 1.0, 1.0)],
-        '\u{2583}' => rects![(0.0, 5.0 / 8.0, 1.0, 1.0)],
-        '\u{2584}' => rects![(0.0, 0.5, 1.0, 1.0)],
-        '\u{2585}' => rects![(0.0, 3.0 / 8.0, 1.0, 1.0)],
-        '\u{2586}' => rects![(0.0, 2.0 / 8.0, 1.0, 1.0)],
-        '\u{2587}' => rects![(0.0, 1.0 / 8.0, 1.0, 1.0)],
-        '\u{2588}' => Some(FULL),
-        '\u{2589}' => rects![(0.0, 0.0, 7.0 / 8.0, 1.0)],
-        '\u{258a}' => rects![(0.0, 0.0, 6.0 / 8.0, 1.0)],
-        '\u{258b}' => rects![(0.0, 0.0, 5.0 / 8.0, 1.0)],
-        '\u{258c}' => rects![(0.0, 0.0, 0.5, 1.0)],
-        '\u{258d}' => rects![(0.0, 0.0, 3.0 / 8.0, 1.0)],
-        '\u{258e}' => rects![(0.0, 0.0, 2.0 / 8.0, 1.0)],
-        '\u{258f}' => rects![(0.0, 0.0, 1.0 / 8.0, 1.0)],
-        '\u{2590}' => rects![(0.5, 0.0, 1.0, 1.0)],
-        '\u{2594}' => rects![(0.0, 0.0, 1.0, 1.0 / 8.0)],
-        '\u{2595}' => rects![(7.0 / 8.0, 0.0, 1.0, 1.0)],
-        '\u{2596}' => rects![(0.0, 0.5, 0.5, 1.0)],
-        '\u{2597}' => rects![(0.5, 0.5, 1.0, 1.0)],
-        '\u{2598}' => rects![(0.0, 0.0, 0.5, 0.5)],
-        '\u{2599}' => rects![(0.0, 0.0, 0.5, 0.5), (0.0, 0.5, 1.0, 1.0)],
-        '\u{259a}' => rects![(0.0, 0.0, 0.5, 0.5), (0.5, 0.5, 1.0, 1.0)],
-        '\u{259b}' => rects![(0.0, 0.0, 1.0, 0.5), (0.0, 0.5, 0.5, 1.0)],
-        '\u{259c}' => rects![(0.0, 0.0, 1.0, 0.5), (0.5, 0.5, 1.0, 1.0)],
-        '\u{259d}' => rects![(0.5, 0.0, 1.0, 0.5)],
-        '\u{259e}' => rects![(0.5, 0.0, 1.0, 0.5), (0.0, 0.5, 0.5, 1.0)],
-        '\u{259f}' => rects![(0.5, 0.0, 1.0, 0.5), (0.0, 0.5, 1.0, 1.0)],
-        _ => None,
-    }
-}
-
 /// How many rows above and below its own a row's glyph ink reaches.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct RowReach {
@@ -176,8 +122,6 @@ pub(super) struct PlacedGlyph {
     pub(super) uv: Vec4,
     pub(super) color: Color,
     pub(super) alpha_mask: bool,
-    /// Grid graphics keep the clip of the cells they are drawn over.
-    pub(super) cells: Option<PixelGeometry>,
 }
 
 /// Builds the scene that repaints `changed` rows (every row when `full`).
@@ -276,7 +220,6 @@ pub(super) fn build_scene(
         let row_top = f32::from(row) * cell_height;
         let row_reach = placed[first..]
             .iter()
-            .filter(|glyph| glyph.cells.is_none())
             .fold(RowReach::default(), |reach, glyph| {
                 reach.union(RowReach::of(
                     glyph.geometry.y - row_top,
@@ -320,13 +263,7 @@ pub(super) fn build_scene(
     for glyph in placed.iter() {
         let color = glyph.color;
         let mut push = |band: PixelGeometry| {
-            let band = match glyph.cells {
-                Some(cells) => intersect(band, cells),
-                None => Some(band),
-            };
-            if let Some((geometry, uv)) =
-                band.and_then(|band| clip_glyph_to_row(glyph.geometry, glyph.uv, band))
-            {
+            if let Some((geometry, uv)) = clip_glyph_to_row(glyph.geometry, glyph.uv, band) {
                 glyphs.push((
                     glyph.texture,
                     glyph_quad(geometry, uv, color, glyph.alpha_mask, size),
@@ -546,25 +483,15 @@ impl RowPainter<'_, '_> {
             }
             let cell_x = column as f32 * raster.cell_size.x;
             let cell_y = f32::from(row) * raster.cell_size.y;
-            if let Some(rects) = block_element(symbol) {
-                if let Some(decorations) = decorations.as_deref_mut() {
-                    let cell_w = width as f32 * raster.cell_size.x;
-                    let cell_h = raster.cell_size.y;
-                    for &(left, top, right, bottom) in rects {
-                        decorations.push(solid_quad(
-                            PixelGeometry {
-                                x: cell_x + left * cell_w,
-                                y: cell_y + top * cell_h,
-                                width: (right - left) * cell_w,
-                                height: (bottom - top) * cell_h,
-                            },
-                            style.foreground,
-                            size,
-                        ));
-                    }
-                }
-            } else if symbol != " " && !symbol.is_empty() {
-                let columns = visual_columns(cells, column, width);
+            if symbol != " " && !symbol.is_empty() {
+                // Sprites span their cells, like Ghostty's `gridWidth`; other
+                // runs may use Ghostty's `constraintWidth`.
+                let sprite = sprite_codepoint(symbol).is_some();
+                let columns = if sprite {
+                    width
+                } else {
+                    visual_columns(cells, column, width)
+                };
                 let shaped = cached_shape(
                     symbol,
                     columns as u16,
@@ -577,26 +504,14 @@ impl RowPainter<'_, '_> {
                     self.glyph_atlas,
                     self.stats,
                 );
-                // Grid graphics keep the per-cell clip so overshoot cannot seam.
-                let cells_clip = is_graphics(symbol).then_some(PixelGeometry {
-                    x: cell_x,
-                    y: cell_y,
-                    width: columns as f32 * raster.cell_size.x,
-                    height: raster.cell_size.y,
-                });
-                let box_drawing = is_box_drawing(symbol);
-                let shift = Vec2::new(
-                    if cells_clip.is_some() {
-                        fit_horizontally(&shaped, columns as f32 * raster.cell_size.x, box_drawing)
-                    } else {
-                        edge_shift(&shaped, cell_x, size.x)
-                    },
-                    if box_drawing {
-                        raster.box_offset
-                    } else {
-                        raster.glyph_offset
-                    },
-                );
+                // Sprites are drawn in cell pixels; text shares the centered
+                // baseline and keeps its bearings, pushed in only at the
+                // texture's edges.
+                let shift = if sprite {
+                    Vec2::ZERO
+                } else {
+                    Vec2::new(edge_shift(&shaped, cell_x, size.x), raster.glyph_offset)
+                };
                 for glyph in shaped.iter() {
                     let geometry = PixelGeometry {
                         x: cell_x + glyph.offset.x + shift.x,
@@ -613,17 +528,17 @@ impl RowPainter<'_, '_> {
                             row,
                             column: column as u16,
                             columns: columns as u16,
-                            graphics: cells_clip.is_some(),
+                            sprite,
                             color: !glyph.alpha_mask,
                             texture: glyph.texture,
                             uv: glyph.uv,
                             geometry,
-                            clip: cells_clip.unwrap_or(PixelGeometry {
+                            clip: PixelGeometry {
                                 x: 0.0,
                                 y: 0.0,
                                 width: size.x,
                                 height: size.y,
-                            }),
+                            },
                             shift: shift.x,
                         });
                     }
@@ -634,7 +549,6 @@ impl RowPainter<'_, '_> {
                         uv: glyph.uv,
                         color: style.foreground,
                         alpha_mask: glyph.alpha_mask,
-                        cells: cells_clip,
                     });
                 }
             }
@@ -672,20 +586,6 @@ impl RowPainter<'_, '_> {
     }
 }
 
-/// The overlap of two rectangles, if any.
-fn intersect(a: PixelGeometry, b: PixelGeometry) -> Option<PixelGeometry> {
-    let left = a.x.max(b.x);
-    let top = a.y.max(b.y);
-    let right = (a.x + a.width).min(b.x + b.width);
-    let bottom = (a.y + a.height).min(b.y + b.height);
-    (right > left && bottom > top).then_some(PixelGeometry {
-        x: left,
-        y: top,
-        width: right - left,
-        height: bottom - top,
-    })
-}
-
 /// Number of cells a run at `column` may visually occupy, after Ghostty's
 /// `constraintWidth`: its declared `span`, except that a one-cell symbol
 /// ([`is_symbol`]) followed by a blank cell may spread into that cell, unless
@@ -716,14 +616,15 @@ pub(super) fn visual_columns(cells: &[TerminalCell], column: usize, span: usize)
 /// edge, where Ghostty has window padding, is pushed back in. A run wider
 /// than the texture keeps its place.
 pub(super) fn edge_shift(glyphs: &[CachedGlyph], x: f32, width: f32) -> f32 {
-    let (left, right) = glyphs
-        .iter()
-        .fold((f32::INFINITY, f32::NEG_INFINITY), |(l, r), g| {
+    let (left, right) = glyphs.iter().filter(|g| g.ink.1 > g.ink.0).fold(
+        (f32::INFINITY, f32::NEG_INFINITY),
+        |(l, r), g| {
             (
                 l.min(x + g.offset.x + g.ink.0),
                 r.max(x + g.offset.x + g.ink.1),
             )
-        });
+        },
+    );
     if right <= left || right - left > width {
         0.0
     } else if left < 0.0 {
@@ -733,94 +634,6 @@ pub(super) fn edge_shift(glyphs: &[CachedGlyph], x: f32, width: f32) -> f32 {
     } else {
         0.0
     }
-}
-
-/// Horizontal shift (whole pixels) applied to a grid graphic drawn over `span` pixels:
-/// a run that fits but overhangs one side (an italic or a negative bearing) is
-/// pushed inside; a run inside the span keeps its bearings; a run wider than
-/// the span (a fallback family with a larger advance, a wide italic, a symbol
-/// that could not be rescaled) keeps its bearings too and overflows, as
-/// Ghostty draws unconstrained glyphs.
-///
-/// # Sub-pixel overshoot
-///
-/// Box-drawing and block glyphs are commonly drawn a little past their
-/// advance on purpose (JetBrains Mono's `─` spans -20..620 units of a 600
-/// advance) so that neighbouring strokes overlap instead of gapping. Rasterised,
-/// that overshoot lights one faint extra column outside the span. Pushing the
-/// run inside for it would move `┌` one pixel away from a `│` in the row
-/// below, which is exactly the misalignment the overshoot exists to prevent.
-/// For a single box-drawing character, an outside column with coverage below
-/// the run's strongest column is treated as overshoot: the run keeps its
-/// bearings and the graphics clip drops the column. Ordinary text does not
-/// use this allowance. A full-strength column outside the span is real
-/// overhang and is still pushed inside.
-pub(super) fn fit_horizontally(glyphs: &[CachedGlyph], span: f32, box_drawing: bool) -> f32 {
-    let mut left = f32::INFINITY;
-    let mut right = f32::NEG_INFINITY;
-    for glyph in glyphs {
-        left = left.min(glyph.offset.x + glyph.ink.0);
-        right = right.max(glyph.offset.x + glyph.ink.1);
-    }
-    if right <= left {
-        return 0.0;
-    }
-    let (left, right) = if box_drawing {
-        trim_overshoot(glyphs, span, left, right)
-    } else {
-        (left, right)
-    };
-    if right - left > span {
-        0.0
-    } else if left < 0.0 {
-        super::metrics::snap(-left)
-    } else if right > span {
-        super::metrics::snap(span - right)
-    } else {
-        0.0
-    }
-}
-
-/// Largest number of outside columns per side that may be sub-pixel overshoot.
-pub(super) const OVERSHOOT_COLUMNS: f32 = 1.0;
-
-/// Narrows a run's ink extents `[left, right)` by dropping, on each side, a
-/// single outside column that is fainter than the run's strongest column (a
-/// rasterised sub-pixel overshoot). Extents of runs without such columns are
-/// returned unchanged.
-pub(super) fn trim_overshoot(
-    glyphs: &[CachedGlyph],
-    span: f32,
-    left: f32,
-    right: f32,
-) -> (f32, f32) {
-    let coverage_at = |x: f32| -> u32 {
-        glyphs
-            .iter()
-            .filter_map(|glyph| {
-                let index = x - glyph.offset.x;
-                (index >= 0.0)
-                    .then(|| glyph.columns.get(index as usize).copied())
-                    .flatten()
-            })
-            .sum()
-    };
-    let peak = glyphs
-        .iter()
-        .flat_map(|glyph| glyph.columns.iter().copied())
-        .max()
-        .unwrap_or(0);
-    let mut trimmed_left = left;
-    let mut trimmed_right = right;
-    let left_over = -left;
-    if left_over > 0.0 && left_over <= OVERSHOOT_COLUMNS && coverage_at(left) < peak {
-        trimmed_left = left + left_over;
-    }
-    let right_over = right - span;
-    if right_over > 0.0 && right_over <= OVERSHOOT_COLUMNS && coverage_at(right - 1.0) < peak {
-        trimmed_right = right - right_over;
-    }
-    (trimmed_left, trimmed_right)
 }
 
 pub(super) fn solid_quad(geometry: PixelGeometry, color: Color, target: Vec2) -> QuadInstance {

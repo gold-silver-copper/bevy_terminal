@@ -1565,6 +1565,7 @@ dependencies = [
  "bevy",
  "bitflags 2.13.1",
  "fontique",
+ "png",
  "skrifa 0.42.1",
  "unicode-segmentation",
  "unicode-width",

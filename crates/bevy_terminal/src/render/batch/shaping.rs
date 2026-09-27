@@ -1,6 +1,7 @@
 //! Glyph rasterization, shape lookup, and atlas storage.
 use super::constraint::{Align, Constraint, GlyphSize, Size};
 use super::metrics::{GlyphBox, column_coverage};
+use super::sprite::{self, Sprite};
 use super::{
     GLYPH_ATLAS_SIZE, GLYPH_FORMAT, RasterMetrics, ResolvedStyle, TerminalRenderConfig,
     TerminalStats, TextContext, text_font,
@@ -100,11 +101,6 @@ pub(super) fn shape_run(
     })
 }
 
-pub(super) fn is_box_drawing(text: &str) -> bool {
-    let mut chars = text.chars();
-    matches!(chars.next(), Some('\u{2500}'..='\u{257f}')) && chars.next().is_none()
-}
-
 /// Whether a grapheme starts with a codepoint Ghostty constrains as a symbol:
 /// the blocks whose glyphs fonts commonly draw wider than a text advance
 /// (arrows, enclosed alphanumerics, miscellaneous symbols, dingbats,
@@ -136,21 +132,6 @@ pub(super) fn is_powerline(text: &str) -> bool {
     text.chars()
         .next()
         .is_some_and(|c| matches!(u32::from(c), 0xe0b0..=0xe0d7))
-}
-
-/// Glyphs that tile the grid (box drawing, shades, legacy computing,
-/// Powerline): Ghostty draws these itself; here they come from the font and
-/// keep the per-cell clip, so a stroke's sub-pixel overshoot does not paint
-/// over the neighbouring cell's anti-aliased edge.
-pub(super) fn is_graphics(text: &str) -> bool {
-    let mut chars = text.chars();
-    let (Some(c), None) = (chars.next(), chars.next()) else {
-        return false;
-    };
-    matches!(
-        u32::from(c),
-        0x2500..=0x257f | 0x2591..=0x2593 | 0x1fb00..=0x1fbff | 0x1cc00..=0x1cebf | 0xe0b0..=0xe0d7
-    )
 }
 
 /// Upper bound on further rescales of one constrained run: hinting makes ink
@@ -199,7 +180,7 @@ pub(super) struct CachedGlyph {
     pub(super) uv: Vec4,
     pub(super) alpha_mask: bool,
     /// Horizontal extent `[left, right)` of the bitmap's inked columns,
-    /// relative to the bitmap.
+    /// relative to the bitmap; empty for a transparent bitmap.
     pub(super) ink: (f32, f32),
     /// Coverage (sum of alpha) of every bitmap column; tells a box-drawing
     /// stroke's faint sub-pixel overshoot from real overhang.
@@ -219,7 +200,7 @@ impl CachedGlyph {
         let right = columns.iter().rposition(|c| *c > 0);
         let ink = match (left, right) {
             (Some(left), Some(right)) => (left as f32, right as f32 + 1.0),
-            _ => (0.0, size.x),
+            _ => (0.0, 0.0),
         };
         Self {
             texture,
@@ -339,9 +320,17 @@ pub(super) fn resample(pixels: &[u8], from: UVec2, to: UVec2) -> Vec<u8> {
     result
 }
 
+/// What a unified atlas entry holds: a copy of a Bevy atlas glyph (possibly
+/// resampled) or a procedurally drawn sprite of a given size.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) enum AtlasKey {
+    Source(SourceGlyph),
+    Sprite { codepoint: u32, size: UVec2 },
+}
+
 pub(super) struct UnifiedGlyphAtlas {
     pub(super) image: Handle<Image>,
-    pub(super) glyphs: HashMap<SourceGlyph, Vec4>,
+    pub(super) glyphs: HashMap<AtlasKey, Vec4>,
     pub(super) cursor: UVec2,
     pub(super) row_height: u32,
 }
@@ -362,12 +351,12 @@ impl UnifiedGlyphAtlas {
         source: SourceGlyph,
         images: &mut Assets<Image>,
     ) -> Option<Vec4> {
-        if let Some(uv) = self.glyphs.get(&source) {
+        if let Some(uv) = self.glyphs.get(&AtlasKey::Source(source)) {
             return Some(*uv);
         }
         let pixels = source_pixels(source, images)?;
         self.insert(
-            source,
+            AtlasKey::Source(source),
             UVec2::new(source.width, source.height),
             &pixels,
             images,
@@ -388,9 +377,9 @@ impl UnifiedGlyphAtlas {
             UVec2::new(source.width, source.height),
             scaled,
         );
-        let uv = match self.glyphs.get(&key) {
+        let uv = match self.glyphs.get(&AtlasKey::Source(key)) {
             Some(uv) => *uv,
-            None => self.insert(key, scaled, &pixels, images)?,
+            None => self.insert(AtlasKey::Source(key), scaled, &pixels, images)?,
         };
         let columns = (0..scaled.x as usize)
             .map(|x| {
@@ -402,9 +391,32 @@ impl UnifiedGlyphAtlas {
         Some((uv, columns))
     }
 
+    /// Adds a sprite's coverage to the atlas, returning its UV rectangle.
+    pub(super) fn cache_sprite(
+        &mut self,
+        codepoint: u32,
+        cell: UVec2,
+        sprite: &Sprite,
+        images: &mut Assets<Image>,
+    ) -> Option<Vec4> {
+        let key = AtlasKey::Sprite {
+            codepoint,
+            size: cell,
+        };
+        if let Some(uv) = self.glyphs.get(&key) {
+            return Some(*uv);
+        }
+        let pixels: Vec<u8> = sprite
+            .alpha
+            .iter()
+            .flat_map(|alpha| [255, 255, 255, *alpha])
+            .collect();
+        self.insert(key, sprite.size, &pixels, images)
+    }
+
     fn insert(
         &mut self,
-        key: SourceGlyph,
+        key: AtlasKey,
         size: UVec2,
         pixels: &[u8],
         images: &mut Assets<Image>,
@@ -774,30 +786,49 @@ pub(super) fn cached_shape<'a>(
         return Cow::Borrowed(&shapes.entries[index]);
     }
     stats.shape_misses = stats.shape_misses.saturating_add(1);
+    if let Some(codepoint) = sprite::sprite_codepoint(text) {
+        // Grid graphics are drawn, not shaped, at the size of their cells.
+        let cell = UVec2::new(
+            raster.cell_size.x as u32 * u32::from(columns),
+            raster.cell_size.y as u32,
+        );
+        let metrics = sprite::Metrics {
+            cell_width: raster.cell_size.x as u32,
+            cell_height: raster.cell_size.y as u32,
+            box_thickness: raster.box_thickness,
+        };
+        let glyphs = sprite::draw(codepoint, cell.x, cell.y, metrics)
+            .and_then(|drawn| {
+                let uv = glyph_atlas.cache_sprite(codepoint, cell, &drawn, cx.images)?;
+                let columns = (0..drawn.size.x as usize)
+                    .map(|x| {
+                        (0..drawn.size.y as usize)
+                            .map(|y| u32::from(drawn.alpha[y * drawn.size.x as usize + x]))
+                            .sum()
+                    })
+                    .collect();
+                Some(vec![CachedGlyph::new(
+                    glyph_atlas.image.id(),
+                    drawn.offset.as_vec2(),
+                    drawn.size.as_vec2(),
+                    uv,
+                    true,
+                    columns,
+                )])
+            })
+            .unwrap_or_default();
+        return shapes.insert(style, text, columns, glyphs);
+    }
     let Some(layout) = shape_run(text, style, config, raster, viewport, cx) else {
         return Cow::Borrowed(&[]);
     };
     // Each independently shaped cell otherwise centers its own fallback face
     // in the line. Ordinary runs share the configured primary face's baseline.
     // This is an integer translation, so rasterization phase is unchanged.
-    let translate = Vec2::new(
-        0.0,
-        if is_box_drawing(text) {
-            0.0
-        } else {
-            raster.baseline - layout.baseline
-        },
-    );
+    let translate = Vec2::new(0.0, raster.baseline - layout.baseline);
     // Text is centered in cells wider than the face; constraints position
-    // their glyphs themselves, and grid graphics keep the cell's origin.
-    let centered = Vec2::new(
-        if is_graphics(text) {
-            0.0
-        } else {
-            raster.face_dx
-        },
-        0.0,
-    );
+    // their glyphs themselves.
+    let centered = Vec2::new(raster.face_dx, 0.0);
     let (layout, translate, stretch) = match constraint_for(text, &layout) {
         Some(constraint) => match fit_run(
             text, style, config, raster, viewport, cx, layout, translate, constraint, columns,

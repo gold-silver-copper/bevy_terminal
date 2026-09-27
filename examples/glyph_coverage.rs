@@ -544,7 +544,7 @@ fn check(
                     continue;
                 }
                 let span = fidelity_oracle::span(cells, x) as usize;
-                if source.symbol() == "█" {
+                if fidelity_oracle::is_sprite(source.symbol()) {
                     let x0 = x as u32 * cell.x;
                     let solid = (0..cell.y)
                         .flat_map(|dy| {
@@ -555,7 +555,7 @@ fn check(
                             })
                         })
                         .all(|p| p == [255; 3]);
-                    if !solid {
+                    if source.symbol() == "█" && !solid {
                         failures.push("procedural block did not fill fixed cell".into());
                     }
                     rows.push_str(&format!("{}\t{}\t{y}\tblock\tprocedural-fill\t-\t{baseline}\t{cell:?}\t{font_size}\t-\n",case.name,case.scale));
@@ -567,9 +567,7 @@ fn check(
                     .place(source, &config, font_size, cell, columns, baseline, face)
                 {
                     Ok(mut placement) => {
-                        if !fidelity_oracle::is_graphics(source.symbol())
-                            && let Some((min, max)) = placement.ink()
-                        {
+                        if let Some((min, max)) = placement.ink() {
                             let x0 = (x as u32 * cell.x) as i32;
                             placement.shift.x +=
                                 fidelity_oracle::edge_shift(x0 + min.x, x0 + max.x, size.x as i32);
@@ -588,21 +586,13 @@ fn check(
                     }
                 };
                 let origin = IVec2::new((x as u32 * cell.x) as i32, (u32::from(y) * cell.y) as i32);
-                let (columns_clip, rows_clip) = if fidelity_oracle::is_graphics(source.symbol()) {
-                    (
-                        origin.x..origin.x + (cell.x * columns) as i32,
-                        origin.y..origin.y + cell.y as i32,
-                    )
-                } else {
-                    (0..canvas_size.x as i32, 0..canvas_size.y as i32)
-                };
                 placement.reference.composite_within(
                     &mut expected,
                     &mut layers,
                     canvas_size,
                     origin + placement.shift,
-                    columns_clip,
-                    rows_clip,
+                    0..canvas_size.x as i32,
+                    0..canvas_size.y as i32,
                 );
                 placements.push((x, span, columns, placement));
             }

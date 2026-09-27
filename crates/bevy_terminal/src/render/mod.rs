@@ -175,8 +175,8 @@ pub enum TerminalSizing {
     /// Derive cells from a logical font size and line-height multiplier.
     /// Width follows the font advance; height follows ascent, descent and
     /// leading. Multipliers below one tighten rows; taller ink overflows into
-    /// the neighbouring rows. Block elements still tile because they are
-    /// rendered as geometry.
+    /// the neighbouring rows. Box drawing, block elements and other grid
+    /// graphics still tile because they are drawn at the cell size.
     FromFont {
         /// Requested logical font size.
         font_size: f32,
@@ -414,9 +414,7 @@ impl ResolvedStyle {
 
 #[cfg(test)]
 mod tests {
-    use super::batch::metrics::{
-        GlyphBox, fitted_cell_height, resolve_metrics, snap, vertical_offset,
-    };
+    use super::batch::metrics::{GlyphBox, centered_offset, resolve_metrics, snap};
     use super::*;
     use crate::scene::{TerminalColor, TerminalStyle};
 
@@ -465,55 +463,15 @@ mod tests {
     }
 
     #[test]
-    fn cell_height_grows_to_the_block_box_only() {
-        // JetBrains Mono at 20 px: 24 px requested, 27 opaque block rows.
-        assert_eq!(fitted_cell_height(24.0, Some(glyph_box(1.0, 28.0))), 27.0);
-        // A block shorter than the request leaves the request alone.
-        assert_eq!(fitted_cell_height(30.0, Some(glyph_box(1.0, 28.0))), 30.0);
-        assert_eq!(fitted_cell_height(20.0, None), 20.0);
-        // Fractional boxes round up so the block always covers.
-        assert_eq!(fitted_cell_height(20.0, Some(glyph_box(0.0, 22.4))), 23.0);
-    }
-
-    #[test]
-    fn vertical_offset_keeps_blocks_covering_then_centers_ink() {
-        // Iosevka-like: 27-row cell, block opaque rows 1..28, core ink 3..27,
-        // accents reaching above the block. Only a shift of -1 keeps the block
-        // covering the cell, so that is the answer even though accents clip.
-        let block = Some(glyph_box(1.0, 28.0));
-        let core = Some(glyph_box(3.0, 27.0));
-        let accents = Some(glyph_box(-4.0, 22.0));
-        assert_eq!(vertical_offset(27.0, block, core, accents), -1.0);
-
-        // A short cell in an explicit configuration: the block still covers and the
-        // core ink is centered within the freedom the block leaves.
-        let block = Some(glyph_box(-3.0, 22.0));
-        let core = Some(glyph_box(0.0, 16.0));
-        assert_eq!(vertical_offset(20.0, block, core, None), 2.0);
-
-        // A cell taller than the block: the block no longer constrains; the core box
-        // is centered and accents fit too.
-        let block = Some(glyph_box(2.0, 12.0));
-        let core = Some(glyph_box(4.0, 12.0));
-        let accents = Some(glyph_box(1.0, 12.0));
-        assert_eq!(vertical_offset(20.0, block, core, accents), 2.0);
-
-        // Core ink taller than the cell: centered, half clipped on each side.
-        assert_eq!(
-            vertical_offset(10.0, None, Some(glyph_box(-2.0, 12.0)), None),
-            0.0
-        );
+    fn text_is_centered_in_the_cell() {
+        // A 20-row line box in a 24-row cell: two rows above and below.
+        assert_eq!(centered_offset(24.0, Some(glyph_box(0.0, 20.0))), 2.0);
+        // Already offset boxes are moved back to the center.
+        assert_eq!(centered_offset(24.0, Some(glyph_box(3.0, 23.0))), -1.0);
+        // A box taller than a compact cell is centered, overflowing both edges.
+        assert_eq!(centered_offset(10.0, Some(glyph_box(-2.0, 12.0))), 0.0);
         // Nothing measured: no shift.
-        assert_eq!(vertical_offset(20.0, None, None, None), 0.0);
-    }
-
-    #[test]
-    fn vertical_offset_prefers_core_ink_over_accents() {
-        // 20-row cell, core needs 0..20 exactly, accents want to sit 2 rows higher:
-        // core wins and accents clip.
-        let core = Some(glyph_box(2.0, 22.0));
-        let accents = Some(glyph_box(-2.0, 18.0));
-        assert_eq!(vertical_offset(20.0, None, core, accents), -2.0);
+        assert_eq!(centered_offset(20.0, None), 0.0);
     }
 
     #[test]

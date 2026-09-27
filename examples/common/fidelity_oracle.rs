@@ -277,23 +277,54 @@ pub fn is_symbol(symbol: &str) -> bool {
     })
 }
 
-/// Box drawing: strokes whose sub-pixel overshoot must not shift them.
-pub fn is_box_drawing(symbol: &str) -> bool {
-    let mut chars = symbol.chars();
-    matches!(chars.next(), Some('\u{2500}'..='\u{257f}')) && chars.next().is_none()
-}
-
-/// Grid graphics the renderer clips to their cells (box drawing, shades,
-/// legacy computing, Powerline).
-pub fn is_graphics(symbol: &str) -> bool {
+/// Codepoints Ghostty draws procedurally at cell size instead of taking
+/// them from the font (`font/sprite/Face.zig`): box drawing, block elements,
+/// Braille, four geometric triangles, the Powerline and branch subsets and
+/// Symbols for Legacy Computing. Restated here so the harness does not depend
+/// on the renderer's classification; the sprites themselves are checked
+/// against Ghostty's reference atlases and by the tile panels.
+pub fn is_sprite(symbol: &str) -> bool {
     let mut chars = symbol.chars();
     let (Some(c), None) = (chars.next(), chars.next()) else {
         return false;
     };
     matches!(
         u32::from(c),
-        0x2500..=0x257f | 0x2591..=0x2593 | 0x1fb00..=0x1fbff | 0x1cc00..=0x1cebf | 0xe0b0..=0xe0d7
+        0x2500..=0x259f
+            | 0x25e2..=0x25e5
+            | 0x25f8..=0x25fa
+            | 0x25ff
+            | 0x2800..=0x28ff
+            | 0xe0b0..=0xe0bf
+            | 0xe0d2
+            | 0xe0d4
+            | 0xf5d0..=0xf60d
+            | 0x1fb00..=0x1fbaf
+            | 0x1fbbd..=0x1fbbf
+            | 0x1fbce..=0x1fbef
+            | 0x1cc1b..=0x1cc1e
+            | 0x1cc21..=0x1cc3f
+            | 0x1cd00..=0x1cde5
+            | 0x1ce00
+            | 0x1ce01
+            | 0x1ce0b
+            | 0x1ce0c
+            | 0x1ce16..=0x1ce19
+            | 0x1ce51..=0x1ceaf
     )
+}
+
+/// Sprites whose diagonal strokes deliberately overshoot their cell (half a
+/// pixel along the diagonal, so diagonals tile; the butt caps' corners reach
+/// a little further); their neighbours' two outermost pixels are not judged
+/// against a raster that lacks them.
+pub fn sprite_overshoots(symbol: &str) -> bool {
+    symbol.chars().next().is_some_and(|c| {
+        matches!(
+            u32::from(c),
+            0x2571..=0x2573 | 0xe0b9 | 0xe0bb | 0xe0bd | 0xe0bf | 0x1fba0..=0x1fbae | 0x1fbd0..=0x1fbdf
+        )
+    })
 }
 
 /// Cells the anchor at `column` occupies: its declared span, cut at the row's
@@ -473,14 +504,7 @@ impl Rasterizer<'_> {
         };
         let (min, size) = measure(&reference)?;
         if !color && !is_symbol(cell.symbol()) {
-            let dx = if is_box_drawing(cell.symbol()) {
-                reference.fitting_shift_of(reference.stroke_extents(), cell_size.x * columns)
-            } else if is_graphics(cell.symbol()) {
-                reference.fitting_shift(cell_size.x * columns)
-            } else {
-                Some(face.dx as i32)
-            }
-            .unwrap_or(0);
+            let dx = face.dx as i32;
             return Ok(Placement {
                 reference,
                 shift: IVec2::new(dx, dy),
@@ -650,44 +674,6 @@ impl Reference {
                 }
             }
         }
-    }
-
-    /// Preserve bearings when they fit; otherwise the minimum translation
-    /// that encloses all source ink. Oversized runs have no such translation.
-    pub fn fitting_shift(&self, width: u32) -> Option<i32> {
-        self.fitting_shift_of(self.ink_bounds()?, width)
-    }
-
-    fn fitting_shift_of(&self, (min, max): (IVec2, IVec2), width: u32) -> Option<i32> {
-        if max.x - min.x > width as i32 {
-            return None;
-        }
-        Some(0.clamp(-min.x, width as i32 - max.x))
-    }
-
-    /// Ink bounds of a box-drawing stroke without a single faint outermost
-    /// column on either side: strokes are drawn a little past their advance
-    /// so neighbours overlap, and that rasterized overshoot must not move the
-    /// stroke off the grid.
-    pub fn stroke_extents(&self) -> (IVec2, IVec2) {
-        let (min, max) = self.ink_bounds().expect("inked stroke");
-        let coverage = |x: i32| -> f32 {
-            (0..self.size.y)
-                .map(|y| self.rgba[(y * self.size.x + (x - self.origin.x) as u32) as usize].w)
-                .sum()
-        };
-        let peak = (min.x..max.x).map(coverage).fold(0.0_f32, f32::max);
-        let left = if coverage(min.x) < peak {
-            min.x + 1
-        } else {
-            min.x
-        };
-        let right = if coverage(max.x - 1) < peak {
-            max.x - 1
-        } else {
-            max.x
-        };
-        (IVec2::new(left, min.y), IVec2::new(right, max.y))
     }
 
     pub fn ink_bounds(&self) -> Option<(IVec2, IVec2)> {
@@ -869,6 +855,8 @@ mod tests {
         assert_eq!(visual_columns(&row("→"), 0), 1);
         assert_eq!(visual_columns(&row("→→ "), 1), 1);
         assert_eq!(visual_columns(&row("\u{e0b0}→ "), 1), 2);
+        assert!(is_sprite("─") && is_sprite("█") && is_sprite("⣿") && is_sprite("\u{e0b0}"));
+        assert!(!is_sprite("◆") && !is_sprite("\u{e0c0}") && !is_sprite("─\u{301}"));
         assert_eq!(visual_columns(&row("∑ "), 0), 1);
         assert_eq!(
             visual_columns(&[TerminalCell::wide("🙂", 2), TerminalCell::new(" ")], 0),

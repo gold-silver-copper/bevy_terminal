@@ -1020,47 +1020,28 @@ fn glyph(offset_x: f32, columns: &[u32]) -> CachedGlyph {
 }
 
 #[test]
-fn horizontal_fit_pushes_overhang_inside_and_lets_overflow_keep_its_bearings() {
-    // Inside the span: bearings are kept.
+fn text_keeps_its_bearings_except_at_the_texture_edges() {
+    // Inside the texture, overhangs and wide runs keep their bearings.
+    assert_eq!(edge_shift(&[glyph(-2.0, &[9; 8])], 11.0, 110.0), 0.0);
+    assert_eq!(edge_shift(&[glyph(6.0, &[9; 15])], 11.0, 110.0), 0.0);
+    // Ink crossing the first column's left edge is pushed right...
+    assert_eq!(edge_shift(&[glyph(-2.0, &[9; 8])], 0.0, 110.0), 2.0);
+    // ...and ink crossing the last column's right edge is pushed left.
+    assert_eq!(edge_shift(&[glyph(6.0, &[9; 8])], 99.0, 110.0), -3.0);
+    // Transparent columns are not ink.
+    assert_eq!(edge_shift(&[glyph(-2.0, &[0, 0, 9, 9])], 0.0, 110.0), 0.0);
+    // A run wider than the texture keeps its place; blank runs never move.
+    assert_eq!(edge_shift(&[glyph(-3.0, &[9; 15])], 0.0, 11.0), 0.0);
+    assert_eq!(edge_shift(&[glyph(-3.0, &[0, 0])], 0.0, 11.0), 0.0);
+    // A combined run moves as one unit.
     assert_eq!(
-        fit_horizontally(&[glyph(2.0, &[9, 9, 9])], 11.0, false),
-        0.0
-    );
-    // Overhanging left (an italic): pushed right by the overhang.
-    assert_eq!(fit_horizontally(&[glyph(-2.0, &[9; 8])], 11.0, false), 2.0);
-    // Overhanging right: pushed left.
-    assert_eq!(fit_horizontally(&[glyph(6.0, &[9; 8])], 11.0, false), -3.0);
-    // Leading transparent columns do not count as ink.
-    assert_eq!(
-        fit_horizontally(&[glyph(-2.0, &[0, 0, 9, 9])], 11.0, false),
-        0.0
-    );
-    // Wider than the span: drawn as shaped, overflowing the neighbour.
-    assert_eq!(fit_horizontally(&[glyph(0.0, &[9; 15])], 11.0, false), 0.0);
-    assert_eq!(fit_horizontally(&[glyph(-3.0, &[9; 15])], 11.0, false), 0.0);
-    // A combined run is fitted as one unit, not one translation per glyph.
-    assert_eq!(
-        fit_horizontally(
+        edge_shift(
             &[glyph(-1.0, &[2, 2]), glyph(1.0, &[10, 19, 1])],
-            5.0,
-            false
+            0.0,
+            110.0
         ),
         1.0
     );
-    // Blank runs never shift.
-    assert_eq!(fit_horizontally(&[glyph(3.0, &[0, 0])], 11.0, false), 0.0);
-}
-
-#[test]
-fn ordinary_text_keeps_faint_edge_columns_that_fit() {
-    // Cascadia Mono italic W at 1x: 11 ink columns at x=1 in an 11px cell.
-    let mut columns = vec![255; 11];
-    columns[10] = 120;
-    let run = [glyph(1.0, &columns)];
-    assert_eq!(fit_horizontally(&run, 11.0, false), -1.0);
-    assert_eq!(fit_horizontally(&run, 11.0, true), 0.0);
-    columns.reverse();
-    assert_eq!(fit_horizontally(&[glyph(-1.0, &columns)], 11.0, false), 1.0);
 }
 
 #[test]
@@ -1086,76 +1067,6 @@ fn symbols_before_blank_cells_may_spread_into_them() {
     assert_eq!(visual_columns(&wide, 0, 2), 2);
     assert!(is_symbol("🙂") && is_symbol("↔") && is_symbol("★") && is_symbol("\u{e0b0}"));
     assert!(!is_symbol("∑") && !is_symbol("◆") && !is_symbol("⣿") && !is_symbol("─"));
-}
-
-#[test]
-fn block_elements_map_to_cell_fractions() {
-    assert_eq!(block_element("█"), Some(&[(0.0, 0.0, 1.0, 1.0)][..]));
-    assert_eq!(block_element("▄"), Some(&[(0.0, 0.5, 1.0, 1.0)][..]));
-    assert_eq!(block_element("▁"), Some(&[(0.0, 0.875, 1.0, 1.0)][..]));
-    assert_eq!(block_element("▏"), Some(&[(0.0, 0.0, 0.125, 1.0)][..]));
-    assert_eq!(
-        block_element("▚"),
-        Some(&[(0.0, 0.0, 0.5, 0.5), (0.5, 0.5, 1.0, 1.0)][..])
-    );
-    // Shades keep their font glyphs; text and clusters are never blocks.
-    assert_eq!(block_element("░"), None);
-    assert_eq!(block_element("a"), None);
-    assert_eq!(block_element("█\u{fe0f}"), None);
-    // Every quadrant combination covers exactly the quadrants it names.
-    for (symbol, quadrants) in [
-        ("▖", 0b0010),
-        ("▗", 0b0001),
-        ("▘", 0b1000),
-        ("▙", 0b1011),
-        ("▚", 0b1001),
-        ("▛", 0b1110),
-        ("▜", 0b1101),
-        ("▝", 0b0100),
-        ("▞", 0b0110),
-        ("▟", 0b0111),
-    ] {
-        let rects = block_element(symbol).expect(symbol);
-        let covered = |x: f32, y: f32| {
-            rects
-                .iter()
-                .any(|&(l, t, r, b)| x >= l && x < r && y >= t && y < b)
-        };
-        let mask = u8::from(covered(0.25, 0.25)) << 3
-            | u8::from(covered(0.75, 0.25)) << 2
-            | u8::from(covered(0.25, 0.75)) << 1
-            | u8::from(covered(0.75, 0.75));
-        assert_eq!(mask, quadrants, "{symbol}");
-    }
-}
-
-/// A box-drawing bar drawn a fraction past its advance rasterises to one
-/// faint column outside the span; that is overshoot to clip, not overhang
-/// to push, or `┌` would land a pixel away from `│`.
-#[test]
-fn horizontal_fit_ignores_sub_pixel_overshoot() {
-    // `─`: full-strength bar across the cell plus a 47% column past it.
-    let mut bar = vec![255; 11];
-    bar.push(120);
-    assert_eq!(fit_horizontally(&[glyph(0.0, &bar)], 11.0, true), 0.0);
-    // The same on the left (`┐`'s bar reaching into the previous cell).
-    let mut bar = vec![120];
-    bar.extend([255; 11]);
-    assert_eq!(fit_horizontally(&[glyph(-1.0, &bar)], 11.0, true), 0.0);
-    // Overshoot on both sides at once.
-    let mut bar = vec![120];
-    bar.extend([255; 11]);
-    bar.push(120);
-    assert_eq!(fit_horizontally(&[glyph(-1.0, &bar)], 11.0, true), 0.0);
-    // A full-strength column outside the span is real overhang: pushed.
-    assert_eq!(fit_horizontally(&[glyph(3.0, &[255; 9])], 11.0, true), -1.0);
-    // Two faint columns are past the tolerance: the run is wider than the
-    // span and placed by retained coverage, which keeps the solid columns.
-    let mut bar = vec![255; 11];
-    bar.extend([120, 120]);
-    assert_eq!(fit_horizontally(&[glyph(0.0, &bar)], 11.0, true), 0.0);
-    // A negative-bearing italic with a solid first column is still pushed.
-    assert_eq!(fit_horizontally(&[glyph(-1.0, &[255; 9])], 11.0, true), 1.0);
 }
 
 #[test]

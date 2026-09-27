@@ -884,17 +884,9 @@ struct Composed {
     placement: Result<fidelity_oracle::Placement, String>,
 }
 
-/// Placement "error" marking procedural block elements, which the tiles check.
-const BLOCK: &str = "procedural block element";
-
-/// Block elements are drawn as geometry, never as glyphs (shades excluded).
-fn is_block_element(symbol: &str) -> bool {
-    let mut chars = symbol.chars();
-    matches!(
-        (chars.next(), chars.next()),
-        (Some('\u{2580}'..='\u{2590}' | '\u{2594}'..='\u{259f}'), None)
-    )
-}
+/// Placement "error" marking procedural sprites, which the tiles and the
+/// renderer's comparison with Ghostty's reference atlases check.
+const SPRITE: &str = "procedural sprite";
 
 /// Compares each capture with raw glyph coverage and checks the procedural tiles.
 /// Returns the number of failed (family, scale, group) combinations.
@@ -972,6 +964,7 @@ fn run_checks(
             })
             .collect();
         let mut layers = vec![0u8; expected.len()];
+        let mut procedural = vec![false; expected.len()];
         let mut composed: Vec<Vec<Option<Composed>>> = Vec::new();
         for row in 0..ROWS {
             let cells = snapshot.row(row);
@@ -983,13 +976,26 @@ fn run_checks(
                     column += 1;
                     continue;
                 };
-                if is_block_element(&symbol) {
-                    // Procedural geometry, drawn over text; checked by the tiles.
+                if fidelity_oracle::is_sprite(&symbol) {
+                    // Procedural geometry; checked by the tiles and against
+                    // Ghostty's sprite atlases. Its diagonal overshoot is
+                    // excluded from the neighbouring pixels' comparison.
+                    if fidelity_oracle::sprite_overshoots(&symbol) {
+                        let x0 = column as u32 * cell.x;
+                        let y0 = u32::from(row) * cell.y;
+                        for y in y0.saturating_sub(2)..(y0 + cell.y + 2).min(canvas_size.y) {
+                            for x in x0.saturating_sub(2)
+                                ..(x0 + cell.x * span as u32 + 2).min(canvas_size.x)
+                            {
+                                procedural[(y * canvas_size.x + x) as usize] = true;
+                            }
+                        }
+                    }
                     row_runs[column] = Some(Composed {
                         symbol,
                         span,
                         columns: span as u32,
-                        placement: Err(BLOCK.into()),
+                        placement: Err(SPRITE.into()),
                     });
                     column += span;
                     continue;
@@ -1006,9 +1012,7 @@ fn run_checks(
                         face,
                     )
                     .map(|mut placement| {
-                        if !fidelity_oracle::is_graphics(&symbol)
-                            && let Some((min, max)) = placement.ink()
-                        {
+                        if let Some((min, max)) = placement.ink() {
                             let x0 = (column as u32 * cell.x) as i32;
                             placement.shift.x +=
                                 fidelity_oracle::edge_shift(x0 + min.x, x0 + max.x, size.x as i32);
@@ -1020,25 +1024,14 @@ fn run_checks(
                         (column as u32 * cell.x) as i32,
                         (u32::from(row) * cell.y) as i32,
                     );
-                    if fidelity_oracle::is_graphics(&symbol) {
-                        placement.reference.composite_within(
-                            &mut expected,
-                            &mut layers,
-                            canvas_size,
-                            origin + placement.shift,
-                            origin.x..origin.x + (cell.x * columns) as i32,
-                            origin.y..origin.y + cell.y as i32,
-                        );
-                    } else {
-                        placement.reference.composite_within(
-                            &mut expected,
-                            &mut layers,
-                            canvas_size,
-                            origin + placement.shift,
-                            0..canvas_size.x as i32,
-                            0..canvas_size.y as i32,
-                        );
-                    }
+                    placement.reference.composite_within(
+                        &mut expected,
+                        &mut layers,
+                        canvas_size,
+                        origin + placement.shift,
+                        0..canvas_size.x as i32,
+                        0..canvas_size.y as i32,
+                    );
                 }
                 row_runs[column] = Some(Composed {
                     symbol,
@@ -1078,7 +1071,7 @@ fn run_checks(
                     let placement = match placement {
                         Ok(placement) => placement,
                         Err(error) => {
-                            if interior && error != BLOCK {
+                            if interior && error != SPRITE {
                                 checked += 1;
                                 problems.push(format!("{symbol:?}: oracle error: {error}"));
                             }
@@ -1167,6 +1160,21 @@ fn run_checks(
                         region(&|x, y| expected[((top + y) * canvas_size.x + x) as usize]);
                     let actual_cell =
                         region(&|x, y| texel(data, *size, x, u32::from(*row) * cell.y + y));
+                    // Pixels a neighbouring sprite's overshoot may reach are
+                    // taken as drawn.
+                    let expected_cell: Vec<[u8; 3]> = expected_cell
+                        .iter()
+                        .zip(&actual_cell)
+                        .enumerate()
+                        .map(|(i, (e, a))| {
+                            let (x, y) = (x0 + i as u32 % cell.x, top + i as u32 / cell.x);
+                            if procedural[(y * canvas_size.x + x) as usize] {
+                                *a
+                            } else {
+                                *e
+                            }
+                        })
+                        .collect();
                     let layers = &layers;
                     let tolerance: Vec<u8> = (0..cell.y)
                         .flat_map(|y| {

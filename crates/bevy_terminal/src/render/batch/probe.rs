@@ -33,7 +33,7 @@ pub(super) struct ProbeGlyph {
     pub(super) row: u16,
     pub(super) column: u16,
     pub(super) columns: u16,
-    pub(super) graphics: bool,
+    pub(super) sprite: bool,
     pub(super) color: bool,
     pub(super) texture: AssetId<Image>,
     pub(super) uv: Vec4,
@@ -47,8 +47,8 @@ pub(super) struct ProbeGlyph {
 
 impl ProbeGlyph {
     fn class(&self) -> &'static str {
-        if self.graphics {
-            "graphics"
+        if self.sprite {
+            "sprite"
         } else if self.color {
             "color"
         } else if is_symbol(&self.symbol) {
@@ -601,7 +601,7 @@ fn glyph_ink_is_clipped_only_at_the_texture_edges() {
         let clipped: Vec<_> = result
             .entries
             .iter()
-            .filter(|entry| entry.class != "graphics" && entry.lost_clip > 0)
+            .filter(|entry| entry.class != "sprite" && entry.lost_clip > 0)
             .map(|entry| format!("{:?} at ({},{})", entry.symbol, entry.column, entry.row))
             .collect();
         assert!(

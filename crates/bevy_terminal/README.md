@@ -137,8 +137,15 @@ glyphs are resampled to their box.
 
 Ink is not confined to its row: accents, stacked marks and tall scripts
 overflow into the neighbouring rows, and only the texture's edges clip them.
-Partial repaints also redraw the rows that changed ink reaches. Grid graphics
-(box drawing, shades, legacy computing, Powerline) keep the per-cell clip.
+Partial repaints also redraw the rows that changed ink reaches.
+
+Grid graphics are drawn procedurally at the exact cell size, ported from
+Ghostty's sprite font, so they tile without seams whatever the font's outlines
+look like (or whether it has them at all): box drawing (U+2500–257F), block
+elements and shades (U+2580–259F), Braille (U+2800–28FF), `◢◣◤◥◸◹◺◿`, the
+geometric Powerline glyphs (U+E0B0–E0BF, E0D2, E0D4), branch drawing
+(U+F5D0–F60D) and Symbols for Legacy Computing (U+1FB00–1FBEF and its
+supplement). Their lines use the font's underline thickness, as in Ghostty.
 
 The crate is MIT licensed; the test fonts under `assets/fonts` are bundled
 under their own licenses (OFL 1.1) and are used only by tests.

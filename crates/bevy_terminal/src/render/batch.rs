@@ -7,6 +7,7 @@ pub(super) mod metrics;
 mod nerd_font;
 mod scene;
 mod shaping;
+mod sprite;
 use gpu::{
     BatchGpuState, batch_scenes_can_render_early, extract_batch_scenes, render_batch_scenes,
     reset_batch_gpu_state,

@@ -9,6 +9,8 @@ repository = "https://github.com/gold-silver-copper/bevy_terminal"
 documentation = "https://docs.rs/bevy_terminal"
 keywords = ["bevy", "terminal", "tui", "rendering"]
 categories = ["game-development", "gui", "rendering"]
+# Ghostty's reference sprite atlases are repository-only test fixtures.
+exclude = ["src/render/batch/sprite/testdata"]
 
 [features]
 default = ["system_fonts"]
@@ -39,6 +41,8 @@ bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "sy
 # Host-independent font collections for the glyph placement probe.
 fontique = { version = "0.9", default-features = false }
 unicode-segmentation = "1.13"
+# Decodes Ghostty's reference sprite atlases.
+png = "0.18"
 unicode-width = "0.2"
 
 [lints.rust]
