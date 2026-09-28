@@ -9,8 +9,9 @@ use super::*;
 use crate::render::{FontFaces, TerminalSizing};
 use crate::scene::TerminalCell;
 
-/// A headless app with `terminals` 40×12 terminals in 8×12 cells of
-/// JetBrains Mono at 8 px, settled for five updates.
+/// A headless app with `terminals` 40×12 terminals of JetBrains Mono at
+/// `font_size` in cells 1.5 times as tall, with only the bundled fallback
+/// fonts (so results do not depend on the host), settled for five updates.
 fn app(terminals: usize, font_size: f32) -> (App, Vec<(Entity, TerminalSurface)>) {
     let mut app = App::new();
     app.add_plugins((
@@ -20,6 +21,7 @@ fn app(terminals: usize, font_size: f32) -> (App, Vec<(Entity, TerminalSurface)>
         TerminalPlugin,
     ))
     .init_asset::<Image>();
+    super::probe::isolate_fonts(&mut app);
     let font = app
         .world_mut()
         .resource_mut::<Assets<Font>>()
@@ -52,23 +54,38 @@ fn app(terminals: usize, font_size: f32) -> (App, Vec<(Entity, TerminalSurface)>
     (app, surfaces)
 }
 
-/// Fills the grid with consecutive codepoints from `first`.
-fn fill(surface: &TerminalSurface, first: u32, wide: bool) {
+/// Fills the 40×12 grid with consecutive codepoints from `first`
+/// (their glyphs need not exist: every distinct symbol is shaped once).
+fn fill(surface: &TerminalSurface, first: u32) {
+    fill_with(surface, (first..).filter_map(char::from_u32));
+}
+
+fn fill_with(surface: &TerminalSurface, symbols: impl Iterator<Item = char>) {
+    let mut symbols = symbols;
     surface.update(|update| {
-        let step = if wide { 2 } else { 1 };
         for y in 0..12u16 {
-            for x in (0..40u16).step_by(step) {
-                let index = u32::from(y) * 40 / step as u32 + u32::from(x) / step as u32;
-                let symbol = char::from_u32(first + index).unwrap().to_string();
-                let cell = if wide {
-                    TerminalCell::wide(&symbol, 2)
-                } else {
-                    TerminalCell::new(&symbol)
-                };
-                update.set_cell((x, y), &cell);
+            for x in 0..40u16 {
+                let symbol = symbols.next().unwrap_or(' ');
+                update.set_cell((x, y), &TerminalCell::from(symbol));
             }
         }
     });
+}
+
+/// Latin, Greek and Cyrillic letters JetBrains Mono draws, so every
+/// symbol is a real glyph in the atlas.
+fn repertoire() -> Vec<char> {
+    [
+        0x21..=0x7e,
+        0xc0..=0x17f,
+        0x391..=0x3a9,
+        0x3b1..=0x3c9,
+        0x410..=0x44f,
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(char::from_u32)
+    .collect()
 }
 
 fn cpu_image_bytes(app: &App) -> usize {
@@ -109,15 +126,22 @@ fn adding_glyphs_never_modifies_terminal_owned_images() {
         .unwrap()
         .image
         .id();
-    // Every step shows 240 CJK ideographs never seen before.
-    for step in 0..6 {
-        fill(surface, 0x4e00 + step * 240, true);
+    // Every step shows 80 letters never seen before.
+    let letters = repertoire();
+    for (step, chunk) in letters.chunks(80).take(6).enumerate() {
+        fill_with(surface, chunk.iter().copied());
         app.update();
         assert!(
             shape_misses(&app, *entity) > 0,
             "step {step} shaped new glyphs"
         );
     }
+    let atlas = &app
+        .world()
+        .get::<BatchMainState>(*entity)
+        .unwrap()
+        .glyph_atlas;
+    assert!(atlas.glyphs.len() >= 400, "the letters reached the atlas");
     assert!(
         !app.world().resource::<Modified>().0.contains(&output),
         "the output image is only reallocated on resize"
@@ -175,7 +199,7 @@ fn alternating_working_sets_keep_their_shape_cache_misses() {
     let mut phases = [0; 3];
     for step in 0..18u32 {
         let base = if (step / 6) % 2 == 0 { 0x4e00 } else { 0x5b00 };
-        fill(surface, base + (step % 6) * 480, false);
+        fill(surface, base + (step % 6) * 480);
         app.update();
         phases[(step / 6) as usize] += shape_misses(&app, *entity);
     }
@@ -188,13 +212,15 @@ fn alternating_working_sets_keep_their_shape_cache_misses() {
 fn queued_atlas_uploads_never_exceed_one_atlas() {
     // Large glyphs, no render world to take scenes: uploads accumulate
     // across superseded scenes and the atlas overflows and restarts.
-    let (mut app, surfaces) = app(1, 40.0);
+    let (mut app, surfaces) = app(1, 200.0);
+    let letters = repertoire();
     let (entity, surface) = &surfaces[0];
     let limit = u64::from(GLYPH_ATLAS_SIZE) * u64::from(GLYPH_ATLAS_SIZE);
     let mut restarts = 0;
     let mut previous = UVec2::ZERO;
-    for step in 0..40 {
-        fill(surface, 0x4e00 + step * 240, true);
+    for step in 0..12 {
+        let offset = step * 160 % letters.len();
+        fill_with(surface, letters.iter().cycle().skip(offset).copied());
         app.update();
         let state = app.world().get::<BatchMainState>(*entity).unwrap();
         let cursor = state.glyph_atlas.cursor;
@@ -228,7 +254,7 @@ fn idle_terminals_build_no_scene_and_change_no_component() {
         .after(super::super::TerminalSystems::Sync),
     );
     for (_, surface) in &surfaces {
-        fill(surface, 0x41, false);
+        fill(surface, 0x41);
     }
     app.update();
     let generations: Vec<u64> = surfaces
