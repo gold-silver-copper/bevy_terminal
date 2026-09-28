@@ -32,16 +32,47 @@ pub(super) struct ShapedRun {
     pub(super) advance: f32,
 }
 
-/// Shapes and rasterizes `text` in `style` at the physical metrics; the
+/// How runs are laid out: the configuration, the physical raster metrics,
+/// and the bounds Bevy's text pipeline lays them out in.
+#[derive(Clone, Copy)]
+pub(super) struct RunLayout<'a> {
+    pub(super) config: &'a TerminalRenderConfig,
+    pub(super) raster: RasterMetrics,
+    pub(super) viewport: Vec2,
+}
+
+/// A run to shape: a grapheme cluster in one face, drawn over `columns`
+/// cells (which decides how a symbol is constrained).
+#[derive(Clone, Copy)]
+pub(super) struct Run<'t> {
+    pub(super) text: &'t str,
+    pub(super) face: Face,
+    pub(super) columns: u16,
+}
+
+/// What shaping a run needs besides the run: its layout, Bevy's text
+/// resources, and the terminal's shape cache, atlas and statistics.
+pub(super) struct ShapeContext<'a, 'w> {
+    pub(super) layout: RunLayout<'a>,
+    pub(super) cx: &'a mut TextContext<'w>,
+    pub(super) shapes: &'a mut ShapeCaches,
+    pub(super) atlas: &'a mut UnifiedGlyphAtlas,
+    pub(super) stats: &'a mut TerminalStats,
+}
+
+/// Shapes and rasterizes `text` in `face` at the physical metrics; the
 /// layout's glyphs are positioned inside a line box `raster.cell_size.y` tall.
 pub(super) fn shape_run(
     text: &str,
     face: Face,
-    config: &TerminalRenderConfig,
-    raster: RasterMetrics,
-    viewport: Vec2,
+    layout: RunLayout<'_>,
     cx: &mut TextContext<'_>,
 ) -> Option<ShapedRun> {
+    let RunLayout {
+        config,
+        raster,
+        viewport,
+    } = layout;
     let font = text_font(&config.font, raster.font_size, face);
     let mut computed = ComputedTextBlock::default();
     let mut layout = TextLayoutInfo::default();
@@ -717,19 +748,20 @@ struct Stretch {
 /// target box by the constraint's alignment and snapped to whole pixels.
 /// Stretched glyphs are rasterized at the larger of their two scales and
 /// resampled to the target box when copied to the atlas.
-#[allow(clippy::too_many_arguments)]
 fn fit_run(
-    text: &str,
-    face: Face,
-    config: &TerminalRenderConfig,
-    raster: RasterMetrics,
-    viewport: Vec2,
+    target_run: Run<'_>,
+    layout: RunLayout<'_>,
     cx: &mut TextContext<'_>,
     run: ShapedRun,
     translate: Vec2,
     constraint: Constraint,
-    columns: u16,
 ) -> Result<Fitted, ShapedRun> {
+    let Run {
+        text,
+        face,
+        columns,
+    } = target_run;
+    let raster = layout.raster;
     let color = constraint == Constraint::EMOJI;
     let measure = |run: &ShapedRun, images: &Assets<Image>| {
         if color {
@@ -777,7 +809,11 @@ fn fit_run(
                 break;
             }
             request.font_size = next;
-            let Some(rescaled) = shape_run(text, face, config, request, viewport, cx) else {
+            let request = RunLayout {
+                raster: request,
+                ..layout
+            };
+            let Some(rescaled) = shape_run(text, face, request, cx) else {
                 return Err(run);
             };
             let Some(rescaled_box) = measure(&rescaled, cx.images) else {
@@ -827,19 +863,24 @@ fn fit_run(
 /// the face's advance, as Ghostty draws it. Emoji, Nerd Fonts icons and other
 /// symbols follow Ghostty's constraints (see [`constraint_for`] and
 /// [`fit_run`]) against the primary face's box.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn cached_shape<'a>(
-    text: &str,
-    columns: u16,
-    face: Face,
-    config: &TerminalRenderConfig,
-    raster: RasterMetrics,
-    viewport: Vec2,
-    cx: &mut TextContext<'_>,
-    shapes: &'a mut ShapeCaches,
-    glyph_atlas: &mut UnifiedGlyphAtlas,
-    stats: &mut TerminalStats,
-) -> Cow<'a, [CachedGlyph]> {
+pub(super) fn cached_shape<'s>(
+    context: &'s mut ShapeContext<'_, '_>,
+    target_run: Run<'_>,
+) -> Cow<'s, [CachedGlyph]> {
+    let ShapeContext {
+        layout,
+        cx,
+        shapes,
+        atlas: glyph_atlas,
+        stats,
+    } = context;
+    let (layout, shapes) = (*layout, &mut **shapes);
+    let RunLayout { config, raster, .. } = layout;
+    let Run {
+        text,
+        face,
+        columns,
+    } = target_run;
     if let Some(index) = shapes.lookup(face, text, columns) {
         return Cow::Borrowed(&shapes.entries[index]);
     }
@@ -879,29 +920,27 @@ pub(super) fn cached_shape<'a>(
         );
         return shapes.insert(face, text, columns, vec![glyph]);
     }
-    let Some(layout) = shape_run(text, face, config, raster, viewport, cx) else {
+    let Some(shaped) = shape_run(text, face, layout, cx) else {
         return Cow::Borrowed(&[]);
     };
     // Each independently shaped cell otherwise centers its own fallback face
     // in the line. Ordinary runs share the configured primary face's baseline.
     // This is an integer translation, so rasterization phase is unchanged.
-    let translate = Vec2::new(0.0, raster.baseline - layout.baseline);
+    let translate = Vec2::new(0.0, raster.baseline - shaped.baseline);
     // Text is centered in cells wider than the face; constraints position
     // their glyphs themselves.
     let centered = Vec2::new(raster.face_dx, 0.0);
-    let (layout, translate, stretch) = match constraint_for(text, &layout) {
-        Some(constraint) => match fit_run(
-            text, face, config, raster, viewport, cx, layout, translate, constraint, columns,
-        ) {
+    let (shaped, translate, stretch) = match constraint_for(text, &shaped) {
+        Some(constraint) => match fit_run(target_run, layout, cx, shaped, translate, constraint) {
             Ok(fitted) => (fitted.run, fitted.translate, fitted.stretch),
-            Err(layout) => {
+            Err(shaped) => {
                 debug!("bevy_terminal: {text:?} could not be measured; drawn unconstrained");
-                (layout, translate + centered, None)
+                (shaped, translate + centered, None)
             }
         },
-        None => (layout, translate + centered, None),
+        None => (shaped, translate + centered, None),
     };
-    let cached = layout
+    let cached = shaped
         .glyphs
         .into_iter()
         .map(|glyph| {

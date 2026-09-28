@@ -15,7 +15,7 @@ use metrics::{
     resolve_metrics,
 };
 use quad::QuadInstance;
-use scene::{RowStates, SceneScratch, build_scene};
+use scene::{RowStates, SceneInput, SceneScratch, build_scene};
 use shaping::{AtlasUpload, ShapeCaches, UnifiedGlyphAtlas};
 
 use std::sync::{
@@ -635,18 +635,31 @@ impl FontCatalog {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn sync_batch_terminals(
-    mut terminals: Query<TerminalQuery>,
-    text: Option<TextResources>,
-    mut images: ResMut<Assets<Image>>,
-    font_events: Option<MessageReader<AssetEvent<Font>>>,
-    time: Option<Res<Time>>,
-    asset_server: Option<Res<AssetServer>>,
-    device: Option<Res<RenderDevice>>,
-    mut catalog: ResMut<FontCatalog>,
-    mut queue: ResMut<SceneQueue>,
-) {
+/// The world state the sync reads besides the terminals: Bevy's text,
+/// image, font, time and device resources, and the renderer's own.
+#[derive(bevy::ecs::system::SystemParam)]
+struct SyncResources<'w, 's> {
+    text: Option<TextResources<'w>>,
+    images: ResMut<'w, Assets<Image>>,
+    font_events: Option<MessageReader<'w, 's, AssetEvent<Font>>>,
+    time: Option<Res<'w, Time>>,
+    asset_server: Option<Res<'w, AssetServer>>,
+    device: Option<Res<'w, RenderDevice>>,
+    catalog: ResMut<'w, FontCatalog>,
+    queue: ResMut<'w, SceneQueue>,
+}
+
+fn sync_batch_terminals(mut terminals: Query<TerminalQuery>, resources: SyncResources) {
+    let SyncResources {
+        text,
+        mut images,
+        font_events,
+        time,
+        asset_server,
+        device,
+        mut catalog,
+        mut queue,
+    } = resources;
     if terminals.is_empty() {
         catalog.initialized = false;
         return;
@@ -1080,21 +1093,24 @@ fn sync_batch_terminal(
     #[cfg(feature = "timings")]
     let scene_start = Instant::now();
     let destination = output.id();
-    let mut scene = build_scene(
-        &snapshot,
+    let input = SceneInput {
+        snapshot: &snapshot,
         config,
         palette,
         raster,
-        &rows,
+        changed: &rows,
         full,
         destination,
+        blink,
+    };
+    let mut scene = build_scene(
+        input,
         cx,
         shapes,
         glyph_atlas,
         scratch,
         &mut retained.rows,
         stats,
-        blink,
     );
     if glyph_atlas.overflowed {
         // The atlas filled up: start it afresh with only what this frame
@@ -1104,21 +1120,24 @@ fn sync_batch_terminal(
         glyph_atlas.clear();
         rows.clear();
         rows.extend(0..snapshot.size().height);
-        scene = build_scene(
-            &snapshot,
+        let input = SceneInput {
+            snapshot: &snapshot,
             config,
             palette,
             raster,
-            &rows,
-            true,
+            changed: &rows,
+            full: true,
             destination,
+            blink,
+        };
+        scene = build_scene(
+            input,
             cx,
             shapes,
             glyph_atlas,
             scratch,
             &mut retained.rows,
             stats,
-            blink,
         );
     }
     *repaint_rows = rows;

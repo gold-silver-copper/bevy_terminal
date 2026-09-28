@@ -308,21 +308,24 @@ impl Replay {
         let mut row_states = RowStates::default();
         let mut stats = TerminalStats::default();
         let mut cx = text.context(&mut images);
-        let scene = build_scene(
-            &snapshot,
-            &config,
+        let input = SceneInput {
+            snapshot: &snapshot,
+            config: &config,
             palette,
             raster,
-            &rows,
-            true,
+            changed: &rows,
+            full: true,
             destination,
+            blink,
+        };
+        let scene = build_scene(
+            input,
             &mut cx,
             shapes,
             glyph_atlas,
             &mut scratch,
             &mut row_states,
             &mut stats,
-            blink,
         );
         assert!(cx.failure.is_none());
         self.atlas.upload(&scene);

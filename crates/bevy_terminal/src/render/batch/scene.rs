@@ -2,7 +2,8 @@
 use super::super::pixel_rect;
 use super::quad::Ink;
 use super::shaping::{
-    CachedGlyph, ShapeCaches, UnifiedGlyphAtlas, cached_shape, is_powerline, is_symbol,
+    CachedGlyph, Run, RunLayout, ShapeCaches, ShapeContext, UnifiedGlyphAtlas, cached_shape,
+    is_powerline, is_symbol,
 };
 use super::sprite::{self, sprite_codepoint};
 use super::{
@@ -197,23 +198,25 @@ pub(super) struct PlacedGlyph {
 ///
 /// Rows without overflowing ink add no work: their reach is zero, so the
 /// repainted set is the changed set and no neighbour is laid out.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn build_scene(
-    snapshot: &TerminalSnapshot,
-    config: &TerminalRenderConfig,
-    palette: &Palette,
-    raster: RasterMetrics,
-    changed: &[u16],
-    full: bool,
-    destination: AssetId<Image>,
+    input: SceneInput<'_>,
     cx: &mut TextContext<'_>,
     shapes: &mut ShapeCaches,
     glyph_atlas: &mut UnifiedGlyphAtlas,
     scratch: &mut SceneScratch,
     rows: &mut RowStates,
     stats: &mut TerminalStats,
-    blink: BlinkPhases,
 ) -> BatchScene {
+    let SceneInput {
+        snapshot,
+        config,
+        palette,
+        raster,
+        changed,
+        full,
+        destination,
+        blink,
+    } = input;
     let size = terminal_pixel_size(snapshot.size(), &raster).as_vec2();
     let height = snapshot.size().height;
     scratch.clear();
@@ -245,16 +248,22 @@ pub(super) fn build_scene(
     row_backgrounds.resize_with(usize::from(height), Vec::new);
     let mut painter = RowPainter {
         snapshot,
-        config,
         palette,
         raster,
         size,
         full,
         blink,
-        cx: &mut *cx,
-        shapes: &mut *shapes,
-        glyph_atlas: &mut *glyph_atlas,
-        stats: &mut *stats,
+        shape: ShapeContext {
+            layout: RunLayout {
+                config,
+                raster,
+                viewport: size,
+            },
+            cx: &mut *cx,
+            shapes: &mut *shapes,
+            atlas: &mut *glyph_atlas,
+            stats: &mut *stats,
+        },
         styles: &mut *styles,
         styles_row: None,
         #[cfg(test)]
@@ -538,19 +547,31 @@ pub(super) fn build_scene(
     }
 }
 
+/// What a scene draws: a snapshot with its configuration, resolved theme
+/// and raster metrics, the rows to repaint (every row when `full`), the
+/// target texture and the blink phases.
+#[derive(Clone, Copy)]
+pub(super) struct SceneInput<'a> {
+    pub(super) snapshot: &'a TerminalSnapshot,
+    pub(super) config: &'a TerminalRenderConfig,
+    pub(super) palette: &'a Palette,
+    pub(super) raster: RasterMetrics,
+    pub(super) changed: &'a [u16],
+    pub(super) full: bool,
+    pub(super) destination: AssetId<Image>,
+    pub(super) blink: BlinkPhases,
+}
+
 /// Lays out the rows of one scene.
 struct RowPainter<'a, 'w> {
     snapshot: &'a TerminalSnapshot,
-    config: &'a TerminalRenderConfig,
     palette: &'a Palette,
     raster: RasterMetrics,
     size: Vec2,
     full: bool,
     blink: BlinkPhases,
-    cx: &'a mut TextContext<'w>,
-    shapes: &'a mut ShapeCaches,
-    glyph_atlas: &'a mut UnifiedGlyphAtlas,
-    stats: &'a mut TerminalStats,
+    /// Shapes the runs, with the configuration for them.
+    shape: ShapeContext<'a, 'w>,
     styles: &'a mut Vec<ResolvedStyle>,
     /// The row `styles` currently holds.
     styles_row: Option<u16>,
@@ -683,7 +704,7 @@ impl RowPainter<'_, '_> {
                 // from the atlas instead).
                 placed.push(PlacedGlyph {
                     row,
-                    texture: self.glyph_atlas.id,
+                    texture: self.shape.atlas.id,
                     geometry: pixel_rect(
                         cell_x + x0 as f32,
                         cell_y + y0 as f32,
@@ -705,16 +726,12 @@ impl RowPainter<'_, '_> {
                     visual_columns(cells, column, width)
                 };
                 let shaped = cached_shape(
-                    symbol,
-                    columns as u16,
-                    style.face(),
-                    self.config,
-                    raster,
-                    size,
-                    self.cx,
-                    self.shapes,
-                    self.glyph_atlas,
-                    self.stats,
+                    &mut self.shape,
+                    Run {
+                        text: symbol,
+                        face: style.face(),
+                        columns: columns as u16,
+                    },
                 );
                 // Sprites are drawn in cell pixels; text shares the centered
                 // baseline and keeps its bearings, pushed in only at the

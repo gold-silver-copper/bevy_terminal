@@ -1,6 +1,6 @@
 //! Font measurement and effective raster geometry.
 use super::constraint::Metrics as FaceMetrics;
-use super::shaping::shape_run;
+use super::shaping::{RunLayout, shape_run};
 use super::{Face, TerminalRenderConfig, TextContext};
 use crate::render::{FontFaces, TerminalSizing};
 use bevy::{
@@ -368,7 +368,12 @@ pub(super) fn refine_metrics(
     for _ in 0..FIT_ROUNDS {
         text_box = None;
         for face in Face::ALL {
-            if let Some(run) = shape_run("0", face, config, raster, Vec2::splat(4096.0), cx) {
+            let layout = RunLayout {
+                config,
+                raster,
+                viewport: Vec2::splat(4096.0),
+            };
+            if let Some(run) = shape_run("0", face, layout, cx) {
                 if face == Face::Regular {
                     raster.baseline = run.baseline;
                     regular = Some((run.ascent, run.descent, run.advance));

@@ -174,17 +174,24 @@ fn failed_measurement_and_shapes_retry_after_font_registration() {
             cx.failure.is_some(),
             "a probe error must invalidate measurement"
         );
+        let mut context = ShapeContext {
+            layout: RunLayout {
+                config: &config,
+                raster,
+                viewport: Vec2::splat(100.0),
+            },
+            cx: &mut cx,
+            shapes: &mut shapes,
+            atlas: &mut atlas,
+            stats: &mut stats,
+        };
         let run = cached_shape(
-            "A",
-            1,
-            Face::Regular,
-            &config,
-            raster,
-            Vec2::splat(100.0),
-            &mut cx,
-            &mut shapes,
-            &mut atlas,
-            &mut stats,
+            &mut context,
+            Run {
+                text: "A",
+                face: Face::Regular,
+                columns: 1,
+            },
         );
         assert!(run.is_empty());
         assert!(
@@ -208,17 +215,24 @@ fn failed_measurement_and_shapes_retry_after_font_registration() {
     let (mut text, mut images) = resources.get_mut(app.world_mut()).unwrap();
     let mut cx = text.context(&mut images);
     let raster = refine_metrics(&config, None, raster, &mut cx);
+    let mut context = ShapeContext {
+        layout: RunLayout {
+            config: &config,
+            raster,
+            viewport: Vec2::splat(100.0),
+        },
+        cx: &mut cx,
+        shapes: &mut shapes,
+        atlas: &mut atlas,
+        stats: &mut stats,
+    };
     let run = cached_shape(
-        "A",
-        1,
-        Face::Regular,
-        &config,
-        raster,
-        Vec2::splat(100.0),
-        &mut cx,
-        &mut shapes,
-        &mut atlas,
-        &mut stats,
+        &mut context,
+        Run {
+            text: "A",
+            face: Face::Regular,
+            columns: 1,
+        },
     );
     assert!(!run.is_empty());
     assert!(cx.failure.is_none());
@@ -2111,17 +2125,24 @@ fn sprites_without_atlas_room_are_not_cached_empty() {
     let mut resources = SystemState::<(TextResources, ResMut<Assets<Image>>)>::new(app.world_mut());
     let (mut text, mut images) = resources.get_mut(app.world_mut()).unwrap();
     let mut cx = text.context(&mut images);
+    let mut context = ShapeContext {
+        layout: RunLayout {
+            config: &config,
+            raster,
+            viewport: Vec2::splat(100.0),
+        },
+        cx: &mut cx,
+        shapes: &mut shapes,
+        atlas: &mut atlas,
+        stats: &mut stats,
+    };
     let run = cached_shape(
-        "\u{2592}",
-        1,
-        Face::Regular,
-        &config,
-        raster,
-        Vec2::splat(100.0),
-        &mut cx,
-        &mut shapes,
-        &mut atlas,
-        &mut stats,
+        &mut context,
+        Run {
+            text: "\u{2592}",
+            face: Face::Regular,
+            columns: 1,
+        },
     );
     assert!(run.is_empty());
     drop(run);
