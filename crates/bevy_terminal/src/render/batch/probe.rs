@@ -395,9 +395,22 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
             }
         };
         let entry = &mut entries[index];
-        let image = images.get(glyph.texture).expect("glyph atlas");
-        let data = image.data.as_ref().expect("readable atlas");
-        let atlas = Vec2::new(image.width() as f32, image.height() as f32);
+        // The terminal's own atlas lives in the render world; tests see its shadow.
+        let (data, width, height) = if glyph.texture == state.glyph_atlas.id {
+            (
+                &state.glyph_atlas.shadow[..],
+                GLYPH_ATLAS_SIZE,
+                GLYPH_ATLAS_SIZE,
+            )
+        } else {
+            let image = images.get(glyph.texture).expect("glyph atlas");
+            (
+                &image.data.as_ref().expect("readable atlas")[..],
+                image.width(),
+                image.height(),
+            )
+        };
+        let atlas = Vec2::new(width as f32, height as f32);
         let texels = (glyph.uv * Vec4::new(atlas.x, atlas.y, atlas.x, atlas.y)).round();
         let cell_box = PixelGeometry {
             x: f32::from(glyph.column) * cell.x,
@@ -407,7 +420,7 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
         };
         for ty in texels.y as u32..texels.w as u32 {
             for tx in texels.x as u32..texels.z as u32 {
-                let alpha = data[((ty * image.width() + tx) * 4 + 3) as usize];
+                let alpha = data[((ty * width + tx) * 4 + 3) as usize];
                 if alpha == 0 {
                     continue;
                 }

@@ -1,7 +1,7 @@
 //! Extraction, resource lifetimes, and GPU submission.
 use super::{
-    BatchMainState, PendingBatchScenes, QuadInstance, TARGET_FORMAT, TerminalRenderer,
-    TerminalTexture,
+    BatchMainState, BatchScene, GLYPH_ATLAS_SIZE, GLYPH_FORMAT, PendingBatchScenes, QuadInstance,
+    TARGET_FORMAT, TerminalRenderer, TerminalTexture,
 };
 use bevy::{
     platform::collections::{HashMap, HashSet},
@@ -12,12 +12,15 @@ use bevy::{
         render_resource::{
             BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingResource,
             BindingType, BlendState, Buffer, BufferDescriptor, BufferUsages, ColorTargetState,
-            ColorWrites, CommandEncoderDescriptor, LoadOp, MultisampleState, Operations,
-            PipelineCompilationOptions, PipelineLayoutDescriptor, PrimitiveState, RawFragmentState,
-            RawRenderPipelineDescriptor, RawVertexBufferLayout, RawVertexState,
-            RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, SamplerBindingType,
-            ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp, TextureId,
-            TextureSampleType, TextureViewDimension, VertexAttribute, VertexFormat, VertexStepMode,
+            ColorWrites, CommandEncoderDescriptor, Extent3d, LoadOp, MultisampleState, Operations,
+            Origin3d, PipelineCompilationOptions, PipelineLayoutDescriptor, PrimitiveState,
+            RawFragmentState, RawRenderPipelineDescriptor, RawVertexBufferLayout, RawVertexState,
+            RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, Sampler,
+            SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource,
+            ShaderStages, StoreOp, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture,
+            TextureAspect, TextureDescriptor, TextureDimension, TextureId, TextureSampleType,
+            TextureUsages, TextureViewDescriptor, TextureViewDimension, VertexAttribute,
+            VertexFormat, VertexStepMode,
         },
         renderer::{RenderDevice, RenderQueue},
         texture::GpuImage,
@@ -34,19 +37,24 @@ pub(super) fn extract_batch_scenes(
 
 pub(super) fn collect_batch_scenes(main_world: &mut World, pending: &mut PendingBatchScenes) {
     pending.live_textures.clear();
+    pending.live_atlases.clear();
     let mut terminals = main_world
         .query_filtered::<(&mut BatchMainState, &TerminalTexture), With<TerminalRenderer>>();
     let mut alive = HashSet::<AssetId<Image>>::default();
     for (mut state, output) in terminals.iter_mut(main_world) {
+        pending.live_atlases.insert(state.glyph_atlas.id);
         if output.measured().is_none() {
-            state.pending = None;
+            state.discard_pending();
             continue;
         }
         alive.insert(state.output.id());
-        pending.live_textures.insert(state.glyph_atlas.image.id());
-        if let Some(scene) = state.pending.take() {
+        if let Some(mut scene) = state.pending.take() {
             // An unacknowledged submission is replaced by a full scene in the
-            // main world, so superseding it cannot lose intermediate rows.
+            // main world, so superseding it cannot lose intermediate rows;
+            // its atlas entries are carried over.
+            if let Some(superseded) = pending.scenes.remove(&scene.destination) {
+                scene.absorb(superseded);
+            }
             pending.scenes.insert(scene.destination, scene);
         }
     }
@@ -82,6 +90,17 @@ pub(super) struct BatchGpuState {
     pub(super) pipeline: Option<RenderPipeline>,
     pub(super) replace_pipeline: Option<RenderPipeline>,
     pub(super) texture_bind_groups: HashMap<AssetId<Image>, (TextureId, BindGroup)>,
+    /// Terminals' glyph atlases, created on their first entry.
+    pub(super) atlases: HashMap<AssetId<Image>, GpuAtlas>,
+    pub(super) atlas_sampler: Option<Sampler>,
+    /// Binding for scenes whose atlas holds nothing yet (solid quads only).
+    pub(super) empty_atlas: Option<BindGroup>,
+}
+
+/// A terminal's glyph atlas texture.
+pub(super) struct GpuAtlas {
+    texture: Texture,
+    bind_group: BindGroup,
 }
 
 impl BatchGpuState {
@@ -118,9 +137,125 @@ impl BatchGpuState {
         );
         let replace_pipeline =
             create_pipeline(device, &[&texture_layout], "fragment", BlendState::REPLACE);
+        let sampler = device.create_sampler(&SamplerDescriptor {
+            label: Some("bevy_terminal glyph atlas sampler"),
+            ..default()
+        });
+        let empty = device.create_texture(&TextureDescriptor {
+            label: Some("bevy_terminal empty glyph atlas"),
+            size: Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: GLYPH_FORMAT,
+            usage: TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.empty_atlas = Some(atlas_bind_group(device, &texture_layout, &empty, &sampler));
+        self.atlas_sampler = Some(sampler);
         self.texture_layout = Some(texture_layout);
         self.pipeline = Some(pipeline);
         self.replace_pipeline = Some(replace_pipeline);
+    }
+}
+
+fn atlas_bind_group(
+    device: &RenderDevice,
+    layout: &BindGroupLayout,
+    texture: &Texture,
+    sampler: &Sampler,
+) -> BindGroup {
+    let view = texture.create_view(&TextureViewDescriptor::default());
+    device.create_bind_group(
+        "bevy_terminal glyph atlas",
+        layout,
+        &[
+            BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::TextureView(&view),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: BindingResource::Sampler(sampler),
+            },
+        ],
+    )
+}
+
+/// Writes a scene's new atlas entries, creating the atlas on its first.
+fn upload_atlas(
+    gpu: &mut BatchGpuState,
+    device: &RenderDevice,
+    queue: &RenderQueue,
+    scene: &BatchScene,
+) {
+    if scene.atlas_uploads.is_empty() {
+        return;
+    }
+    let BatchGpuState {
+        atlases,
+        texture_layout,
+        atlas_sampler,
+        ..
+    } = gpu;
+    let atlas = atlases.entry(scene.atlas).or_insert_with(|| {
+        let texture = device.create_texture(&TextureDescriptor {
+            label: Some("bevy_terminal glyph atlas"),
+            size: Extent3d {
+                width: GLYPH_ATLAS_SIZE,
+                height: GLYPH_ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: GLYPH_FORMAT,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let bind_group = atlas_bind_group(
+            device,
+            texture_layout
+                .as_ref()
+                .expect("pipeline initialization creates texture layout"),
+            &texture,
+            atlas_sampler
+                .as_ref()
+                .expect("pipeline initialization creates the sampler"),
+        );
+        GpuAtlas {
+            texture,
+            bind_group,
+        }
+    });
+    for upload in &scene.atlas_uploads {
+        queue.write_texture(
+            TexelCopyTextureInfo {
+                texture: &atlas.texture,
+                mip_level: 0,
+                origin: Origin3d {
+                    x: upload.origin.x,
+                    y: upload.origin.y,
+                    z: 0,
+                },
+                aspect: TextureAspect::All,
+            },
+            &upload.pixels,
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(upload.size.x * 4),
+                rows_per_image: Some(upload.size.y),
+            },
+            Extent3d {
+                width: upload.size.x,
+                height: upload.size.y,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 }
 
@@ -292,6 +427,8 @@ pub(super) fn render_batch_scenes(
     gpu.texture_bind_groups.retain(|texture, _| {
         pending.live_textures.contains(texture) && gpu_images.get(*texture).is_some()
     });
+    gpu.atlases
+        .retain(|atlas, _| pending.live_atlases.contains(atlas));
     let scenes = std::mem::take(&mut pending.scenes);
     let mut renderable = Vec::with_capacity(scenes.len());
     for scene in scenes.into_values() {
@@ -311,7 +448,7 @@ pub(super) fn render_batch_scenes(
         if scene
             .batches
             .iter()
-            .any(|batch| gpu_images.get(batch.texture).is_none())
+            .any(|batch| batch.texture != scene.atlas && gpu_images.get(batch.texture).is_none())
         {
             pending.scenes.insert(scene.destination, scene);
             continue;
@@ -324,7 +461,12 @@ pub(super) fn render_batch_scenes(
 
     gpu.ensure_pipeline(&device);
     for scene in &renderable {
-        for batch in &scene.batches {
+        upload_atlas(&mut gpu, &device, &queue, scene);
+        for batch in scene
+            .batches
+            .iter()
+            .filter(|batch| batch.texture != scene.atlas)
+        {
             let texture = batch.texture;
             let image = gpu_images
                 .get(texture)
@@ -450,14 +592,17 @@ pub(super) fn render_batch_scenes(
                         };
                         pass.set_pipeline(pipeline.as_ref().expect("pipeline was initialized"));
                     }
-                    pass.set_bind_group(
-                        0,
+                    let bind_group = if batch.texture == scene.atlas {
+                        gpu.atlases
+                            .get(&scene.atlas)
+                            .map(|atlas| &atlas.bind_group)
+                            .or(gpu.empty_atlas.as_ref())
+                    } else {
                         gpu.texture_bind_groups
                             .get(&batch.texture)
                             .map(|(_, bind_group)| bind_group)
-                            .expect("atlas bind group was prepared"),
-                        &[],
-                    );
+                    };
+                    pass.set_bind_group(0, bind_group.expect("atlas bind group was prepared"), &[]);
                     pass.draw(
                         0..6,
                         (start - slice.instances.start) as u32

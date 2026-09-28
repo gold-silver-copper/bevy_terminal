@@ -69,7 +69,7 @@ impl Canvas {
     }
 
     /// Draws `scene` over the canvas.
-    pub(super) fn apply(&mut self, scene: &BatchScene, images: &Assets<Image>) {
+    pub(super) fn apply(&mut self, scene: &BatchScene, atlas: &Atlas, images: &Assets<Image>) {
         assert_eq!(scene.destination_size, self.size, "scene for another size");
         if scene.clear {
             let clear = encode(Vec4::from_array(
@@ -78,16 +78,26 @@ impl Canvas {
             self.pixels.fill(clear);
         }
         for batch in &scene.batches {
-            let atlas = images.get(batch.texture);
+            let texture = if batch.texture == scene.atlas {
+                Some((&atlas.pixels[..], GLYPH_ATLAS_SIZE, GLYPH_ATLAS_SIZE))
+            } else {
+                images.get(batch.texture).map(|image| {
+                    (
+                        &image.data.as_ref().expect("readable atlas")[..],
+                        image.width(),
+                        image.height(),
+                    )
+                })
+            };
             for instance in
                 &scene.instances[batch.start as usize..(batch.start + batch.count) as usize]
             {
-                self.draw(instance, atlas, batch.replace);
+                self.draw(instance, texture, batch.replace);
             }
         }
     }
 
-    fn draw(&mut self, quad: &QuadInstance, atlas: Option<&Image>, replace: bool) {
+    fn draw(&mut self, quad: &QuadInstance, atlas: Option<(&[u8], u32, u32)>, replace: bool) {
         let size = self.size.as_vec2();
         let x0 = ((quad.rect.x + 1.0) * 0.5 * size.x).round();
         let x1 = ((quad.rect.z + 1.0) * 0.5 * size.x).round();
@@ -99,13 +109,12 @@ impl Canvas {
                 let source = if solid {
                     quad.color
                 } else {
-                    let atlas = atlas.expect("glyph atlas");
+                    let (data, width, height) = atlas.expect("glyph atlas");
                     let u = quad.uv.x + (x as f32 + 0.5 - x0) / (x1 - x0) * (quad.uv.z - quad.uv.x);
                     let v = quad.uv.y + (y as f32 + 0.5 - y0) / (y1 - y0) * (quad.uv.w - quad.uv.y);
-                    let tx = ((u * atlas.width() as f32).floor() as u32).min(atlas.width() - 1);
-                    let ty = ((v * atlas.height() as f32).floor() as u32).min(atlas.height() - 1);
-                    let data = atlas.data.as_ref().expect("readable atlas");
-                    let offset = ((ty * atlas.width() + tx) * 4) as usize;
+                    let tx = ((u * width as f32).floor() as u32).min(width - 1);
+                    let ty = ((v * height as f32).floor() as u32).min(height - 1);
+                    let offset = ((ty * width + tx) * 4) as usize;
                     let sample = decode(data[offset..offset + 4].try_into().unwrap());
                     if quad.color.w >= 0.0 {
                         let coverage = corrected(sample.w, quad.color.truncate(), quad.background);
@@ -150,12 +159,42 @@ impl Canvas {
 /// A pixel position with its value in two canvases.
 pub(super) type PixelDifference = (UVec2, [u8; 4], [u8; 4]);
 
+/// The GPU atlas texture as the render world keeps it: every scene's
+/// uploads written in order.
+pub(super) struct Atlas {
+    pixels: Vec<u8>,
+}
+
+impl Default for Atlas {
+    fn default() -> Self {
+        Self {
+            pixels: vec![0; (GLYPH_ATLAS_SIZE * GLYPH_ATLAS_SIZE * 4) as usize],
+        }
+    }
+}
+
+impl Atlas {
+    pub(super) fn upload(&mut self, scene: &BatchScene) {
+        let stride = GLYPH_ATLAS_SIZE as usize * 4;
+        for upload in &scene.atlas_uploads {
+            let row_bytes = upload.size.x as usize * 4;
+            for row in 0..upload.size.y as usize {
+                let start =
+                    (upload.origin.y as usize + row) * stride + upload.origin.x as usize * 4;
+                self.pixels[start..start + row_bytes]
+                    .copy_from_slice(&upload.pixels[row * row_bytes..(row + 1) * row_bytes]);
+            }
+        }
+    }
+}
+
 /// A headless terminal whose scenes are replayed onto a persistent canvas.
 pub(super) struct Replay {
     pub(super) app: App,
     pub(super) entity: Entity,
     pub(super) surface: TerminalSurface,
     pub(super) canvas: Canvas,
+    pub(super) atlas: Atlas,
     pub(super) scenes: usize,
     pub(super) partial_scenes: usize,
 }
@@ -200,6 +239,7 @@ impl Replay {
             entity,
             surface,
             canvas: Canvas::new(UVec2::ONE),
+            atlas: Atlas::default(),
             scenes: 0,
             partial_scenes: 0,
         };
@@ -240,7 +280,8 @@ impl Replay {
         self.scenes += 1;
         self.partial_scenes += usize::from(!scene.clear);
         let images = self.app.world().resource::<Assets<Image>>();
-        self.canvas.apply(&scene, images);
+        self.atlas.upload(&scene);
+        self.canvas.apply(&scene, &self.atlas, images);
     }
 
     /// The canvas a full scene of the current snapshot produces, built with
@@ -284,8 +325,9 @@ impl Replay {
             blink,
         );
         assert!(cx.failure.is_none());
+        self.atlas.upload(&scene);
         let mut canvas = Canvas::new(scene.destination_size);
-        canvas.apply(&scene, &images);
+        canvas.apply(&scene, &self.atlas, &images);
         canvas
     }
 
@@ -507,5 +549,41 @@ fn overflowing_coverage_is_corrected_against_each_background_it_covers() {
                 .iter()
                 .any(|b| (b - luminance(above)).abs() < 1e-6),
         "the stacked marks over the row above blend against its background: {backgrounds:?}"
+    );
+}
+
+#[test]
+fn atlas_uploads_reach_the_texture_across_font_switches() {
+    let mut replay = Replay::new("cascadia-mono", (8, 4), TerminalSizing::font(23.25), 1.0);
+    replay.write(1, "日本語", TerminalStyle::new());
+    replay.assert_matches_full("wide text");
+    let other = {
+        let mut app_fonts = replay.app.world_mut().resource_mut::<Assets<Font>>();
+        app_fonts.add(Font::from_bytes(super::probe::asset(
+            "dejavu-sans-mono/DejaVuSansMono.ttf",
+        )))
+    };
+    replay
+        .app
+        .world_mut()
+        .get_mut::<TerminalRenderConfig>(replay.entity)
+        .unwrap()
+        .font = crate::render::FontFaces::regular(other);
+    for _ in 0..4 {
+        replay.step();
+    }
+    replay.write(1, "a\u{301}", TerminalStyle::new());
+    replay.assert_matches_full("replaced");
+    let state = replay
+        .app
+        .world()
+        .get::<BatchMainState>(replay.entity)
+        .unwrap();
+    let used = (state.glyph_atlas.cursor.y + state.glyph_atlas.row_height + 1) as usize
+        * GLYPH_ATLAS_SIZE as usize
+        * 4;
+    assert!(
+        replay.atlas.pixels[..used] == state.glyph_atlas.shadow[..used],
+        "every atlas entry was uploaded"
     );
 }

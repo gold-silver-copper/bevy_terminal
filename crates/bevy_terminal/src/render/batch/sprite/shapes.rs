@@ -4,31 +4,20 @@
 
 use super::box_drawing::{arc, diagonal_falling, diagonal_rising};
 use super::canvas::{Canvas, Path, Shade};
-use super::{Corner, Edge, Fraction, Horizontal, Metrics, Thickness, Vertical, fill};
+use super::{Corner, Edge, Fraction, Horizontal, Metrics, Thickness, Vertical};
 use bevy::math::DVec2;
 
 /// A block of `width` × `height` cell fractions aligned in the cell.
 pub(super) fn block(
     metrics: Metrics,
     canvas: &mut Canvas,
-    (horizontal, vertical): (Horizontal, Vertical),
+    alignment: (Horizontal, Vertical),
     width: f64,
     height: f64,
     shade: Shade,
 ) {
-    let w = (f64::from(metrics.cell_width) * width).round() as u32;
-    let h = (f64::from(metrics.cell_height) * height).round() as u32;
-    let x = match horizontal {
-        Horizontal::Left => 0,
-        Horizontal::Right => metrics.cell_width - w,
-        Horizontal::Center => (metrics.cell_width - w) / 2,
-    };
-    let y = match vertical {
-        Vertical::Top => 0,
-        Vertical::Bottom => metrics.cell_height - h,
-        Vertical::Middle => (metrics.cell_height - h) / 2,
-    };
-    canvas.box_(x as i32, y as i32, (x + w) as i32, (y + h) as i32, shade);
+    let [x0, y0, x1, y1] = block_rect(metrics, alignment, width, height);
+    canvas.box_(x0, y0, x1, y1, shade);
 }
 
 pub(super) const UPPER: (Horizontal, Vertical) = (Horizontal::Center, Vertical::Top);
@@ -47,24 +36,45 @@ pub(super) fn full(metrics: Metrics, canvas: &mut Canvas, shade: Shade) {
     );
 }
 
-/// Block Elements, U+2580–259F: eighths, halves, quadrants and shades.
-pub(super) fn block_element(codepoint: u32, canvas: &mut Canvas, metrics: Metrics) {
-    let on = Shade::On;
+/// The pixel rectangle `block` fills.
+fn block_rect(
+    metrics: Metrics,
+    (horizontal, vertical): (Horizontal, Vertical),
+    width: f64,
+    height: f64,
+) -> [i32; 4] {
+    let w = (f64::from(metrics.cell_width) * width).round() as u32;
+    let h = (f64::from(metrics.cell_height) * height).round() as u32;
+    let x = match horizontal {
+        Horizontal::Left => 0,
+        Horizontal::Right => metrics.cell_width - w,
+        Horizontal::Center => (metrics.cell_width - w) / 2,
+    };
+    let y = match vertical {
+        Vertical::Top => 0,
+        Vertical::Bottom => metrics.cell_height - h,
+        Vertical::Middle => (metrics.cell_height - h) / 2,
+    };
+    [x as i32, y as i32, (x + w) as i32, (y + h) as i32]
+}
+
+/// The opaque rectangles `[x0, y0, x1, y1]` (cell pixels) of a block
+/// element other than the shades: eighths, halves and quadrants. `None` for
+/// every other codepoint.
+pub(crate) fn block_rects(codepoint: u32, metrics: Metrics) -> Option<Vec<[i32; 4]>> {
     let eighth = |n: u32| f64::from(n) / 8.0;
-    match codepoint {
-        0x2580 => block(metrics, canvas, UPPER, 1.0, 0.5, on),
-        0x2581..=0x2587 => block(metrics, canvas, LOWER, 1.0, eighth(codepoint - 0x2580), on),
-        0x2588 => full(metrics, canvas, on),
-        0x2589..=0x258f => block(metrics, canvas, LEFT, eighth(0x2590 - codepoint), 1.0, on),
-        0x2590 => block(metrics, canvas, RIGHT, 0.5, 1.0, on),
-        0x2591 => full(metrics, canvas, Shade::Light),
-        0x2592 => full(metrics, canvas, Shade::Medium),
-        0x2593 => full(metrics, canvas, Shade::Dark),
-        0x2594 => block(metrics, canvas, UPPER, 1.0, eighth(1), on),
-        0x2595 => block(metrics, canvas, RIGHT, eighth(1), 1.0, on),
+    let rect = |alignment, width, height| vec![block_rect(metrics, alignment, width, height)];
+    Some(match codepoint {
+        0x2580 => rect(UPPER, 1.0, 0.5),
+        0x2581..=0x2587 => rect(LOWER, 1.0, eighth(codepoint - 0x2580)),
+        0x2588 => vec![[0, 0, metrics.cell_width as i32, metrics.cell_height as i32]],
+        0x2589..=0x258f => rect(LEFT, eighth(0x2590 - codepoint), 1.0),
+        0x2590 => rect(RIGHT, 0.5, 1.0),
+        0x2594 => rect(UPPER, 1.0, eighth(1)),
+        0x2595 => rect(RIGHT, eighth(1), 1.0),
         0x2596..=0x259f => {
             // Top-left, top-right, bottom-left and bottom-right quadrants.
-            let [tl, tr, bl, br] = match codepoint {
+            let quadrants = match codepoint {
                 0x2596 => [false, false, true, false],
                 0x2597 => [false, false, false, true],
                 0x2598 => [true, false, false, false],
@@ -77,20 +87,29 @@ pub(super) fn block_element(codepoint: u32, canvas: &mut Canvas, metrics: Metric
                 _ => [false, true, true, true],
             };
             let (z, h, f) = (Fraction::ZERO, Fraction::HALF, Fraction::ONE);
-            if tl {
-                fill(metrics, canvas, z, h, z, h);
-            }
-            if tr {
-                fill(metrics, canvas, h, f, z, h);
-            }
-            if bl {
-                fill(metrics, canvas, z, h, h, f);
-            }
-            if br {
-                fill(metrics, canvas, h, f, h, f);
+            let (w, ht) = (metrics.cell_width, metrics.cell_height);
+            [(z, h, z, h), (h, f, z, h), (z, h, h, f), (h, f, h, f)]
+                .into_iter()
+                .zip(quadrants)
+                .filter(|(_, on)| *on)
+                .map(|((x0, x1, y0, y1), _)| [x0.min(w), y0.min(ht), x1.max(w), y1.max(ht)])
+                .collect()
+        }
+        _ => return None,
+    })
+}
+
+/// Block Elements, U+2580–259F: eighths, halves, quadrants and shades.
+pub(super) fn block_element(codepoint: u32, canvas: &mut Canvas, metrics: Metrics) {
+    match codepoint {
+        0x2591 => full(metrics, canvas, Shade::Light),
+        0x2592 => full(metrics, canvas, Shade::Medium),
+        0x2593 => full(metrics, canvas, Shade::Dark),
+        _ => {
+            for [x0, y0, x1, y1] in block_rects(codepoint, metrics).expect("block element") {
+                canvas.box_(x0, y0, x1, y1, Shade::On);
             }
         }
-        _ => unreachable!("block element {codepoint:x}"),
     }
 }
 

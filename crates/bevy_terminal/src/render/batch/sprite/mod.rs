@@ -17,6 +17,7 @@ mod shapes;
 
 pub(crate) use canvas::Sprite;
 use canvas::{Canvas, Shade};
+pub(crate) use shapes::block_rects;
 
 /// The grid metrics sprites are drawn with, in physical pixels.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

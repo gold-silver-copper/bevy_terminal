@@ -17,7 +17,7 @@ use metrics::{
     resolve_metrics,
 };
 use scene::{RowReach, SceneScratch, build_scene};
-use shaping::{ShapeCaches, UnifiedGlyphAtlas};
+use shaping::{AtlasUpload, ShapeCaches, UnifiedGlyphAtlas};
 
 use std::sync::{
     Arc,
@@ -178,7 +178,6 @@ fn initialize_terminals(
             UVec2::ONE
         };
         let output = images.add(make_target_image(size));
-        let glyph_atlas = images.add(make_glyph_atlas_image());
         commands.entity(entity).insert((
             TerminalTexture {
                 status: TerminalStatus::Loading,
@@ -193,7 +192,7 @@ fn initialize_terminals(
                     physical_font_size: raster_config.font_size,
                 },
             },
-            BatchMainState::new(output.clone(), glyph_atlas, raster_scale, raster_config),
+            BatchMainState::new(output.clone(), raster_scale, raster_config),
             TerminalStats::default(),
         ));
     }
@@ -229,24 +228,6 @@ fn make_target_image(size: UVec2) -> Image {
         TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC;
     // The terminal is rasterized at its final physical resolution. Filtering it again in the UI
     // presentation stage softens glyph edges and can open seams between adjacent glyph cells.
-    image.sampler = ImageSampler::nearest();
-    image
-}
-
-// Solid-only and loading terminals need a binding, not a 16 MiB glyph atlas.
-// The stable handle grows to the fixed atlas size on the first cached glyph.
-fn make_glyph_atlas_image() -> Image {
-    let mut image = Image::new_fill(
-        Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        &[0, 0, 0, 0],
-        GLYPH_FORMAT,
-        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-    );
     image.sampler = ImageSampler::nearest();
     image
 }
@@ -290,18 +271,23 @@ struct BatchMainState {
 }
 
 impl BatchMainState {
+    /// Drops the scene waiting for extraction, keeping the atlas entries it
+    /// carried for the next one.
+    fn discard_pending(&mut self) {
+        if let Some(scene) = self.pending.take() {
+            let mut uploads = scene.atlas_uploads;
+            uploads.append(&mut self.glyph_atlas.uploads);
+            self.glyph_atlas.uploads = uploads;
+        }
+    }
+
     fn invalidate(&mut self) {
-        self.pending = None;
+        self.discard_pending();
         self.last_snapshot = None;
         self.metrics = None;
     }
 
-    fn new(
-        output: Handle<Image>,
-        glyph_atlas: Handle<Image>,
-        raster_scale: f32,
-        raster_config: RasterMetrics,
-    ) -> Self {
+    fn new(output: Handle<Image>, raster_scale: f32, raster_config: RasterMetrics) -> Self {
         Self {
             output,
             font_ids: [None; 4],
@@ -319,7 +305,7 @@ impl BatchMainState {
             generation: 0,
             submitted: Arc::default(),
             shapes: ShapeCaches::default(),
-            glyph_atlas: UnifiedGlyphAtlas::new(glyph_atlas),
+            glyph_atlas: UnifiedGlyphAtlas::default(),
             scratch: SceneScratch::default(),
             reach: Vec::new(),
             blink: BlinkPhases::default(),
@@ -351,6 +337,9 @@ struct QuadInstance {
 struct BatchScene {
     submission: Option<(Arc<AtomicU64>, u64)>,
     destination: AssetId<Image>,
+    /// The terminal's atlas texture, and the entries to write to it first.
+    atlas: AssetId<Image>,
+    atlas_uploads: Vec<AtlasUpload>,
     destination_size: UVec2,
     instances: Vec<QuadInstance>,
     batches: Vec<DrawBatch>,
@@ -384,6 +373,18 @@ impl BlinkPhases {
 struct PendingBatchScenes {
     scenes: HashMap<AssetId<Image>, BatchScene>,
     live_textures: HashSet<AssetId<Image>>,
+    /// Atlases of live terminals, whose textures the render world retains.
+    live_atlases: HashSet<AssetId<Image>>,
+}
+
+impl BatchScene {
+    /// Prepends the atlas entries of a superseded scene that never drew, so
+    /// no entry the newer scene relies on is lost.
+    fn absorb(&mut self, superseded: BatchScene) {
+        let mut uploads = superseded.atlas_uploads;
+        uploads.append(&mut self.atlas_uploads);
+        self.atlas_uploads = uploads;
+    }
 }
 
 /// Registration changes only when font assets change. Bevy assigns aliases
@@ -663,7 +664,7 @@ fn sync_batch_terminal(
     {
         state.surface = Some(surface.clone());
         state.last_snapshot = None;
-        state.pending = None;
+        state.discard_pending();
         state.snapshot_blinks = false;
     }
     let scale_changed = state.raster_scale != raster_scale;
@@ -719,7 +720,7 @@ fn sync_batch_terminal(
     }
     if text_assets_changed {
         state.shapes.clear();
-        state.glyph_atlas.clear(cx.images);
+        state.glyph_atlas.clear();
     }
     let blink = BlinkPhases::at(elapsed, config);
     // A phase flip only matters where it changes pixels: text phases when the
@@ -857,13 +858,41 @@ fn sync_batch_terminal(
         stats,
         blink,
     );
+    if glyph_atlas.overflowed {
+        // The atlas filled up: start it afresh with only what this frame
+        // shows. Glyphs that still do not fit are drawn from Bevy's atlases.
+        debug!("bevy_terminal: glyph atlas full; rebuilding it for the current frame");
+        shapes.clear();
+        glyph_atlas.clear();
+        let all: Vec<u16> = (0..snapshot.size().height).collect();
+        scene = build_scene(
+            &snapshot,
+            config,
+            *raster_config,
+            &all,
+            true,
+            destination,
+            cx,
+            shapes,
+            glyph_atlas,
+            scratch,
+            reach,
+            stats,
+            blink,
+        );
+    }
     if cx.failure.is_some() {
         return Err(TerminalStatus::ShapingFailed);
     }
     // Existing GPU textures are safe to consume before Bevy's asset preparation systems. A
-    // resize or shape miss can create/modify an Image this frame, so those scenes use the later
-    // submission point after RenderAsset preparation instead.
-    scene.requires_prepared_assets = output_resized || stats.shape_misses != 0;
+    // resize creates an Image, and glyphs drawn straight from Bevy's font atlases may use
+    // images modified this frame, so those scenes use the later submission point after
+    // RenderAsset preparation instead.
+    scene.requires_prepared_assets = output_resized
+        || scene
+            .batches
+            .iter()
+            .any(|batch| batch.texture != scene.atlas);
     #[cfg(feature = "timings")]
     {
         stats.scene_ns = scene_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
@@ -871,6 +900,9 @@ fn sync_batch_terminal(
     stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
     state.generation = state.generation.wrapping_add(1);
     scene.submission = Some((state.submitted.clone(), state.generation));
+    if let Some(superseded) = state.pending.take() {
+        scene.absorb(superseded);
+    }
     state.pending = Some(scene);
     state.snapshot_blinks = snapshot_blinks(&snapshot);
     state.last_snapshot = Some(snapshot);

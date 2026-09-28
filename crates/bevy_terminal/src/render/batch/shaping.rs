@@ -182,12 +182,11 @@ pub(super) struct CachedGlyph {
     /// Horizontal extent `[left, right)` of the bitmap's inked columns,
     /// relative to the bitmap; empty for a transparent bitmap.
     pub(super) ink: (f32, f32),
-    /// Coverage (sum of alpha) of every bitmap column; tells a box-drawing
-    /// stroke's faint sub-pixel overshoot from real overhang.
-    pub(super) columns: Vec<u32>,
 }
 
 impl CachedGlyph {
+    /// A cached glyph; `columns` is the coverage (sum of alpha) of each
+    /// bitmap column, from which its inked extent is kept.
     pub(super) fn new(
         texture: AssetId<Image>,
         offset: Vec2,
@@ -209,7 +208,6 @@ impl CachedGlyph {
             uv,
             alpha_mask,
             ink,
-            columns,
         }
     }
 }
@@ -328,29 +326,59 @@ pub(super) enum AtlasKey {
     Sprite { codepoint: u32, size: UVec2 },
 }
 
+/// Pixels added to a terminal's atlas since its last scene, uploaded to
+/// the atlas texture before that scene draws.
+#[derive(Clone, Debug)]
+pub(super) struct AtlasUpload {
+    pub(super) origin: UVec2,
+    pub(super) size: UVec2,
+    pub(super) pixels: Vec<u8>,
+}
+
+/// Source of unique atlas identities.
+static ATLAS_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A terminal's glyph atlas: a shelf-packed `GLYPH_ATLAS_SIZE`² RGBA8 texture
+/// that exists only in the render world. The main world keeps the packing
+/// and queues the pixels of new entries; the render world writes just those
+/// rectangles, so adding a glyph never re-uploads the atlas and no CPU copy
+/// of it is retained.
 pub(super) struct UnifiedGlyphAtlas {
-    pub(super) image: Handle<Image>,
+    /// Identifies the atlas texture in draw batches.
+    pub(super) id: AssetId<Image>,
     pub(super) glyphs: HashMap<AtlasKey, Vec4>,
     pub(super) cursor: UVec2,
     pub(super) row_height: u32,
+    /// Entries not yet handed to a scene.
+    pub(super) uploads: Vec<AtlasUpload>,
+    /// Whether an entry did not fit since the atlas was last cleared.
+    pub(super) overflowed: bool,
+    /// The atlas contents, for tests that inspect drawn pixels.
+    #[cfg(test)]
+    pub(super) shadow: Vec<u8>,
 }
 
-impl UnifiedGlyphAtlas {
-    pub(super) fn new(image: Handle<Image>) -> Self {
+impl Default for UnifiedGlyphAtlas {
+    fn default() -> Self {
+        let serial = ATLAS_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self {
-            image,
+            id: AssetId::Uuid {
+                uuid: bevy::asset::uuid::Uuid::from_u64_pair(0x6274_6572_6d61_746c, serial),
+            },
             glyphs: HashMap::default(),
             cursor: UVec2::splat(1),
             row_height: 0,
+            uploads: Vec::new(),
+            overflowed: false,
+            #[cfg(test)]
+            shadow: vec![0; (GLYPH_ATLAS_SIZE * GLYPH_ATLAS_SIZE * 4) as usize],
         }
     }
+}
 
+impl UnifiedGlyphAtlas {
     /// Copies a Bevy atlas glyph into the atlas, returning its UV rectangle.
-    pub(super) fn cache(
-        &mut self,
-        source: SourceGlyph,
-        images: &mut Assets<Image>,
-    ) -> Option<Vec4> {
+    pub(super) fn cache(&mut self, source: SourceGlyph, images: &Assets<Image>) -> Option<Vec4> {
         if let Some(uv) = self.glyphs.get(&AtlasKey::Source(source)) {
             return Some(*uv);
         }
@@ -358,8 +386,7 @@ impl UnifiedGlyphAtlas {
         self.insert(
             AtlasKey::Source(source),
             UVec2::new(source.width, source.height),
-            &pixels,
-            images,
+            pixels,
         )
     }
 
@@ -369,7 +396,7 @@ impl UnifiedGlyphAtlas {
         &mut self,
         source: SourceGlyph,
         scaled: UVec2,
-        images: &mut Assets<Image>,
+        images: &Assets<Image>,
     ) -> Option<(Vec4, Vec<u32>)> {
         let key = SourceGlyph { scaled, ..source };
         let pixels = resample(
@@ -377,10 +404,6 @@ impl UnifiedGlyphAtlas {
             UVec2::new(source.width, source.height),
             scaled,
         );
-        let uv = match self.glyphs.get(&AtlasKey::Source(key)) {
-            Some(uv) => *uv,
-            None => self.insert(AtlasKey::Source(key), scaled, &pixels, images)?,
-        };
         let columns = (0..scaled.x as usize)
             .map(|x| {
                 (0..scaled.y as usize)
@@ -388,6 +411,10 @@ impl UnifiedGlyphAtlas {
                     .sum()
             })
             .collect();
+        let uv = match self.glyphs.get(&AtlasKey::Source(key)) {
+            Some(uv) => *uv,
+            None => self.insert(AtlasKey::Source(key), scaled, pixels)?,
+        };
         Some((uv, columns))
     }
 
@@ -397,7 +424,6 @@ impl UnifiedGlyphAtlas {
         codepoint: u32,
         cell: UVec2,
         sprite: &Sprite,
-        images: &mut Assets<Image>,
     ) -> Option<Vec4> {
         let key = AtlasKey::Sprite {
             codepoint,
@@ -411,21 +437,12 @@ impl UnifiedGlyphAtlas {
             .iter()
             .flat_map(|alpha| [255, 255, 255, *alpha])
             .collect();
-        self.insert(key, sprite.size, &pixels, images)
+        self.insert(key, sprite.size, pixels)
     }
 
-    fn insert(
-        &mut self,
-        key: AtlasKey,
-        size: UVec2,
-        pixels: &[u8],
-        images: &mut Assets<Image>,
-    ) -> Option<Vec4> {
-        if size.x == 0
-            || size.y == 0
-            || size.x > GLYPH_ATLAS_SIZE - 2
-            || size.y > GLYPH_ATLAS_SIZE - 2
-        {
+    fn insert(&mut self, key: AtlasKey, size: UVec2, pixels: Vec<u8>) -> Option<Vec4> {
+        let fits = |size: u32| size > 0 && size <= GLYPH_ATLAS_SIZE - 2;
+        if !fits(size.x) || !fits(size.y) {
             return None;
         }
         let mut x = self.cursor.x;
@@ -437,27 +454,24 @@ impl UnifiedGlyphAtlas {
             row_height = 0;
         }
         if y + size.y + 1 > GLYPH_ATLAS_SIZE {
+            self.overflowed = true;
             return None;
         }
-
-        let mut atlas = images.get_mut(&self.image)?;
-        if atlas.width() != GLYPH_ATLAS_SIZE {
-            atlas.resize(bevy::render::render_resource::Extent3d {
-                width: GLYPH_ATLAS_SIZE,
-                height: GLYPH_ATLAS_SIZE,
-                depth_or_array_layers: 1,
-            });
+        #[cfg(test)]
+        {
+            let stride = GLYPH_ATLAS_SIZE as usize * 4;
+            let row_bytes = size.x as usize * 4;
+            for row in 0..size.y as usize {
+                let target = (y as usize + row) * stride + x as usize * 4;
+                self.shadow[target..target + row_bytes]
+                    .copy_from_slice(&pixels[row * row_bytes..(row + 1) * row_bytes]);
+            }
         }
-        let data = atlas.data.as_mut()?;
-        let atlas_stride = GLYPH_ATLAS_SIZE as usize * 4;
-        let row_bytes = size.x as usize * 4;
-        for row in 0..size.y {
-            let source_start = row as usize * row_bytes;
-            let target_start = (y + row) as usize * atlas_stride + x as usize * 4;
-            data[target_start..target_start + row_bytes]
-                .copy_from_slice(&pixels[source_start..source_start + row_bytes]);
-        }
-
+        self.uploads.push(AtlasUpload {
+            origin: UVec2::new(x, y),
+            size,
+            pixels,
+        });
         self.cursor = UVec2::new(x + size.x + 1, y);
         self.row_height = row_height.max(size.y);
         let scale = GLYPH_ATLAS_SIZE as f32;
@@ -471,15 +485,13 @@ impl UnifiedGlyphAtlas {
         Some(uv)
     }
 
-    pub(super) fn clear(&mut self, images: &mut Assets<Image>) {
+    /// Forgets every entry; the texture's stale pixels are simply overwritten.
+    pub(super) fn clear(&mut self) {
         self.glyphs.clear();
         self.cursor = UVec2::splat(1);
         self.row_height = 0;
-        if let Some(mut image) = images.get_mut(&self.image)
-            && let Some(data) = image.data.as_mut()
-        {
-            data.fill(0);
-        }
+        self.uploads.clear();
+        self.overflowed = false;
     }
 }
 
@@ -496,6 +508,11 @@ pub(super) struct ShapeCaches {
     retained_bytes: usize,
     narrow: [StyleShapes; 4],
     wide: HashMap<(u16, usize), HashMap<String, usize>>,
+    /// The previous working set: when the cache fills, it is retired rather
+    /// than dropped, and runs still in use are promoted back on their next
+    /// lookup, so a working set larger than one generation does not start
+    /// from nothing (at most two generations are retained).
+    retired: Option<Box<ShapeCaches>>,
 }
 
 /// Sentinel for an unoccupied ASCII fast-path slot.
@@ -538,7 +555,29 @@ impl ShapeCaches {
         usize::from(style.bold) + 2 * usize::from(style.italic)
     }
 
-    pub(super) fn lookup(&self, style: &ResolvedStyle, text: &str, columns: u16) -> Option<usize> {
+    /// The index of the cached run, promoting it from the retired
+    /// generation when only that holds it.
+    pub(super) fn lookup(
+        &mut self,
+        style: &ResolvedStyle,
+        text: &str,
+        columns: u16,
+    ) -> Option<usize> {
+        if let Some(index) = self.lookup_current(style, text, columns) {
+            return Some(index);
+        }
+        let retired = self.retired.as_mut()?;
+        let index = retired.lookup_current(style, text, columns)?;
+        let glyphs = retired.entries[index].clone();
+        self.insert_entry(style, text, columns, glyphs)
+    }
+
+    pub(super) fn lookup_current(
+        &self,
+        style: &ResolvedStyle,
+        text: &str,
+        columns: u16,
+    ) -> Option<usize> {
         let index = Self::style_index(style);
         let shapes = if columns == 1 {
             &self.narrow[index]
@@ -561,20 +600,38 @@ impl ShapeCaches {
         columns: u16,
         glyphs: Vec<CachedGlyph>,
     ) -> Cow<'_, [CachedGlyph]> {
-        let bytes = text.len()
-            + glyphs.capacity() * size_of::<CachedGlyph>()
-            + glyphs
-                .iter()
-                .map(|glyph| glyph.columns.capacity() * size_of::<u32>())
-                .sum::<usize>();
-        if bytes > MAX_SHAPE_BYTES {
+        if Self::bytes(text, &glyphs) > MAX_SHAPE_BYTES {
             return Cow::Owned(glyphs);
+        }
+        let index = self
+            .insert_entry(style, text, columns, glyphs)
+            .expect("a run within the byte limit is cached");
+        Cow::Borrowed(&self.entries[index])
+    }
+
+    fn bytes(text: &str, glyphs: &[CachedGlyph]) -> usize {
+        text.len() + size_of_val(glyphs)
+    }
+
+    fn insert_entry(
+        &mut self,
+        style: &ResolvedStyle,
+        text: &str,
+        columns: u16,
+        glyphs: Vec<CachedGlyph>,
+    ) -> Option<usize> {
+        let bytes = Self::bytes(text, &glyphs);
+        if bytes > MAX_SHAPE_BYTES {
+            return None;
         }
         if self.entries.len() >= MAX_SHAPE_ENTRIES || bytes > MAX_SHAPE_BYTES - self.retained_bytes
         {
             // Scene construction has already consumed earlier borrowed runs.
-            // Reset every lookup table with the entries so no index goes stale.
-            self.clear();
+            // Retire every lookup table with the entries so no index goes
+            // stale; the generation before is dropped.
+            let mut retired = std::mem::take(self);
+            retired.retired = None;
+            self.retired = Some(Box::new(retired));
         }
         self.retained_bytes += bytes;
         let index = self.entries.len();
@@ -585,7 +642,7 @@ impl ShapeCaches {
                 .entry((columns, style_index))
                 .or_default()
                 .insert(text.to_owned(), index);
-            return Cow::Borrowed(&self.entries[index]);
+            return Some(index);
         }
         let shapes = &mut self.narrow[style_index];
         match ascii_key(text) {
@@ -594,14 +651,16 @@ impl ShapeCaches {
                 shapes.other.insert(text.to_owned(), index);
             }
         }
-        Cow::Borrowed(&self.entries[index])
+        Some(index)
     }
 
+    /// Drops both generations (their atlas entries are gone).
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.retained_bytes = 0;
         self.narrow.iter_mut().for_each(StyleShapes::clear);
         self.wide.clear();
+        self.retired = None;
     }
 }
 
@@ -799,7 +858,7 @@ pub(super) fn cached_shape<'a>(
         };
         let glyphs = sprite::draw(codepoint, cell.x, cell.y, metrics)
             .and_then(|drawn| {
-                let uv = glyph_atlas.cache_sprite(codepoint, cell, &drawn, cx.images)?;
+                let uv = glyph_atlas.cache_sprite(codepoint, cell, &drawn)?;
                 let columns = (0..drawn.size.x as usize)
                     .map(|x| {
                         (0..drawn.size.y as usize)
@@ -808,7 +867,7 @@ pub(super) fn cached_shape<'a>(
                     })
                     .collect();
                 Some(vec![CachedGlyph::new(
-                    glyph_atlas.image.id(),
+                    glyph_atlas.id,
                     drawn.offset.as_vec2(),
                     drawn.size.as_vec2(),
                     uv,
@@ -883,7 +942,7 @@ pub(super) fn cached_shape<'a>(
                 };
                 if let Some((uv, columns)) = glyph_atlas.cache_scaled(cropped, scaled, cx.images) {
                     return Some(Some(CachedGlyph::new(
-                        glyph_atlas.image.id(),
+                        glyph_atlas.id,
                         measured.min + translate + min,
                         scaled.as_vec2(),
                         uv,
@@ -902,9 +961,7 @@ pub(super) fn cached_shape<'a>(
             );
             let (texture, uv) = glyph_atlas
                 .cache(source, cx.images)
-                .map_or((source.texture, source_uv), |uv| {
-                    (glyph_atlas.image.id(), uv)
-                });
+                .map_or((source.texture, source_uv), |uv| (glyph_atlas.id, uv));
             Some(Some(CachedGlyph::new(
                 texture,
                 position + translate,
@@ -957,45 +1014,51 @@ mod tests {
     }
 
     #[test]
-    fn cache_admits_new_working_sets_and_leaves_oversized_runs_uncached() {
+    fn cache_retires_full_working_sets_and_leaves_oversized_runs_uncached() {
         let style = ResolvedStyle::plain();
         let mut shapes = ShapeCaches::default();
-        for index in 0..MAX_SHAPE_ENTRIES {
-            assert!(matches!(
-                shapes.insert(&style, &format!("symbol-{index}"), 1, Vec::new()),
-                Cow::Borrowed(_)
-            ));
-        }
+        let fill = |shapes: &mut ShapeCaches, prefix: &str| {
+            for index in 0..MAX_SHAPE_ENTRIES {
+                assert!(matches!(
+                    shapes.insert(&style, &format!("{prefix}-{index}"), 1, Vec::new()),
+                    Cow::Borrowed(_)
+                ));
+            }
+        };
+        fill(&mut shapes, "first");
         assert!(matches!(
             shapes.insert(&style, "overflow", 1, Vec::new()),
             Cow::Borrowed(_)
         ));
-        assert_eq!(shapes.entries.len(), 1);
-        assert!(shapes.lookup(&style, "symbol-0", 1).is_none());
-        assert_eq!(shapes.lookup(&style, "overflow", 1), Some(0));
-
-        let glyph = CachedGlyph::new(
-            AssetId::default(),
-            Vec2::ZERO,
-            Vec2::ONE,
-            Vec4::ZERO,
-            true,
-            vec![1; MAX_SHAPE_BYTES / size_of::<u32>()],
-        );
-        let excess = shapes.insert(&style, "large", 1, vec![glyph]);
-        assert!(matches!(excess, Cow::Owned(_)));
-        assert_eq!(excess.len(), 1, "the run still renders in full");
-        drop(excess);
         assert_eq!(
             shapes.entries.len(),
             1,
-            "an oversized run preserves the working set"
+            "a full cache starts a new generation"
         );
         assert_eq!(shapes.lookup(&style, "overflow", 1), Some(0));
-        assert!(matches!(
-            shapes.insert(&style, "A", 1, Vec::new()),
-            Cow::Borrowed(_)
-        ));
-        assert_eq!(shapes.lookup(&style, "A", 1), Some(1));
+        // The retired generation still answers, and its run is promoted.
+        assert_eq!(shapes.lookup(&style, "first-0", 1), Some(1));
+        assert_eq!(shapes.lookup(&style, "first-0", 1), Some(1));
+        assert_eq!(shapes.entries.len(), 2);
+        // A second retirement drops the oldest generation.
+        fill(&mut shapes, "second");
+        assert!(
+            shapes.lookup(&style, "first-0", 1).is_some(),
+            "promoted runs survive"
+        );
+        assert!(shapes.lookup(&style, "first-1", 1).is_none());
+
+        let oversized = "x".repeat(MAX_SHAPE_BYTES + 1);
+        let before = shapes.entries.len();
+        let excess = shapes.insert(&style, &oversized, 1, Vec::new());
+        assert!(matches!(excess, Cow::Owned(_)), "the run still renders");
+        drop(excess);
+        assert_eq!(
+            shapes.entries.len(),
+            before,
+            "an oversized run preserves the working set"
+        );
+        shapes.clear();
+        assert!(shapes.lookup(&style, "second-0", 1).is_none());
     }
 }

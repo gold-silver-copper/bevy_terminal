@@ -20,11 +20,13 @@ fn quad(value: f32) -> QuadInstance {
 
 #[test]
 fn unsuccessful_atlas_insertion_preserves_packing_state() {
-    let mut atlas = UnifiedGlyphAtlas::new(Handle::default());
-    atlas.cursor = UVec2::new(GLYPH_ATLAS_SIZE - 2, 10);
-    atlas.row_height = 30;
+    let mut atlas = UnifiedGlyphAtlas {
+        cursor: UVec2::new(GLYPH_ATLAS_SIZE - 2, 10),
+        row_height: 30,
+        ..default()
+    };
     let cursor = atlas.cursor;
-    let mut images = Assets::<Image>::default();
+    let images = Assets::<Image>::default();
     let source = SourceGlyph {
         texture: Handle::<Image>::default().id(),
         x: 0,
@@ -33,7 +35,7 @@ fn unsuccessful_atlas_insertion_preserves_packing_state() {
         height: 8,
         scaled: UVec2::ZERO,
     };
-    assert!(atlas.cache(source, &mut images).is_none());
+    assert!(atlas.cache(source, &images).is_none());
     assert!(
         atlas
             .cache(
@@ -41,7 +43,7 @@ fn unsuccessful_atlas_insertion_preserves_packing_state() {
                     width: u32::MAX,
                     ..source
                 },
-                &mut images
+                &images
             )
             .is_none()
     );
@@ -52,7 +54,7 @@ fn unsuccessful_atlas_insertion_preserves_packing_state() {
                     height: u32::MAX,
                     ..source
                 },
-                &mut images
+                &images
             )
             .is_none()
     );
@@ -170,11 +172,7 @@ fn failed_measurement_and_shapes_retry_after_font_registration() {
         ..default()
     };
     let raster = physical_config(resolve_metrics(&config, None), 1.0);
-    let atlas = app
-        .world_mut()
-        .resource_mut::<Assets<Image>>()
-        .add(make_glyph_atlas_image());
-    let mut atlas = UnifiedGlyphAtlas::new(atlas);
+    let mut atlas = UnifiedGlyphAtlas::default();
     let mut shapes = ShapeCaches::default();
     let mut stats = TerminalStats::default();
     let mut resources = SystemState::<(TextResources, ResMut<Assets<Image>>)>::new(app.world_mut());
@@ -507,7 +505,7 @@ fn repeated_despawns_release_owned_images_and_pending_scenes() {
         assert_eq!(pending.scenes.len(), entities.len());
         let owned = entities.map(|entity| {
             let state = app.world().get::<BatchMainState>(entity).unwrap();
-            [state.output.id(), state.glyph_atlas.image.id()]
+            [state.output.id(), state.glyph_atlas.id]
         });
         for entity in entities {
             app.world_mut().despawn(entity);
@@ -1526,8 +1524,7 @@ fn unified_atlas_copies_each_bevy_glyph_once_and_reuses_its_uv() {
         GLYPH_FORMAT,
         RenderAssetUsages::MAIN_WORLD,
     ));
-    let target = images.add(make_glyph_atlas_image());
-    let mut atlas = UnifiedGlyphAtlas::new(target.clone());
+    let mut atlas = UnifiedGlyphAtlas::default();
     let glyph = SourceGlyph {
         texture: source.id(),
         x: 1,
@@ -1537,33 +1534,22 @@ fn unified_atlas_copies_each_bevy_glyph_once_and_reuses_its_uv() {
         scaled: UVec2::ZERO,
     };
 
-    let first = atlas.cache(glyph, &mut images).expect("glyph should fit");
+    let first = atlas.cache(glyph, &images).expect("glyph should fit");
     let cursor = atlas.cursor;
-    let second = atlas
-        .cache(glyph, &mut images)
-        .expect("glyph should be cached");
+    let second = atlas.cache(glyph, &images).expect("glyph should be cached");
     assert_eq!(first, second);
     assert_eq!(atlas.cursor, cursor);
     assert_eq!(atlas.glyphs.len(), 1);
+    // Only the new entry's pixels are queued for the atlas texture.
+    assert_eq!(atlas.uploads.len(), 1);
+    assert_eq!(atlas.uploads[0].origin, UVec2::ONE);
+    assert_eq!(atlas.uploads[0].size, UVec2::ONE);
+    assert_eq!(atlas.uploads[0].pixels, [11, 22, 33, 44]);
 
-    let target_offset = (GLYPH_ATLAS_SIZE as usize + 1) * 4;
-    {
-        let target = images.get(&target).expect("target atlas exists");
-        assert_eq!(
-            &target.data.as_ref().expect("atlas has CPU data")[target_offset..target_offset + 4],
-            &[11, 22, 33, 44]
-        );
-    }
-
-    atlas.clear(&mut images);
-    assert!(atlas.glyphs.is_empty());
+    atlas.clear();
+    assert!(atlas.glyphs.is_empty() && atlas.uploads.is_empty());
     assert_eq!(atlas.cursor, UVec2::splat(1));
     assert_eq!(atlas.row_height, 0);
-    let target = images.get(&target).expect("target atlas exists");
-    assert_eq!(
-        &target.data.as_ref().expect("atlas has CPU data")[target_offset..target_offset + 4],
-        &[0, 0, 0, 0]
-    );
 }
 
 #[test]
@@ -2008,44 +1994,31 @@ fn glyph_atlas_stays_small_until_actual_glyphs_are_drawn() {
     for _ in 0..4 {
         app.update();
     }
-    let atlas = app
-        .world()
-        .get::<BatchMainState>(entity)
-        .unwrap()
-        .glyph_atlas
-        .image
-        .clone();
-    assert_eq!(
+    // Solid-only terminals queue no atlas pixels and retain no CPU image.
+    let image_bytes = |app: &App| -> usize {
         app.world()
             .resource::<Assets<Image>>()
-            .get(&atlas)
-            .unwrap()
-            .data
-            .as_ref()
-            .unwrap()
-            .len(),
-        4
-    );
+            .iter()
+            .map(|(_, image)| image.data.as_ref().map_or(0, Vec::len))
+            .sum()
+    };
+    let state = app.world().get::<BatchMainState>(entity).unwrap();
+    let atlas = state.glyph_atlas.id;
+    assert!(state.glyph_atlas.glyphs.is_empty());
+    let empty = image_bytes(&app);
     write_text(&surface, "A");
     app.update();
-    assert_eq!(
-        app.world()
-            .get::<BatchMainState>(entity)
-            .unwrap()
-            .glyph_atlas
-            .image,
-        atlas
-    );
-    assert_eq!(
-        app.world()
-            .resource::<Assets<Image>>()
-            .get(&atlas)
-            .unwrap()
-            .data
-            .as_ref()
-            .unwrap()
-            .len(),
-        2048 * 2048 * 4
+    let state = app.world().get::<BatchMainState>(entity).unwrap();
+    assert_eq!(state.glyph_atlas.id, atlas, "the atlas keeps its identity");
+    let scene = state.pending.as_ref().expect("a scene with the new glyph");
+    assert_eq!(scene.atlas, atlas);
+    assert_eq!(scene.atlas_uploads.len(), 1, "one glyph's pixels travel");
+    // The atlas texture lives in the render world; the main world grows only
+    // by Bevy's own glyph cache.
+    assert!(
+        image_bytes(&app) - empty < 2 * 1024 * 1024,
+        "{} bytes",
+        image_bytes(&app) - empty
     );
 }
 
@@ -2078,14 +2051,12 @@ fn cached_ink(app: &App, entity: Entity, text: &str, columns: u16) -> Rect {
     let state = app.world().get::<BatchMainState>(entity).unwrap();
     let index = state
         .shapes
-        .lookup(&ResolvedStyle::plain(), text, columns)
+        .lookup_current(&ResolvedStyle::plain(), text, columns)
         .unwrap_or_else(|| panic!("{text:?} over {columns} cells is cached"));
-    let images = app.world().resource::<Assets<Image>>();
-    let atlas = images.get(&state.glyph_atlas.image).unwrap();
-    let data = atlas.data.as_ref().unwrap();
+    let data = &state.glyph_atlas.shadow;
     let mut ink: Option<Rect> = None;
     for glyph in &state.shapes.entries[index] {
-        assert_eq!(glyph.texture, state.glyph_atlas.image.id());
+        assert_eq!(glyph.texture, state.glyph_atlas.id);
         let rect = glyph.uv * GLYPH_ATLAS_SIZE as f32;
         for y in 0..glyph.size.y as u32 {
             for x in 0..glyph.size.x as u32 {
@@ -2180,7 +2151,7 @@ fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
             .get::<BatchMainState>(entity)
             .unwrap()
             .shapes
-            .lookup(&ResolvedStyle::plain(), "∑", 2)
+            .lookup_current(&ResolvedStyle::plain(), "∑", 2)
             .is_none()
     );
 
