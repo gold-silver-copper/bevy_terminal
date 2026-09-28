@@ -4,7 +4,8 @@
 Usage: pixel-compare.py <base dir> <head dir>
 
 Compares every .png, .rgba and .scenes file; exits 1 if any differs or
-exists on one side only. The one exception: an export frame on one side
+exists on one side only, or if either directory is missing or holds no
+such files. The one exception: an export frame on one side
 only that repeats that side's last common frame byte for byte (how many
 captures finish before an export exits varies between runs of one build).
 """
@@ -25,7 +26,13 @@ def files(root):
 
 
 base, head = sys.argv[1], sys.argv[2]
+for root in (base, head):
+    if not os.path.isdir(root):
+        sys.exit(f"no such directory: {root}")
 before, after = files(base), files(head)
+for root, found in ((base, before), (head, after)):
+    if not found:
+        sys.exit(f"nothing to compare in {root}")
 common = sorted(before & after)
 different = [
     path
