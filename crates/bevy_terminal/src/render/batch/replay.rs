@@ -307,7 +307,7 @@ impl Replay {
             ..
         } = &mut *state;
         let mut scratch = SceneScratch::default();
-        let mut reach = Vec::new();
+        let mut row_states = RowStates::default();
         let mut stats = TerminalStats::default();
         let mut cx = text.context(&mut images);
         let scene = build_scene(
@@ -322,7 +322,7 @@ impl Replay {
             shapes,
             glyph_atlas,
             &mut scratch,
-            &mut reach,
+            &mut row_states,
             &mut stats,
             blink,
         );
@@ -398,7 +398,8 @@ fn overflowing_ink_reaches_neighbours_and_partial_repaints_match_full_scenes() {
         .world()
         .get::<BatchMainState>(replay.entity)
         .unwrap()
-        .reach[3];
+        .row_states
+        .reach(3);
     assert!(
         reach.up >= 1 && reach.down >= 1,
         "the stacked marks and the Arabic descenders leave the row: {reach:?}"
@@ -439,7 +440,8 @@ fn overflowing_ink_reaches_neighbours_and_partial_repaints_match_full_scenes() {
         .world()
         .get::<BatchMainState>(replay.entity)
         .unwrap()
-        .reach[3];
+        .row_states
+        .reach(3);
     assert!(
         reach.up >= 2,
         "ten stacked marks reach two rows up: {reach:?}"
@@ -508,9 +510,9 @@ fn rows_without_overflow_repaint_only_themselves() {
         .unwrap();
     assert!(
         state
-            .reach
-            .iter()
-            .all(|reach| *reach == RowReach::default())
+            .row_states
+            .reaches()
+            .all(|reach| reach == super::scene::RowReach::default())
     );
 }
 

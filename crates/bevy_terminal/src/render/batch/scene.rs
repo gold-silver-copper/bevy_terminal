@@ -119,6 +119,50 @@ impl RowReach {
     }
 }
 
+/// What the last layout of each row left behind: how far its ink reaches,
+/// and whether it holds blinking text, with a count of such rows so blink
+/// phases can be skipped without scanning the grid.
+#[derive(Default)]
+pub(super) struct RowStates {
+    rows: Vec<RowState>,
+    blinking: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+struct RowState {
+    reach: RowReach,
+    blinks: bool,
+}
+
+impl RowStates {
+    /// Forgets every row; `height` rows start with no reach and no blinking.
+    fn reset(&mut self, height: u16) {
+        self.rows.clear();
+        self.rows.resize(usize::from(height), RowState::default());
+        self.blinking = 0;
+    }
+
+    pub(super) fn reach(&self, row: u16) -> RowReach {
+        self.rows[usize::from(row)].reach
+    }
+
+    fn set(&mut self, row: u16, reach: RowReach, blinks: bool) {
+        let state = &mut self.rows[usize::from(row)];
+        self.blinking = self.blinking + usize::from(blinks) - usize::from(state.blinks);
+        *state = RowState { reach, blinks };
+    }
+
+    /// Whether any row holds `SLOW_BLINK` or `RAPID_BLINK` text.
+    pub(super) fn any_blinking(&self) -> bool {
+        self.blinking > 0
+    }
+
+    #[cfg(test)]
+    pub(super) fn reaches(&self) -> impl Iterator<Item = RowReach> + '_ {
+        self.rows.iter().map(|row| row.reach)
+    }
+}
+
 /// A glyph bitmap placed in texture pixels, before clipping.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PlacedGlyph {
@@ -161,7 +205,7 @@ pub(super) fn build_scene(
     shapes: &mut ShapeCaches,
     glyph_atlas: &mut UnifiedGlyphAtlas,
     scratch: &mut SceneScratch,
-    reach: &mut Vec<RowReach>,
+    rows: &mut RowStates,
     stats: &mut TerminalStats,
     blink: BlinkPhases,
 ) -> BatchScene {
@@ -175,10 +219,9 @@ pub(super) fn build_scene(
         }
         probe
     });
-    if full || reach.len() != usize::from(height) {
+    if full || rows.rows.len() != usize::from(height) {
         // Nothing drawn before a full scene survives it.
-        reach.clear();
-        reach.resize(usize::from(height), RowReach::default());
+        rows.reset(height);
     }
     let SceneScratch {
         backgrounds,
@@ -218,7 +261,7 @@ pub(super) fn build_scene(
 
     // Changed rows and every row their previous ink reached.
     for &row in changed {
-        for reached in reach[usize::from(row)].rows(row, height) {
+        for reached in rows.reach(row).rows(row, height) {
             repaint[usize::from(reached)] = true;
         }
     }
@@ -246,7 +289,11 @@ pub(super) fn build_scene(
                     cell_height,
                 ))
             });
-        reach[usize::from(row)] = row_reach;
+        let blinks = painter
+            .styles
+            .iter()
+            .any(|style| style.slow_blink || style.rapid_blink);
+        rows.set(row, row_reach, blinks);
         for reached in row_reach.rows(row, height) {
             repaint[usize::from(reached)] = true;
         }
@@ -269,7 +316,7 @@ pub(super) fn build_scene(
     }
     // Unchanged rows whose ink reaches into a repainted band.
     for row in 0..height {
-        let row_reach = reach[usize::from(row)];
+        let row_reach = rows.reach(row);
         if !painted[usize::from(row)]
             && row_reach != RowReach::default()
             && row_reach

@@ -11,7 +11,7 @@
 use super::replay::{Atlas, Canvas};
 use super::*;
 use crate::render::TerminalSizing;
-use crate::scene::{TerminalCell, TerminalColor, TerminalStyle};
+use crate::scene::{StyleFlags, TerminalCell, TerminalColor, TerminalStyle};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 

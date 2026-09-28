@@ -7,7 +7,7 @@ use super::{
 };
 use crate::render::TerminalSizing;
 use crate::render::grid_for;
-use crate::scene::{GridSize, TerminalCell, TerminalStyle};
+use crate::scene::{GridSize, StyleFlags, TerminalCell, TerminalStyle};
 
 fn quad(value: f32) -> QuadInstance {
     QuadInstance {
@@ -1736,6 +1736,21 @@ fn blink_phases_only_rebuild_blinking_content() {
     app.update();
     let blinking = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!(blinking.changed_rows, 3, "{blinking}");
+
+    // Overwriting the only blinking cell in a partial repaint ends the
+    // full-surface rebuilds: only the cursor row flips again.
+    drain_pending(&mut app);
+    surface.update(|update| {
+        update.set_cell((0, 0), &TerminalCell::new("y"));
+    });
+    app.update();
+    let repainted = *app.world().get::<TerminalStats>(entity).unwrap();
+    assert_eq!(repainted.changed_rows, 1, "a partial repaint: {repainted}");
+    drain_pending(&mut app);
+    advance(&mut app, 0.5);
+    app.update();
+    let stopped = *app.world().get::<TerminalStats>(entity).unwrap();
+    assert_eq!(stopped.changed_rows, 1, "{stopped}");
 }
 
 #[test]

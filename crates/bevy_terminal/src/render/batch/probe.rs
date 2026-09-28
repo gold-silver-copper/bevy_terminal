@@ -21,7 +21,7 @@ use super::shaping::is_symbol;
 use super::*;
 use crate::render::PixelGeometry;
 use crate::render::{BlinkConfig, CursorConfig, FontFaces, RasterConfig, TerminalSizing};
-use crate::scene::TerminalCell;
+use crate::scene::{StyleFlags, TerminalCell};
 use std::fmt::Write as _;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;

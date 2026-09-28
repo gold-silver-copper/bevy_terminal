@@ -16,7 +16,7 @@ use metrics::{
     LogicalMetrics, RasterMetrics, measure_advance, physical_config, refine_metrics,
     resolve_metrics,
 };
-use scene::{RowReach, SceneScratch, build_scene};
+use scene::{RowStates, SceneScratch, build_scene};
 use shaping::{AtlasUpload, ShapeCaches, UnifiedGlyphAtlas};
 
 use std::sync::{
@@ -46,7 +46,7 @@ use super::{
     cursor_should_be_visible, text_font,
 };
 use crate::{
-    scene::{GridSize, StyleFlags, TerminalSnapshot},
+    scene::{GridSize, TerminalSnapshot},
     surface::TerminalSurface,
 };
 
@@ -260,16 +260,15 @@ struct BatchMainState {
     palette: Palette,
     surface: Option<TerminalSurface>,
     last_snapshot: Option<TerminalSnapshot>,
-    /// Whether the retained snapshot holds any `SLOW_BLINK`/`RAPID_BLINK` cells.
-    snapshot_blinks: bool,
     pending: Option<BatchScene>,
     generation: u64,
     submitted: Arc<AtomicU64>,
     shapes: ShapeCaches,
     glyph_atlas: UnifiedGlyphAtlas,
     scratch: SceneScratch,
-    /// How far each row's drawn ink reaches into its neighbours.
-    reach: Vec<RowReach>,
+    /// How far each row's drawn ink reaches into its neighbours, and which
+    /// rows blink.
+    row_states: RowStates,
     blink: BlinkPhases,
 }
 
@@ -307,14 +306,13 @@ impl BatchMainState {
             palette: Palette::default(),
             surface: None,
             last_snapshot: None,
-            snapshot_blinks: false,
             pending: None,
             generation: 0,
             submitted: Arc::default(),
             shapes: ShapeCaches::default(),
             glyph_atlas: UnifiedGlyphAtlas::default(),
             scratch: SceneScratch::default(),
-            reach: Vec::new(),
+            row_states: RowStates::default(),
             blink: BlinkPhases::default(),
         }
     }
@@ -609,15 +607,6 @@ fn sync_batch_terminals(
     }
 }
 
-/// Whether any snapshot cell carries a text blink attribute.
-fn snapshot_blinks(snapshot: &TerminalSnapshot) -> bool {
-    let blink = (StyleFlags::SLOW_BLINK | StyleFlags::RAPID_BLINK).bits();
-    snapshot
-        .cells()
-        .iter()
-        .any(|cell| cell.style.flags.bits() & blink != 0)
-}
-
 /// Font asset ids referenced by a set of faces (system/family sources have none).
 fn font_asset_ids(faces: &super::FontFaces) -> [Option<AssetId<Font>>; 4] {
     let id = |source: Option<&FontSource>| match source {
@@ -685,7 +674,7 @@ fn sync_batch_terminal(
         state.surface = Some(surface.clone());
         state.last_snapshot = None;
         state.discard_pending();
-        state.snapshot_blinks = false;
+        state.row_states = RowStates::default();
     }
     if state.glyph_atlas.lost.swap(false, Ordering::AcqRel) {
         // The render world recreated the atlas texture (a device reset):
@@ -752,7 +741,7 @@ fn sync_batch_terminal(
     let blink = BlinkPhases::at(elapsed, config);
     // A phase flip only matters where it changes pixels: text phases when the
     // snapshot holds blinking cells, the cursor phase when the cursor shows.
-    let text_blink_changed = state.snapshot_blinks
+    let text_blink_changed = state.row_states.any_blinking()
         && (blink.slow_hidden != state.blink.slow_hidden
             || blink.rapid_hidden != state.blink.rapid_hidden);
     let cursor_blink_changed = blink.cursor_hidden != state.blink.cursor_hidden
@@ -868,7 +857,7 @@ fn sync_batch_terminal(
         shapes,
         glyph_atlas,
         scratch,
-        reach,
+        row_states,
         ..
     } = &mut *state;
     let mut scene = build_scene(
@@ -883,7 +872,7 @@ fn sync_batch_terminal(
         shapes,
         glyph_atlas,
         scratch,
-        reach,
+        row_states,
         stats,
         blink,
     );
@@ -906,7 +895,7 @@ fn sync_batch_terminal(
             shapes,
             glyph_atlas,
             scratch,
-            reach,
+            row_states,
             stats,
             blink,
         );
@@ -934,7 +923,6 @@ fn sync_batch_terminal(
         scene.absorb(superseded);
     }
     state.pending = Some(scene);
-    state.snapshot_blinks = snapshot_blinks(&snapshot);
     state.last_snapshot = Some(snapshot);
     state.blink = blink;
     state.raster_scale = raster_scale;
