@@ -352,12 +352,12 @@ fn text_font(faces: &FontFaces, font_size: f32, face: Face) -> TextFont {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct PixelGeometry {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
+/// The texture-pixel rectangle `width` × `height` at (`x`, `y`), y down.
+fn pixel_rect(x: f32, y: f32, width: f32, height: f32) -> Rect {
+    Rect {
+        min: Vec2::new(x, y),
+        max: Vec2::new(x + width, y + height),
+    }
 }
 
 /// Returns the number of columns rendered for the cell at `column`.

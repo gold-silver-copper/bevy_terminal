@@ -19,7 +19,7 @@
 
 use super::shaping::is_symbol;
 use super::*;
-use crate::render::PixelGeometry;
+use crate::render::pixel_rect;
 use crate::render::{BlinkConfig, CursorConfig, FontFaces, RasterConfig, TerminalSizing};
 use crate::scene::{StyleFlags, TerminalCell};
 use std::fmt::Write as _;
@@ -38,11 +38,11 @@ pub(super) struct ProbeGlyph {
     pub(super) texture: AssetId<Image>,
     pub(super) uv: Vec4,
     /// The placed bitmap.
-    pub(super) geometry: PixelGeometry,
+    pub(super) geometry: Rect,
     /// Index of the glyph among the scene's placed glyphs.
     pub(super) placed: usize,
     /// The quads the scene emitted for it, after clipping.
-    pub(super) pieces: Vec<PixelGeometry>,
+    pub(super) pieces: Vec<Rect>,
     /// Horizontal shift applied on top of the run's own placement.
     pub(super) shift: f32,
 }
@@ -414,27 +414,27 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
         };
         let atlas = Vec2::new(width as f32, height as f32);
         let texels = (glyph.uv * Vec4::new(atlas.x, atlas.y, atlas.x, atlas.y)).round();
-        let cell_box = PixelGeometry {
-            x: f32::from(glyph.column) * cell.x,
-            y: f32::from(glyph.row) * cell.y,
-            width: f32::from(glyph.columns) * cell.x,
-            height: cell.y,
-        };
+        let cell_box = pixel_rect(
+            f32::from(glyph.column) * cell.x,
+            f32::from(glyph.row) * cell.y,
+            f32::from(glyph.columns) * cell.x,
+            cell.y,
+        );
         for ty in texels.y as u32..texels.w as u32 {
             for tx in texels.x as u32..texels.z as u32 {
                 let alpha = data[((ty * width + tx) * 4 + 3) as usize];
                 if alpha == 0 {
                     continue;
                 }
-                let x = glyph.geometry.x + (tx as f32 - texels.x);
-                let y = glyph.geometry.y + (ty as f32 - texels.y);
+                let x = glyph.geometry.min.x + (tx as f32 - texels.x);
+                let y = glyph.geometry.min.y + (ty as f32 - texels.y);
                 entry.ink += 1;
                 let in_texture = x >= 0.0 && y >= 0.0 && x < size.x as f32 && y < size.y as f32;
                 let in_clip = glyph.pieces.iter().any(|piece| {
-                    x >= piece.x - 0.01
-                        && y >= piece.y - 0.01
-                        && x + 1.0 <= piece.x + piece.width + 0.01
-                        && y + 1.0 <= piece.y + piece.height + 0.01
+                    x >= piece.min.x - 0.01
+                        && y >= piece.min.y - 0.01
+                        && x + 1.0 <= piece.max.x + 0.01
+                        && y + 1.0 <= piece.max.y + 0.01
                 });
                 if !in_texture {
                     entry.lost_edge += 1;
@@ -442,15 +442,15 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
                     entry.lost_clip += 1;
                 }
                 let over = [
-                    cell_box.y - y,
-                    y + 1.0 - (cell_box.y + cell_box.height),
-                    cell_box.x - x,
-                    x + 1.0 - (cell_box.x + cell_box.width),
+                    cell_box.min.y - y,
+                    y + 1.0 - cell_box.max.y,
+                    cell_box.min.x - x,
+                    x + 1.0 - cell_box.max.x,
                 ];
                 for (side, over) in entry.outside.iter_mut().zip(over) {
                     *side = (*side).max(over as i32);
                 }
-                let (cx, cy) = ((x - cell_box.x) as i32, (y - cell_box.y) as i32);
+                let (cx, cy) = ((x - cell_box.min.x) as i32, (y - cell_box.min.y) as i32);
                 entry.bounds = [
                     entry.bounds[0].min(cx),
                     entry.bounds[1].min(cy),

@@ -1,11 +1,12 @@
 //! CPU scene construction, glyph fitting, and quad geometry.
+use super::super::pixel_rect;
 use super::shaping::{
     CachedGlyph, ShapeCaches, UnifiedGlyphAtlas, cached_shape, is_powerline, is_symbol,
 };
 use super::sprite::{self, sprite_codepoint};
 use super::{
-    BatchScene, BlinkPhases, DrawBatch, Palette, PixelGeometry, QuadInstance, RasterMetrics,
-    ResolvedStyle, TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext, cell_span,
+    BatchScene, BlinkPhases, DrawBatch, Palette, QuadInstance, RasterMetrics, ResolvedStyle,
+    TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext, cell_span,
     cursor_should_be_visible, terminal_pixel_size,
 };
 use crate::scene::{StyleFlags, TerminalCell};
@@ -15,7 +16,7 @@ use bevy::prelude::*;
 pub(super) struct SceneScratch {
     /// Background rectangles in pixel space, so adjoining rows can merge
     /// before conversion to clip-space quads.
-    pub(super) background_rects: Vec<(PixelGeometry, LinearRgba)>,
+    pub(super) background_rects: Vec<(Rect, LinearRgba)>,
     /// Indices into `background_rects` emitted for the previous row.
     pub(super) prev_runs: Vec<usize>,
     /// Indices into `background_rects` emitted for the current row.
@@ -55,22 +56,22 @@ impl SceneScratch {
 /// Records a background run, extending an identically aligned run from the
 /// previous row into one taller rectangle when possible.
 pub(super) fn merge_background_rect(
-    rects: &mut Vec<(PixelGeometry, LinearRgba)>,
+    rects: &mut Vec<(Rect, LinearRgba)>,
     prev_runs: &[usize],
     current_runs: &mut Vec<usize>,
-    geometry: PixelGeometry,
+    geometry: Rect,
     color: LinearRgba,
 ) {
     for &index in prev_runs {
         let (rect, existing) = &mut rects[index];
         if *existing == color
-            && rect.x == geometry.x
-            && rect.width == geometry.width
-            && (rect.y + rect.height - geometry.y).abs() < 0.01
+            && rect.min.x == geometry.min.x
+            && rect.width() == geometry.width()
+            && (rect.max.y - geometry.min.y).abs() < 0.01
         {
             // Anchor the merged bottom edge on the current row's own geometry
             // so accumulated float error cannot drift the rectangle.
-            rect.height = geometry.y + geometry.height - rect.y;
+            rect.max.y = geometry.max.y;
             current_runs.push(index);
             return;
         }
@@ -162,7 +163,7 @@ impl RowStates {
 pub(super) struct PlacedGlyph {
     pub(super) row: u16,
     pub(super) texture: AssetId<Image>,
-    pub(super) geometry: PixelGeometry,
+    pub(super) geometry: Rect,
     pub(super) uv: Vec4,
     pub(super) color: LinearRgba,
     pub(super) alpha_mask: bool,
@@ -275,8 +276,8 @@ pub(super) fn build_scene(
             .iter()
             .fold(RowReach::default(), |reach, glyph| {
                 reach.union(RowReach::of(
-                    glyph.geometry.y - row_top,
-                    glyph.geometry.y + glyph.geometry.height - row_top,
+                    glyph.geometry.min.y - row_top,
+                    glyph.geometry.max.y - row_top,
                     cell_height,
                 ))
             });
@@ -355,23 +356,16 @@ pub(super) fn build_scene(
     for glyph in placed.iter() {
         #[cfg(test)]
         let pieces_before = quads.instances.len();
-        let first = (glyph.geometry.y / cell_height).floor().max(0.0) as u16;
-        let last =
-            (((glyph.geometry.y + glyph.geometry.height) / cell_height).ceil() as u16).min(height);
+        let first = (glyph.geometry.min.y / cell_height).floor().max(0.0) as u16;
+        let last = ((glyph.geometry.max.y / cell_height).ceil() as u16).min(height);
         // Most glyphs lie inside their row and the texture: no clip needed.
-        let inside = last == first + 1
-            && glyph.geometry.x >= 0.0
-            && glyph.geometry.x + glyph.geometry.width <= size.x;
+        let inside =
+            last == first + 1 && glyph.geometry.min.x >= 0.0 && glyph.geometry.max.x <= size.x;
         for row in first..last {
             if !repaint[usize::from(row)] {
                 continue;
             }
-            let band = PixelGeometry {
-                x: 0.0,
-                y: f32::from(row) * cell_height,
-                width: size.x,
-                height: cell_height,
-            };
+            let band = pixel_rect(0.0, f32::from(row) * cell_height, size.x, cell_height);
             let clipped = if inside {
                 Some((glyph.geometry, glyph.uv))
             } else {
@@ -395,10 +389,10 @@ pub(super) fn build_scene(
             // Runs are sorted and disjoint: start at the first one the piece
             // reaches and stop past its right edge.
             let runs = &row_backgrounds[usize::from(row)];
-            let first = runs.partition_point(|&(_, right, _)| right <= piece.x);
+            let first = runs.partition_point(|&(_, right, _)| right <= piece.min.x);
             if let Some(&(left, right, background)) = runs.get(first)
-                && left <= piece.x
-                && right >= piece.x + piece.width
+                && left <= piece.min.x
+                && right >= piece.max.x
             {
                 quads.push(
                     glyph.texture,
@@ -408,13 +402,12 @@ pub(super) fn build_scene(
                 continue;
             }
             for &(left, right, background) in &runs[first..] {
-                if left >= piece.x + piece.width {
+                if left >= piece.max.x {
                     break;
                 }
-                let run = PixelGeometry {
-                    x: left,
-                    width: right - left,
-                    ..band
+                let run = Rect {
+                    min: Vec2::new(left, band.min.y),
+                    max: Vec2::new(right, band.max.y),
                 };
                 if let Some((part, uv)) = clip_glyph_to_row(piece, uv, run) {
                     quads.push(
@@ -429,12 +422,12 @@ pub(super) fn build_scene(
         if let Some(pieces) = emitted.get_mut(placed_index) {
             pieces.extend(quads.instances[pieces_before..].iter().map(|quad| {
                 let [left, top, right, bottom] = quad.rect;
-                PixelGeometry {
-                    x: (left + 1.0) / 2.0 * size.x,
-                    y: (1.0 - top) / 2.0 * size.y,
-                    width: (right - left) / 2.0 * size.x,
-                    height: (top - bottom) / 2.0 * size.y,
-                }
+                pixel_rect(
+                    (left + 1.0) / 2.0 * size.x,
+                    (1.0 - top) / 2.0 * size.y,
+                    (right - left) / 2.0 * size.x,
+                    (top - bottom) / 2.0 * size.y,
+                )
             }));
         }
         #[cfg(test)]
@@ -480,12 +473,12 @@ pub(super) fn build_scene(
             primary_atlas,
             false,
             solid_quad(
-                PixelGeometry {
-                    x: f32::from(position.x) * raster.cell_size.x + x,
-                    y: f32::from(position.y) * raster.cell_size.y + y,
+                pixel_rect(
+                    f32::from(position.x) * raster.cell_size.x + x,
+                    f32::from(position.y) * raster.cell_size.y + y,
                     width,
                     height,
-                },
+                ),
                 config.cursor.color,
                 size,
             ),
@@ -556,7 +549,7 @@ impl RowPainter<'_, '_> {
     fn backgrounds(
         &mut self,
         row: u16,
-        rects: &mut Vec<(PixelGeometry, LinearRgba)>,
+        rects: &mut Vec<(Rect, LinearRgba)>,
         prev_runs: &[usize],
         current_runs: &mut Vec<usize>,
         luminances: &mut Vec<(f32, f32, f32)>,
@@ -568,12 +561,12 @@ impl RowPainter<'_, '_> {
             // so later rows' clears would overwrite runs merged upward; merge
             // vertically only in full rebuilds (which have no per-row clears).
             rects.push((
-                PixelGeometry {
-                    x: 0.0,
-                    y: f32::from(row) * raster.cell_size.y,
-                    width: self.size.x,
-                    height: raster.cell_size.y,
-                },
+                pixel_rect(
+                    0.0,
+                    f32::from(row) * raster.cell_size.y,
+                    self.size.x,
+                    raster.cell_size.y,
+                ),
                 theme_background,
             ));
         }
@@ -595,12 +588,12 @@ impl RowPainter<'_, '_> {
                 _ => luminances.push((left, right, run_luminance)),
             }
             if !(self.full && color == theme_background) {
-                let geometry = PixelGeometry {
-                    x: start as f32 * raster.cell_size.x,
-                    y: f32::from(row) * raster.cell_size.y,
-                    width: (end - start) as f32 * raster.cell_size.x,
-                    height: raster.cell_size.y,
-                };
+                let geometry = pixel_rect(
+                    start as f32 * raster.cell_size.x,
+                    f32::from(row) * raster.cell_size.y,
+                    (end - start) as f32 * raster.cell_size.x,
+                    raster.cell_size.y,
+                );
                 if self.full {
                     merge_background_rect(rects, prev_runs, current_runs, geometry, color);
                 } else {
@@ -656,12 +649,12 @@ impl RowPainter<'_, '_> {
                 placed.push(PlacedGlyph {
                     row,
                     texture: self.glyph_atlas.id,
-                    geometry: PixelGeometry {
-                        x: cell_x + x0 as f32,
-                        y: cell_y + y0 as f32,
-                        width: (x1 - x0) as f32,
-                        height: (y1 - y0) as f32,
-                    },
+                    geometry: pixel_rect(
+                        cell_x + x0 as f32,
+                        cell_y + y0 as f32,
+                        (x1 - x0) as f32,
+                        (y1 - y0) as f32,
+                    ),
                     uv: Vec4::ZERO,
                     color: style.foreground,
                     alpha_mask: true,
@@ -698,12 +691,12 @@ impl RowPainter<'_, '_> {
                     Vec2::new(edge_shift(&shaped, cell_x, size.x), raster.glyph_offset)
                 };
                 for glyph in shaped.iter() {
-                    let geometry = PixelGeometry {
-                        x: cell_x + glyph.offset.x + shift.x,
-                        y: cell_y + glyph.offset.y + shift.y,
-                        width: glyph.size.x,
-                        height: glyph.size.y,
-                    };
+                    let geometry = pixel_rect(
+                        cell_x + glyph.offset.x + shift.x,
+                        cell_y + glyph.offset.y + shift.y,
+                        glyph.size.x,
+                        glyph.size.y,
+                    );
                     #[cfg(test)]
                     if self.full
                         && let Some(probe) = self.probe.as_deref_mut()
@@ -740,24 +733,24 @@ impl RowPainter<'_, '_> {
                 let decoration_thickness = raster.scale.round().max(1.0);
                 if style.any(StyleFlags::UNDERLINED) {
                     decorations.push(solid_quad(
-                        PixelGeometry {
-                            x: decoration_x,
-                            y: cell_y + (raster.cell_size.y - 2.0 * decoration_thickness).max(0.0),
-                            width: decoration_width,
-                            height: decoration_thickness,
-                        },
+                        pixel_rect(
+                            decoration_x,
+                            cell_y + (raster.cell_size.y - 2.0 * decoration_thickness).max(0.0),
+                            decoration_width,
+                            decoration_thickness,
+                        ),
                         style.underline,
                         size,
                     ));
                 }
                 if style.any(StyleFlags::CROSSED_OUT) {
                     decorations.push(solid_quad(
-                        PixelGeometry {
-                            x: decoration_x,
-                            y: cell_y + raster.cell_size.y * 0.55,
-                            width: decoration_width,
-                            height: decoration_thickness,
-                        },
+                        pixel_rect(
+                            decoration_x,
+                            cell_y + raster.cell_size.y * 0.55,
+                            decoration_width,
+                            decoration_thickness,
+                        ),
                         style.foreground,
                         size,
                     ));
@@ -819,7 +812,7 @@ pub(super) fn edge_shift(glyphs: &[CachedGlyph], x: f32, width: f32) -> f32 {
 }
 
 pub(super) fn solid_quad(
-    geometry: PixelGeometry,
+    geometry: Rect,
     color: impl Into<LinearRgba>,
     target: Vec2,
 ) -> QuadInstance {
@@ -835,7 +828,7 @@ pub(super) fn solid_quad(
 /// A glyph quad; `background` is the luminance of the cell background under
 /// it (coverage glyphs are blended with Ghostty's linear correction).
 pub(super) fn glyph_quad(
-    geometry: PixelGeometry,
+    geometry: Rect,
     uv: Vec4,
     color: impl Into<LinearRgba>,
     alpha_mask: bool,
@@ -863,59 +856,43 @@ pub(super) fn luminance(color: impl Into<LinearRgba>) -> f32 {
 /// Crops a glyph quad to the band it is drawn in (its row, or its cells for
 /// grid graphics), adjusting its atlas coordinates so the visible texels stay
 /// in place.
-pub(super) fn clip_glyph_to_row(
-    glyph: PixelGeometry,
-    uv: Vec4,
-    cell: PixelGeometry,
-) -> Option<(PixelGeometry, Vec4)> {
-    if glyph.width <= 0.0 || glyph.height <= 0.0 || cell.width <= 0.0 || cell.height <= 0.0 {
+pub(super) fn clip_glyph_to_row(glyph: Rect, uv: Vec4, cell: Rect) -> Option<(Rect, Vec4)> {
+    if glyph.width() <= 0.0 || glyph.height() <= 0.0 || cell.width() <= 0.0 || cell.height() <= 0.0
+    {
         return None;
     }
-    let left = glyph.x.max(cell.x);
-    let top = glyph.y.max(cell.y);
-    let right = (glyph.x + glyph.width).min(cell.x + cell.width);
-    let bottom = (glyph.y + glyph.height).min(cell.y + cell.height);
-    if right <= left || bottom <= top {
+    let clipped = glyph.intersect(cell);
+    if clipped.is_empty() {
         return None;
     }
-
     let u_span = uv.z - uv.x;
     let v_span = uv.w - uv.y;
     let clipped_uv = Vec4::new(
-        ((left - glyph.x) / glyph.width).mul_add(u_span, uv.x),
-        ((top - glyph.y) / glyph.height).mul_add(v_span, uv.y),
-        ((right - glyph.x) / glyph.width).mul_add(u_span, uv.x),
-        ((bottom - glyph.y) / glyph.height).mul_add(v_span, uv.y),
+        ((clipped.min.x - glyph.min.x) / glyph.width()).mul_add(u_span, uv.x),
+        ((clipped.min.y - glyph.min.y) / glyph.height()).mul_add(v_span, uv.y),
+        ((clipped.max.x - glyph.min.x) / glyph.width()).mul_add(u_span, uv.x),
+        ((clipped.max.y - glyph.min.y) / glyph.height()).mul_add(v_span, uv.y),
     );
-    Some((
-        PixelGeometry {
-            x: left,
-            y: top,
-            width: right - left,
-            height: bottom - top,
-        },
-        clipped_uv,
-    ))
+    Some((clipped, clipped_uv))
 }
 
-pub(super) fn snap_geometry(geometry: PixelGeometry) -> PixelGeometry {
-    let left = super::metrics::snap(geometry.x);
-    let top = super::metrics::snap(geometry.y);
-    let right = super::metrics::snap(geometry.x + geometry.width).max(left);
-    let bottom = super::metrics::snap(geometry.y + geometry.height).max(top);
-    PixelGeometry {
-        x: left,
-        y: top,
-        width: right - left,
-        height: bottom - top,
-    }
+/// Rounds a rectangle's edges to whole pixels, as the GPU rasterizes them.
+pub(super) fn snap_geometry(geometry: Rect) -> IRect {
+    let left = super::metrics::snap(geometry.min.x);
+    let top = super::metrics::snap(geometry.min.y);
+    let right = super::metrics::snap(geometry.max.x).max(left);
+    let bottom = super::metrics::snap(geometry.max.y).max(top);
+    IRect::new(left as i32, top as i32, right as i32, bottom as i32)
 }
 
-pub(super) fn clip_rect(geometry: PixelGeometry, target: Vec2) -> Vec4 {
-    let left = geometry.x / target.x * 2.0 - 1.0;
-    let right = (geometry.x + geometry.width) / target.x * 2.0 - 1.0;
-    let top = 1.0 - geometry.y / target.y * 2.0;
-    let bottom = 1.0 - (geometry.y + geometry.height) / target.y * 2.0;
+/// A whole-pixel rectangle of a `target`-sized texture in clip space, as
+/// `[left, top, right, bottom]`.
+pub(super) fn clip_rect(geometry: IRect, target: Vec2) -> Vec4 {
+    let rect = geometry.as_rect();
+    let left = rect.min.x / target.x * 2.0 - 1.0;
+    let right = rect.max.x / target.x * 2.0 - 1.0;
+    let top = 1.0 - rect.min.y / target.y * 2.0;
+    let bottom = 1.0 - rect.max.y / target.y * 2.0;
     Vec4::new(left, top, right, bottom)
 }
 

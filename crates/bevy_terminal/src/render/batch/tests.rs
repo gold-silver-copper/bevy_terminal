@@ -1,7 +1,7 @@
 use super::*;
 use super::{gpu::collect_batch_scenes, metrics::*, scene::*, shaping::*};
-use crate::render::TerminalSizing;
 use crate::render::grid_for;
+use crate::render::{TerminalSizing, pixel_rect};
 use crate::scene::{GridSize, StyleFlags, TerminalCell, TerminalStyle};
 
 fn quad(value: f32) -> QuadInstance {
@@ -1064,46 +1064,19 @@ fn symbols_before_blank_cells_may_spread_into_them() {
 
 #[test]
 fn snapping_and_clipping_keep_glyphs_that_fit_inside_their_cell() {
-    let cell = PixelGeometry {
-        x: 22.0,
-        y: 40.0,
-        width: 11.0,
-        height: 20.0,
-    };
+    let cell = pixel_rect(22.0, 40.0, 11.0, 20.0);
     // A glyph that fits mathematically survives snapping intact.
-    let glyph = PixelGeometry {
-        x: 22.0,
-        y: 40.0,
-        width: 11.0,
-        height: 20.0,
-    };
+    let glyph = pixel_rect(22.0, 40.0, 11.0, 20.0);
     let (clipped, _) = clip_glyph_to_row(glyph, Vec4::new(0.0, 0.0, 1.0, 1.0), cell).unwrap();
-    let snapped = snap_geometry(clipped);
-    assert_eq!(
-        (snapped.x, snapped.y, snapped.width, snapped.height),
-        (22.0, 40.0, 11.0, 20.0)
-    );
+    assert_eq!(snap_geometry(clipped), IRect::new(22, 40, 33, 60));
     // A glyph a pixel below the cell loses exactly that pixel row and its UVs.
-    let glyph = PixelGeometry {
-        x: 22.0,
-        y: 41.0,
-        width: 11.0,
-        height: 20.0,
-    };
+    let glyph = pixel_rect(22.0, 41.0, 11.0, 20.0);
     let (clipped, uv) = clip_glyph_to_row(glyph, Vec4::new(0.0, 0.0, 1.0, 1.0), cell).unwrap();
-    assert_eq!(clipped.height, 19.0);
+    assert_eq!(clipped.height(), 19.0);
     assert!((uv.w - 0.95).abs() < 1e-6, "{uv:?}");
     // Halves snap consistently: a rectangle at .5 keeps its size.
-    let snapped = snap_geometry(PixelGeometry {
-        x: 0.5,
-        y: -0.5,
-        width: 4.0,
-        height: 4.0,
-    });
-    assert_eq!(
-        (snapped.x, snapped.y, snapped.width, snapped.height),
-        (1.0, 0.0, 4.0, 4.0)
-    );
+    let snapped = snap_geometry(pixel_rect(0.5, -0.5, 4.0, 4.0));
+    assert_eq!(snapped, IRect::new(1, 0, 5, 4));
 }
 
 #[test]
@@ -1303,26 +1276,10 @@ fn measured_output_changes_when_only_logical_metrics_change() {
 #[test]
 fn pixel_rectangles_map_exactly_to_clip_space() {
     assert_eq!(
-        clip_rect(
-            PixelGeometry {
-                x: 0.0,
-                y: 0.0,
-                width: 800.0,
-                height: 480.0,
-            },
-            Vec2::new(800.0, 480.0),
-        ),
+        clip_rect(IRect::new(0, 0, 800, 480), Vec2::new(800.0, 480.0)),
         Vec4::new(-1.0, 1.0, 1.0, -1.0)
     );
-    let cell = clip_rect(
-        PixelGeometry {
-            x: 400.0,
-            y: 240.0,
-            width: 10.0,
-            height: 20.0,
-        },
-        Vec2::new(800.0, 480.0),
-    );
+    let cell = clip_rect(IRect::new(400, 240, 410, 260), Vec2::new(800.0, 480.0));
     assert!(cell.abs_diff_eq(Vec4::new(0.0, 0.0, 0.025, -1.0 / 12.0), 1e-6));
 }
 
@@ -1355,18 +1312,8 @@ fn physical_metrics_and_geometry_are_pixel_aligned() {
     assert!((physical.font_size - 35.2).abs() < 1e-4);
 
     assert_eq!(
-        snap_geometry(PixelGeometry {
-            x: 4.5,
-            y: 9.5,
-            width: 1.0,
-            height: 2.0,
-        }),
-        PixelGeometry {
-            x: 5.0,
-            y: 10.0,
-            width: 1.0,
-            height: 2.0,
-        }
+        snap_geometry(pixel_rect(4.5, 9.5, 1.0, 2.0)),
+        IRect::new(5, 10, 6, 12)
     );
 }
 
@@ -1402,49 +1349,21 @@ fn font_driven_cells_refit_the_font_after_physical_pixel_rounding() {
 #[test]
 fn glyph_bitmaps_are_clipped_to_their_row_band() {
     let clipped = clip_glyph_to_row(
-        PixelGeometry {
-            x: -2.0,
-            y: 3.0,
-            width: 16.0,
-            height: 20.0,
-        },
+        pixel_rect(-2.0, 3.0, 16.0, 20.0),
         Vec4::new(0.1, 0.2, 0.9, 0.8),
-        PixelGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: 100.0,
-            height: 10.0,
-        },
+        pixel_rect(0.0, 0.0, 100.0, 10.0),
     )
     .expect("the glyph overlaps the row");
 
     // Ink past the row's bottom or the texture's edge is dropped; columns
     // past the glyph's own cell are kept.
-    assert_eq!(
-        clipped.0,
-        PixelGeometry {
-            x: 0.0,
-            y: 3.0,
-            width: 14.0,
-            height: 7.0,
-        }
-    );
+    assert_eq!(clipped.0, pixel_rect(0.0, 3.0, 14.0, 7.0));
     assert!(clipped.1.abs_diff_eq(Vec4::new(0.2, 0.2, 0.9, 0.41), 1e-6));
     assert!(
         clip_glyph_to_row(
-            PixelGeometry {
-                x: 20.0,
-                y: 20.0,
-                width: 5.0,
-                height: 5.0,
-            },
+            pixel_rect(20.0, 20.0, 5.0, 5.0),
             Vec4::ONE,
-            PixelGeometry {
-                x: 0.0,
-                y: 0.0,
-                width: 10.0,
-                height: 10.0,
-            },
+            pixel_rect(0.0, 0.0, 10.0, 10.0),
         )
         .is_none()
     );

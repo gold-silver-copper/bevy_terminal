@@ -39,9 +39,8 @@ use bevy::{
 
 use super::terminal::Measurement;
 use super::{
-    Face, Palette, PixelGeometry, ResolvedStyle, TerminalGeometry, TerminalRenderConfig,
-    TerminalRenderer, TerminalStats, TerminalStatus, TerminalTexture, cell_span,
-    cursor_should_be_visible, text_font,
+    Face, Palette, ResolvedStyle, TerminalGeometry, TerminalRenderConfig, TerminalRenderer,
+    TerminalStats, TerminalStatus, TerminalTexture, cell_span, cursor_should_be_visible, text_font,
 };
 use crate::{
     scene::{GridSize, StyleFlags, TerminalSnapshot},
