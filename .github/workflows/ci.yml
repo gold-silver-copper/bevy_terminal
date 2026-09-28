@@ -131,6 +131,15 @@ jobs:
       - name: Unit and integration tests
         run: cargo test --workspace --all-features --lib --tests --locked
 
+      # The whole placement probe matrix (six bundled families, two sizes,
+      # two scales, two line heights) must reproduce the committed results:
+      # per-configuration totals and every grapheme that loses ink or shifts.
+      - name: Glyph placement probe matrix
+        run: |
+          cargo test --workspace --all-features --lib --locked glyph_placement_probe_report -- --ignored
+          diff -u ghostty-parity/probe-after-summary.tsv target/glyph-placement-probe/summary.tsv
+          diff -u ghostty-parity/probe-after-defects.tsv target/glyph-placement-probe/defects.tsv
+
       - name: GPU readback regressions
         timeout-minutes: 10
         run: cargo test --workspace --all-features --test gpu_readback --test export_readiness --locked -- --ignored --test-threads=1

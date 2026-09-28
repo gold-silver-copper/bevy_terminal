@@ -505,12 +505,15 @@ pub(super) fn matrix() -> Vec<ProbeCase> {
 pub(super) const REPORT_HEADER: &str = "font\tsize\tscale\tline_height\tcell\tsymbol\trow\tcolumn\tcolumns\tclass\tink\tlost_clip\tlost_edge\tout_top\tout_bottom\tout_left\tout_right\tshift_x\tink_left\tink_top\tink_right\tink_bottom\n";
 pub(super) const SUMMARY_HEADER: &str = "font\tsize\tscale\tline_height\tcell\tgraphemes\tclipped\tlost_clip\tedge_clipped\tlost_edge\ttext_shifted\ttext_shift_px\toverflowing\n";
 
-/// Appends the notable entries of one run and its summary line.
+/// Appends the notable entries of one run and its summary line; at 24 px
+/// and scale 2, entries of non-sprite graphemes that lost ink or were
+/// shifted also go to `defects` (committed as `probe-after-defects.tsv`).
 pub(super) fn report(
     case: &ProbeCase,
     result: &ProbeResult,
     report: &mut String,
     summary: &mut String,
+    defects: &mut String,
 ) {
     let cell = format!("{}x{}", result.cell.x, result.cell.y);
     let mut clipped = 0;
@@ -540,8 +543,7 @@ pub(super) fn report(
             continue;
         }
         let [top, bottom, left, right] = entry.outside;
-        writeln!(
-            report,
+        let line = format!(
             "{}\t{cell}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{top}\t{bottom}\t{left}\t{right}\t{}\t{}",
             case.label,
             entry.symbol,
@@ -554,8 +556,15 @@ pub(super) fn report(
             entry.lost_edge,
             entry.shift,
             entry.bounds.map(|v| v.to_string()).join("\t"),
-        )
-        .unwrap();
+        );
+        writeln!(report, "{line}").unwrap();
+        if case.font_size == 24.0
+            && case.scale == 2.0
+            && entry.class != "sprite"
+            && (entry.lost_clip > 0 || entry.lost_edge > 0 || entry.shift != 0.0)
+        {
+            writeln!(defects, "{line}").unwrap();
+        }
     }
     writeln!(
         summary,
@@ -579,12 +588,14 @@ fn glyph_placement_probe_report() {
     std::fs::create_dir_all(&directory).unwrap();
     let mut report = String::from(REPORT_HEADER);
     let mut summary = String::from(SUMMARY_HEADER);
+    let mut defects = String::from(REPORT_HEADER);
     for case in matrix() {
         let result = run(&case);
-        self::report(&case, &result, &mut report, &mut summary);
+        self::report(&case, &result, &mut report, &mut summary, &mut defects);
     }
     std::fs::write(format!("{directory}/entries.tsv"), &report).unwrap();
     std::fs::write(format!("{directory}/summary.tsv"), &summary).unwrap();
+    std::fs::write(format!("{directory}/defects.tsv"), &defects).unwrap();
     print!("{summary}");
 }
 
