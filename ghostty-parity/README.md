@@ -21,3 +21,12 @@ Output goes to `target/glyph-placement-probe/{summary,entries}.tsv`. `BEVY_TERMI
 
 - `probe-baseline-summary.tsv`: per configuration, before any change (`main` at `9281c92`).
 - `probe-baseline-defects.tsv`: the non-graphics graphemes that lost ink or were shifted at 24 px, scale 2.
+- `probe-after-summary.tsv` and `probe-after-defects.tsv`: the same after this work (sprites are excluded instead of graphics). The samples gained a Nerd Fonts row, so row numbers after row 11 moved down by one.
+
+  No grapheme loses ink to a clip inside the texture in any configuration (before: 12–157 per configuration). The remaining losses are accents on the first row and descenders on the last row, cut by the texture's edges. Every remaining horizontal shift is at the first or last column.
+
+Other files:
+
+- `gen_nerd_font_table.py` generates `crates/bevy_terminal/src/render/batch/nerd_font.rs` from a Ghostty checkout.
+- `RUN_SHAPING.md` assesses run shaping.
+- `benchmarks/` holds the benchmark results.
