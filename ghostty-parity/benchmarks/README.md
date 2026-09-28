@@ -5,7 +5,8 @@
 - Variants, each built in its own worktree and run interleaved, rotating order:
   - `main`: `9281c92`, the released 0.7.7 source;
   - `pre`: `32e65c7`, after overflow, constraints, sprites and blending, before the performance work;
-  - `post`: the performance commit that follows these files in the PR.
+  - `post`: the performance commit that follows these files in the PR;
+  - `final`: `f80e9f9`, the verified head.
 
 **Caveat.** The machine was heavily loaded by unrelated work throughout: other compilers, a game test suite and a browser, with a load average of 16–60 on 12 cores. Wall-clock medians moved by up to 2× between identical runs. For that reason the files also report low percentiles (`p10`) over every frame and the *fastest* of many updates, which other load can only inflate, never deflate. Compare variants within a file, not across files.
 
@@ -16,6 +17,7 @@
 | `renderer-batch4-p10.txt` | plus opaque block elements as solid quads | 21–53 |
 | `audit-release-run2.txt` | plus the emission fast path and per-cell linear foreground | 36–37 |
 | `audit-release-run3.txt` | final code (linear background runs) | 21–36 |
+| `final-renderer.txt`, `final-audit.txt` | `f80e9f9`, after the independent review's fixes, against `main` only | 55–93 |
 
 ## Reproduce
 

@@ -1,0 +1,23 @@
+workload                       variant  median ms   min ms    allocs  alloc MB  peak MB  misses
+dense_ascii_fastest_update     main          0.55     0.46         0       0.0      0.0       0
+dense_ascii_fastest_update     final         0.57     0.54         0       0.0      0.0       0
+dense_styled_fastest_update    main          1.46     1.41         0       0.0      0.0       0
+dense_styled_fastest_update    final         1.52     1.42         0       0.0      0.0       0
+scroll_equal_ascii             main          3.30     2.44         0       0.0      0.0       0
+scroll_equal_ascii             final         3.35     3.10         0       0.0      0.0       0
+scroll_equal_heap              main          6.10     5.36     16000       0.4      0.0       0
+scroll_equal_heap              final         3.98     3.16     16000       0.4      0.0       0
+scroll_changing_heap           main         12.88    12.47    382160       8.8      0.0       0
+scroll_changing_heap           final        12.66    11.72    382160       8.8      0.0       0
+idle_32_fonts_16               main         39.31    26.67      5747       1.1      0.0       0
+idle_32_fonts_16               final        55.29    24.96      5957       1.1      0.0       0
+glyph_churn                    main        158.13   120.46     93521      43.5     22.4    5760
+glyph_churn                    final       144.50   125.98     99474      28.7      8.5    5760
+resize_font_scale_churn        main        155.21   141.89    159801      49.9      3.8   11520
+resize_font_scale_churn        final       146.12   118.88    166715      51.0      1.1   11520
+unicode_cache_saturation       main        203.47   163.85     95409      69.5     49.2    5760
+unicode_cache_saturation       final       202.49   186.60    101306      71.8     51.2    5760
+alternating_working_sets       main        153.74   133.30    130456      33.3      5.4    8640
+alternating_working_sets       final       135.87   110.65    125857      34.5      7.3    7423
+ascii_after_saturation         main          8.24     6.73     10516       0.6      0.0      16
+ascii_after_saturation         final         7.55     6.06     10536       0.8      0.0      16

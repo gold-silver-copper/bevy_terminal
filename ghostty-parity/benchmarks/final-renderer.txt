@@ -1,0 +1,13 @@
+5 interleaved runs per variant; per-frame ms over all measured frames
+workload       size    |         total p50 |         total p10 |   bevy_update p50 |
+                       |     main    final |     main    final |     main    final |
+static         120x40  |    1.715    1.738 |    1.184    1.221 |    1.242    1.221 |
+static         80x24   |    1.611    1.777 |    1.139    1.136 |    1.303    1.320 |
+sparse         120x40  |    1.825    2.054 |    1.362    1.346 |    1.375    1.526 |
+sparse         80x24   |    1.807    2.071 |    1.294    1.274 |    1.425    1.575 |
+dense_ascii    120x40  |    2.637    2.698 |    2.000    2.046 |    2.129    2.196 |
+dense_ascii    80x24   |    1.990    2.228 |    1.447    1.507 |    1.686    1.852 |
+dense_styled   120x40  |    3.450    3.631 |    2.614    2.608 |    2.650    2.883 |
+dense_styled   80x24   |    2.209    2.406 |    1.712    1.747 |    1.838    1.984 |
+unicode        120x40  |    2.215    2.269 |    1.695    1.676 |    1.635    1.704 |
+unicode        80x24   |    1.998    2.121 |    1.424    1.414 |    1.554    1.574 |

@@ -1,0 +1,674 @@
+{
+  "schema": "bevy_terminal ghostty-parity verification manifest v1",
+  "pull_request": "https://github.com/gold-silver-copper/bevy_terminal/pull/6",
+  "branch": "ghostty-parity",
+  "base": "9281c92",
+  "verified_head": "f80e9f9c98de479dbdd2aa17b4598290fd47123b",
+  "ghostty_reference": {
+    "repository": "https://github.com/ghostty-org/ghostty",
+    "revision": "b40acce58dcf77df52231c3798ea58e924647c89",
+    "license": "MIT"
+  },
+  "environment": {
+    "machine": "Apple M2 Max, 64 GiB",
+    "os": "macOS 27.0",
+    "gpu_backend": "Metal",
+    "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "note": "Heavily loaded by unrelated work (load average 16-60 on 12 cores); wall-clock timings are noisy."
+  },
+  "local_checks": [
+    {
+      "name": "fmt",
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0,
+      "seconds": 0
+    },
+    {
+      "name": "check-all",
+      "command": "cargo check --workspace --all-features --all-targets --locked",
+      "exit_code": 0,
+      "seconds": 17
+    },
+    {
+      "name": "clippy",
+      "command": "cargo clippy --workspace --all-features --all-targets --locked -- -D warnings",
+      "exit_code": 0,
+      "seconds": 2
+    },
+    {
+      "name": "check-default",
+      "command": "cargo check --workspace --locked",
+      "exit_code": 0,
+      "seconds": 11
+    },
+    {
+      "name": "check-minimal-core",
+      "command": "cargo check -p bevy_terminal --no-default-features --locked",
+      "exit_code": 0,
+      "seconds": 5
+    },
+    {
+      "name": "check-minimal-adapter",
+      "command": "cargo check -p bevy_terminal_ratatui --no-default-features --locked",
+      "exit_code": 0,
+      "seconds": 4
+    },
+    {
+      "name": "tests",
+      "command": "cargo test --workspace --all-features --lib --tests --locked",
+      "exit_code": 0,
+      "seconds": 39,
+      "backend": "Metal (Apple M2 Max)"
+    },
+    {
+      "name": "gpu-readback",
+      "command": "cargo test --workspace --all-features --test gpu_readback --test export_readiness --locked -- --ignored --test-threads=1",
+      "exit_code": 0,
+      "seconds": 132,
+      "backend": "Metal (Apple M2 Max)"
+    },
+    {
+      "name": "oracle-tests",
+      "command": "cargo test --all-features --example glyph_fidelity --locked",
+      "exit_code": 0,
+      "seconds": 33,
+      "backend": "Metal (Apple M2 Max)"
+    },
+    {
+      "name": "fidelity-fit",
+      "command": "cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --output /tmp/verify-final/gf/fit",
+      "exit_code": 0,
+      "seconds": 346,
+      "backend": "Metal (Apple M2 Max)"
+    },
+    {
+      "name": "fidelity-natural",
+      "command": "cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --from-font 23 --output /tmp/verify-final/gf/natural",
+      "exit_code": 0,
+      "seconds": 242,
+      "backend": "Metal (Apple M2 Max)"
+    },
+    {
+      "name": "fidelity-compact",
+      "command": "cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --from-font 23 --line-height 0.85 --output /tmp/verify-final/gf/compact",
+      "exit_code": 0,
+      "seconds": 212,
+      "backend": "Metal (Apple M2 Max)"
+    },
+    {
+      "name": "fidelity-fixed",
+      "command": "cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --fixed-cell 9x18 --font-size 18 --output /tmp/verify-final/gf/fixed",
+      "exit_code": 0,
+      "seconds": 108,
+      "backend": "Metal (Apple M2 Max)"
+    },
+    {
+      "name": "fidelity-roomy",
+      "command": "cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --fixed-cell 14x24 --font-size 16 --output /tmp/verify-final/gf/roomy",
+      "exit_code": 0,
+      "seconds": 198,
+      "backend": "Metal (Apple M2 Max)"
+    },
+    {
+      "name": "coverage",
+      "command": "cargo run --all-features --locked --example glyph_coverage -- --output /tmp/verify-final/gc",
+      "exit_code": 0,
+      "seconds": 76,
+      "backend": "Metal (Apple M2 Max)"
+    },
+    {
+      "name": "doctests",
+      "command": "cargo test --workspace --all-features --doc --locked",
+      "exit_code": 0,
+      "seconds": 9,
+      "backend": "Metal (Apple M2 Max)"
+    },
+    {
+      "name": "docs",
+      "command": "RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked",
+      "exit_code": 0,
+      "seconds": 5
+    },
+    {
+      "name": "probe",
+      "command": "cargo test -p bevy_terminal --lib --locked probe -- --ignored && diff target/glyph-placement-probe/summary.tsv ghostty-parity/probe-after-summary.tsv",
+      "exit_code": 0,
+      "seconds": 42,
+      "backend": "Metal (Apple M2 Max)"
+    },
+    {
+      "name": "consumer-fixture",
+      "command": "CARGO_TARGET_DIR=/tmp/fixture-target cargo test --manifest-path integration/bevy-ratatui-context/Cargo.toml --locked",
+      "exit_code": 0,
+      "seconds": 8
+    },
+    {
+      "name": "consumer-windowed",
+      "command": "CARGO_TARGET_DIR=/tmp/fixture-target cargo check --manifest-path integration/bevy-ratatui-context/Cargo.toml --features consumer-windowed --locked",
+      "exit_code": 0,
+      "seconds": 2
+    },
+    {
+      "name": "consumer-native",
+      "command": "CARGO_TARGET_DIR=/tmp/fixture-target cargo check --manifest-path ../bevy_ratatui/Cargo.toml --lib --no-default-features --features std,crossterm --locked",
+      "exit_code": 0,
+      "seconds": 61
+    }
+  ],
+  "local_checks_all_passed": true,
+  "ci": {
+    "workflow": "CI",
+    "run": "https://github.com/gold-silver-copper/bevy_terminal/actions/runs/36367934180",
+    "head": "f80e9f9c98de479dbdd2aa17b4598290fd47123b",
+    "conclusion": "success",
+    "jobs": {
+      "Workspace and software Vulkan": "success",
+      "Real bevy_ratatui context": "success"
+    },
+    "note": "Later commits change only ghostty-parity/ documentation and .gitignore; their CI runs are linked from the PR."
+  },
+  "software_vulkan": "CI only (job \"Workspace and software Vulkan\", Mesa lavapipe); not available locally",
+  "probe": {
+    "matrix": "six bundled families x 18/24 px x raster scale 1/2 x line height 1.0/0.85 (48 configurations)",
+    "command": "cargo test -p bevy_terminal --lib --locked probe -- --ignored",
+    "before": {
+      "iosevka-fixed": {
+        "configurations": 8,
+        "clipped_max": 96,
+        "lost_clip_pixels": 8836,
+        "text_shifted_max": 32,
+        "edge_clipped_max": 18,
+        "lost_edge_pixels": 3055
+      },
+      "jetbrains-mono": {
+        "configurations": 8,
+        "clipped_max": 49,
+        "lost_clip_pixels": 7675,
+        "text_shifted_max": 8,
+        "edge_clipped_max": 10,
+        "lost_edge_pixels": 1614
+      },
+      "cascadia-mono": {
+        "configurations": 8,
+        "clipped_max": 143,
+        "lost_clip_pixels": 15375,
+        "text_shifted_max": 12,
+        "edge_clipped_max": 18,
+        "lost_edge_pixels": 3625
+      },
+      "hack": {
+        "configurations": 8,
+        "clipped_max": 156,
+        "lost_clip_pixels": 14009,
+        "text_shifted_max": 11,
+        "edge_clipped_max": 16,
+        "lost_edge_pixels": 2685
+      },
+      "dejavu-sans-mono": {
+        "configurations": 8,
+        "clipped_max": 157,
+        "lost_clip_pixels": 12196,
+        "text_shifted_max": 20,
+        "edge_clipped_max": 16,
+        "lost_edge_pixels": 1297
+      },
+      "source-code-pro": {
+        "configurations": 8,
+        "clipped_max": 122,
+        "lost_clip_pixels": 9901,
+        "text_shifted_max": 23,
+        "edge_clipped_max": 10,
+        "lost_edge_pixels": 909
+      }
+    },
+    "after": {
+      "iosevka-fixed": {
+        "configurations": 8,
+        "clipped_max": 0,
+        "lost_clip_pixels": 0,
+        "text_shifted_max": 4,
+        "edge_clipped_max": 15,
+        "lost_edge_pixels": 2911
+      },
+      "jetbrains-mono": {
+        "configurations": 8,
+        "clipped_max": 0,
+        "lost_clip_pixels": 0,
+        "text_shifted_max": 1,
+        "edge_clipped_max": 9,
+        "lost_edge_pixels": 1598
+      },
+      "cascadia-mono": {
+        "configurations": 8,
+        "clipped_max": 0,
+        "lost_clip_pixels": 0,
+        "text_shifted_max": 3,
+        "edge_clipped_max": 15,
+        "lost_edge_pixels": 3417
+      },
+      "hack": {
+        "configurations": 8,
+        "clipped_max": 0,
+        "lost_clip_pixels": 0,
+        "text_shifted_max": 1,
+        "edge_clipped_max": 15,
+        "lost_edge_pixels": 2575
+      },
+      "dejavu-sans-mono": {
+        "configurations": 8,
+        "clipped_max": 0,
+        "lost_clip_pixels": 0,
+        "text_shifted_max": 1,
+        "edge_clipped_max": 15,
+        "lost_edge_pixels": 1187
+      },
+      "source-code-pro": {
+        "configurations": 8,
+        "clipped_max": 0,
+        "lost_clip_pixels": 0,
+        "text_shifted_max": 2,
+        "edge_clipped_max": 10,
+        "lost_edge_pixels": 983
+      }
+    },
+    "after_regenerated_identically": true,
+    "remaining": "ink lost only past the texture first/last row; horizontal shifts only at the first/last column (documented edge rule)"
+  },
+  "benchmarks": {
+    "final_round": {
+      "variants": {
+        "main": "9281c92",
+        "final": "f80e9f9c98de479dbdd2aa17b4598290fd47123b"
+      },
+      "audit_workloads_release_3_runs": {
+        "dense_ascii_fastest_update": {
+          "main": {
+            "median_ms": 0.55,
+            "min_ms": 0.46,
+            "allocations": 0,
+            "allocated_mb": 0.0,
+            "peak_live_mb": 0.0,
+            "shape_misses": 0
+          },
+          "final": {
+            "median_ms": 0.57,
+            "min_ms": 0.54,
+            "allocations": 0,
+            "allocated_mb": 0.0,
+            "peak_live_mb": 0.0,
+            "shape_misses": 0
+          }
+        },
+        "dense_styled_fastest_update": {
+          "main": {
+            "median_ms": 1.46,
+            "min_ms": 1.41,
+            "allocations": 0,
+            "allocated_mb": 0.0,
+            "peak_live_mb": 0.0,
+            "shape_misses": 0
+          },
+          "final": {
+            "median_ms": 1.52,
+            "min_ms": 1.42,
+            "allocations": 0,
+            "allocated_mb": 0.0,
+            "peak_live_mb": 0.0,
+            "shape_misses": 0
+          }
+        },
+        "scroll_equal_ascii": {
+          "main": {
+            "median_ms": 3.3,
+            "min_ms": 2.44,
+            "allocations": 0,
+            "allocated_mb": 0.0,
+            "peak_live_mb": 0.0,
+            "shape_misses": 0
+          },
+          "final": {
+            "median_ms": 3.35,
+            "min_ms": 3.1,
+            "allocations": 0,
+            "allocated_mb": 0.0,
+            "peak_live_mb": 0.0,
+            "shape_misses": 0
+          }
+        },
+        "scroll_equal_heap": {
+          "main": {
+            "median_ms": 6.1,
+            "min_ms": 5.36,
+            "allocations": 16000,
+            "allocated_mb": 0.4,
+            "peak_live_mb": 0.0,
+            "shape_misses": 0
+          },
+          "final": {
+            "median_ms": 3.98,
+            "min_ms": 3.16,
+            "allocations": 16000,
+            "allocated_mb": 0.4,
+            "peak_live_mb": 0.0,
+            "shape_misses": 0
+          }
+        },
+        "scroll_changing_heap": {
+          "main": {
+            "median_ms": 12.88,
+            "min_ms": 12.47,
+            "allocations": 382160,
+            "allocated_mb": 8.8,
+            "peak_live_mb": 0.0,
+            "shape_misses": 0
+          },
+          "final": {
+            "median_ms": 12.66,
+            "min_ms": 11.72,
+            "allocations": 382160,
+            "allocated_mb": 8.8,
+            "peak_live_mb": 0.0,
+            "shape_misses": 0
+          }
+        },
+        "idle_32_fonts_16": {
+          "main": {
+            "median_ms": 39.31,
+            "min_ms": 26.67,
+            "allocations": 5747,
+            "allocated_mb": 1.1,
+            "peak_live_mb": 0.0,
+            "shape_misses": 0
+          },
+          "final": {
+            "median_ms": 55.29,
+            "min_ms": 24.96,
+            "allocations": 5957,
+            "allocated_mb": 1.1,
+            "peak_live_mb": 0.0,
+            "shape_misses": 0
+          }
+        },
+        "glyph_churn": {
+          "main": {
+            "median_ms": 158.13,
+            "min_ms": 120.46,
+            "allocations": 93521,
+            "allocated_mb": 43.5,
+            "peak_live_mb": 22.4,
+            "shape_misses": 5760
+          },
+          "final": {
+            "median_ms": 144.5,
+            "min_ms": 125.98,
+            "allocations": 99474,
+            "allocated_mb": 28.7,
+            "peak_live_mb": 8.5,
+            "shape_misses": 5760
+          }
+        },
+        "resize_font_scale_churn": {
+          "main": {
+            "median_ms": 155.21,
+            "min_ms": 141.89,
+            "allocations": 159801,
+            "allocated_mb": 49.9,
+            "peak_live_mb": 3.8,
+            "shape_misses": 11520
+          },
+          "final": {
+            "median_ms": 146.12,
+            "min_ms": 118.88,
+            "allocations": 166715,
+            "allocated_mb": 51.0,
+            "peak_live_mb": 1.1,
+            "shape_misses": 11520
+          }
+        },
+        "unicode_cache_saturation": {
+          "main": {
+            "median_ms": 203.47,
+            "min_ms": 163.85,
+            "allocations": 95409,
+            "allocated_mb": 69.5,
+            "peak_live_mb": 49.2,
+            "shape_misses": 5760
+          },
+          "final": {
+            "median_ms": 202.49,
+            "min_ms": 186.6,
+            "allocations": 101306,
+            "allocated_mb": 71.8,
+            "peak_live_mb": 51.2,
+            "shape_misses": 5760
+          }
+        },
+        "alternating_working_sets": {
+          "main": {
+            "median_ms": 153.74,
+            "min_ms": 133.3,
+            "allocations": 130456,
+            "allocated_mb": 33.3,
+            "peak_live_mb": 5.4,
+            "shape_misses": 8640
+          },
+          "final": {
+            "median_ms": 135.87,
+            "min_ms": 110.65,
+            "allocations": 125857,
+            "allocated_mb": 34.5,
+            "peak_live_mb": 7.3,
+            "shape_misses": 7423
+          }
+        },
+        "ascii_after_saturation": {
+          "main": {
+            "median_ms": 8.24,
+            "min_ms": 6.73,
+            "allocations": 10516,
+            "allocated_mb": 0.6,
+            "peak_live_mb": 0.0,
+            "shape_misses": 16
+          },
+          "final": {
+            "median_ms": 7.55,
+            "min_ms": 6.06,
+            "allocations": 10536,
+            "allocated_mb": 0.8,
+            "peak_live_mb": 0.0,
+            "shape_misses": 16
+          }
+        }
+      },
+      "renderer_comparison_standard_5_runs": {
+        "static 120x40": {
+          "total_p50_ms": {
+            "main": 1.715,
+            "final": 1.738
+          },
+          "total_p10_ms": {
+            "main": 1.184,
+            "final": 1.221
+          },
+          "bevy_update_p50_ms": {
+            "main": 1.242,
+            "final": 1.221
+          }
+        },
+        "static 80x24": {
+          "total_p50_ms": {
+            "main": 1.611,
+            "final": 1.777
+          },
+          "total_p10_ms": {
+            "main": 1.139,
+            "final": 1.136
+          },
+          "bevy_update_p50_ms": {
+            "main": 1.303,
+            "final": 1.32
+          }
+        },
+        "sparse 120x40": {
+          "total_p50_ms": {
+            "main": 1.825,
+            "final": 2.054
+          },
+          "total_p10_ms": {
+            "main": 1.362,
+            "final": 1.346
+          },
+          "bevy_update_p50_ms": {
+            "main": 1.375,
+            "final": 1.526
+          }
+        },
+        "sparse 80x24": {
+          "total_p50_ms": {
+            "main": 1.807,
+            "final": 2.071
+          },
+          "total_p10_ms": {
+            "main": 1.294,
+            "final": 1.274
+          },
+          "bevy_update_p50_ms": {
+            "main": 1.425,
+            "final": 1.575
+          }
+        },
+        "dense_ascii 120x40": {
+          "total_p50_ms": {
+            "main": 2.637,
+            "final": 2.698
+          },
+          "total_p10_ms": {
+            "main": 2.0,
+            "final": 2.046
+          },
+          "bevy_update_p50_ms": {
+            "main": 2.129,
+            "final": 2.196
+          }
+        },
+        "dense_ascii 80x24": {
+          "total_p50_ms": {
+            "main": 1.99,
+            "final": 2.228
+          },
+          "total_p10_ms": {
+            "main": 1.447,
+            "final": 1.507
+          },
+          "bevy_update_p50_ms": {
+            "main": 1.686,
+            "final": 1.852
+          }
+        },
+        "dense_styled 120x40": {
+          "total_p50_ms": {
+            "main": 3.45,
+            "final": 3.631
+          },
+          "total_p10_ms": {
+            "main": 2.614,
+            "final": 2.608
+          },
+          "bevy_update_p50_ms": {
+            "main": 2.65,
+            "final": 2.883
+          }
+        },
+        "dense_styled 80x24": {
+          "total_p50_ms": {
+            "main": 2.209,
+            "final": 2.406
+          },
+          "total_p10_ms": {
+            "main": 1.712,
+            "final": 1.747
+          },
+          "bevy_update_p50_ms": {
+            "main": 1.838,
+            "final": 1.984
+          }
+        },
+        "unicode 120x40": {
+          "total_p50_ms": {
+            "main": 2.215,
+            "final": 2.269
+          },
+          "total_p10_ms": {
+            "main": 1.695,
+            "final": 1.676
+          },
+          "bevy_update_p50_ms": {
+            "main": 1.635,
+            "final": 1.704
+          }
+        },
+        "unicode 80x24": {
+          "total_p50_ms": {
+            "main": 1.998,
+            "final": 2.121
+          },
+          "total_p10_ms": {
+            "main": 1.424,
+            "final": 1.414
+          },
+          "bevy_update_p50_ms": {
+            "main": 1.554,
+            "final": 1.574
+          }
+        }
+      },
+      "text_8_cpu_image_bytes": {
+        "main": 135266304,
+        "final": 1048576
+      }
+    },
+    "earlier_rounds": "ghostty-parity/benchmarks/"
+  },
+  "fonts": {
+    "required": "bundled only: assets/fonts (DejaVu Sans Mono, JetBrains Mono, Hack, Iosevka Fixed, Source Code Pro, Cascadia Mono, fidelity subsets with subset-sources.json/subset-hashes.json) and crates/bevy_terminal/assets/fonts (incl. FidelityNerdSymbols.ttf from Ghostty's vendored JetBrains Mono Nerd Font)",
+    "optional_diagnostics": "host JetBrainsMono Nerd Font Mono (~/Library/Fonts) for Ratty captures"
+  },
+  "ratty_captures": {
+    "worktree": "detached /tmp worktree of orhun/ratty at 226453e; user checkouts untouched",
+    "before": "crates.io bevy_terminal_ratatui 0.7.7",
+    "after": "[patch.crates-io] to this branch (cargo tree confirmed)",
+    "configs": [
+      "JetBrainsMono Nerd Font Mono 18pt",
+      "DejaVu Sans Mono 14pt line height 0.85"
+    ],
+    "views": [
+      "top",
+      "scrolled 22 lines",
+      "end"
+    ],
+    "crops": "ghostty-parity/ratty-captures/"
+  },
+  "independent_review": {
+    "tool": "codex exec (read-only), full diff against origin/main",
+    "findings": 5,
+    "confirmed": 5,
+    "fixed_in": "feb0e42",
+    "follow_up": "f80e9f9"
+  },
+  "workstreams": {
+    "0_release_fast": "done",
+    "1_probe": "done",
+    "2_vertical_overflow": "done",
+    "3_horizontal_placement": "done",
+    "4_rendering_quality": "done; synthetic bold/italic is a documented divergence (Bevy does not synthesize); minimum-contrast optional, not done",
+    "5_procedural_graphics": "done",
+    "6_performance": "done for confirmed items; single-channel atlas and cheaper misses evaluated, not done",
+    "7_run_shaping": "assessed, not implemented (RUN_SHAPING.md)"
+  },
+  "not_done": [
+    "Live comparison against the Ghostty GUI (would open windows on the user's desktop; rule-level comparisons instead)",
+    "Software Vulkan locally (CI only)",
+    "minimum-contrast (optional)",
+    "Run shaping (design and blockers written)"
+  ]
+}
