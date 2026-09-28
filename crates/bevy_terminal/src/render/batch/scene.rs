@@ -13,7 +13,6 @@ use bevy::prelude::*;
 
 #[derive(Default)]
 pub(super) struct SceneScratch {
-    pub(super) backgrounds: Vec<QuadInstance>,
     /// Background rectangles in pixel space, so adjoining rows can merge
     /// before conversion to clip-space quads.
     pub(super) background_rects: Vec<(PixelGeometry, LinearRgba)>,
@@ -21,11 +20,9 @@ pub(super) struct SceneScratch {
     pub(super) prev_runs: Vec<usize>,
     /// Indices into `background_rects` emitted for the current row.
     pub(super) current_runs: Vec<usize>,
-    pub(super) glyphs: Vec<(AssetId<Image>, QuadInstance)>,
     /// Glyphs of the laid-out rows before clipping to the repainted bands.
     pub(super) placed: Vec<PlacedGlyph>,
     pub(super) decorations: Vec<QuadInstance>,
-    pub(super) cursor: Vec<QuadInstance>,
     pub(super) styles: Vec<ResolvedStyle>,
     /// Rows whose bands this scene repaints.
     pub(super) repaint: Vec<bool>,
@@ -41,14 +38,11 @@ pub(super) struct SceneScratch {
 
 impl SceneScratch {
     pub(super) fn clear(&mut self) {
-        self.backgrounds.clear();
         self.background_rects.clear();
         self.prev_runs.clear();
         self.current_runs.clear();
-        self.glyphs.clear();
         self.placed.clear();
         self.decorations.clear();
-        self.cursor.clear();
         self.styles.clear();
         self.repaint.clear();
         self.painted.clear();
@@ -224,14 +218,11 @@ pub(super) fn build_scene(
         rows.reset(height);
     }
     let SceneScratch {
-        backgrounds,
         background_rects,
         prev_runs,
         current_runs,
-        glyphs,
         placed,
         decorations,
-        cursor,
         styles,
         repaint,
         painted,
@@ -332,6 +323,20 @@ pub(super) fn build_scene(
         // A full scene draws glyphs in row-major order; the sort is stable.
         placed.sort_by_key(|glyph| glyph.row);
     }
+    // Quads are written once, in paint order: backgrounds (whose runs are
+    // all known by now), glyphs, decorations, the cursor.
+    let primary_atlas = glyph_atlas.id;
+    let mut quads =
+        SceneQuads::with_capacity(background_rects.len() + placed.len() + decorations.len() + 1);
+    quads.extend(
+        primary_atlas,
+        true,
+        background_rects
+            .iter()
+            .map(|&(geometry, color)| solid_quad(geometry, color, size)),
+    );
+    let background_quads = quads.instances.len();
+
     // Each repainted row's part of a glyph is drawn over that row's cell
     // backgrounds; coverage glyphs are split where the background changes
     // so every piece is blended against the background under it.
@@ -349,7 +354,7 @@ pub(super) fn build_scene(
     let mut placed_index = 0;
     for glyph in placed.iter() {
         #[cfg(test)]
-        let pieces_before = glyphs.len();
+        let pieces_before = quads.instances.len();
         let first = (glyph.geometry.y / cell_height).floor().max(0.0) as u16;
         let last =
             (((glyph.geometry.y + glyph.geometry.height) / cell_height).ceil() as u16).min(height);
@@ -376,14 +381,15 @@ pub(super) fn build_scene(
                 continue;
             };
             if glyph.solid {
-                glyphs.push((glyph.texture, solid_quad(piece, glyph.color, size)));
+                quads.push(glyph.texture, false, solid_quad(piece, glyph.color, size));
                 continue;
             }
             if !glyph.alpha_mask {
-                glyphs.push((
+                quads.push(
                     glyph.texture,
+                    false,
                     glyph_quad(piece, uv, glyph.color, false, -1.0, size),
-                ));
+                );
                 continue;
             }
             // Runs are sorted and disjoint: start at the first one the piece
@@ -394,10 +400,11 @@ pub(super) fn build_scene(
                 && left <= piece.x
                 && right >= piece.x + piece.width
             {
-                glyphs.push((
+                quads.push(
                     glyph.texture,
+                    false,
                     glyph_quad(piece, uv, glyph.color, true, background, size),
-                ));
+                );
                 continue;
             }
             for &(left, right, background) in &runs[first..] {
@@ -410,16 +417,17 @@ pub(super) fn build_scene(
                     ..band
                 };
                 if let Some((part, uv)) = clip_glyph_to_row(piece, uv, run) {
-                    glyphs.push((
+                    quads.push(
                         glyph.texture,
+                        false,
                         glyph_quad(part, uv, glyph.color, true, background, size),
-                    ));
+                    );
                 }
             }
         }
         #[cfg(test)]
         if let Some(pieces) = emitted.get_mut(placed_index) {
-            pieces.extend(glyphs[pieces_before..].iter().map(|(_, quad)| {
+            pieces.extend(quads.instances[pieces_before..].iter().map(|quad| {
                 let [left, top, right, bottom] = quad.rect.to_array();
                 PixelGeometry {
                     x: (left + 1.0) / 2.0 * size.x,
@@ -443,11 +451,8 @@ pub(super) fn build_scene(
         }
     }
 
-    backgrounds.extend(
-        background_rects
-            .iter()
-            .map(|&(geometry, color)| solid_quad(geometry, color, size)),
-    );
+    quads.extend(primary_atlas, false, decorations.iter().copied());
+    let mut solid_quads = background_quads + decorations.len();
 
     if cursor_should_be_visible(snapshot)
         && !blink.cursor_hidden
@@ -470,16 +475,21 @@ pub(super) fn build_scene(
                 cursor_thickness.min(raster.cell_size.y),
             ),
         };
-        cursor.push(solid_quad(
-            PixelGeometry {
-                x: f32::from(position.x) * raster.cell_size.x + x,
-                y: f32::from(position.y) * raster.cell_size.y + y,
-                width,
-                height,
-            },
-            config.cursor.color,
-            size,
-        ));
+        solid_quads += 1;
+        quads.push(
+            primary_atlas,
+            false,
+            solid_quad(
+                PixelGeometry {
+                    x: f32::from(position.x) * raster.cell_size.x + x,
+                    y: f32::from(position.y) * raster.cell_size.y + y,
+                    width,
+                    height,
+                },
+                config.cursor.color,
+                size,
+            ),
+        );
     }
 
     #[cfg(test)]
@@ -487,23 +497,9 @@ pub(super) fn build_scene(
         scratch.probe = probe;
     }
     stats.changed_rows = u32::try_from(painted_rows).unwrap_or(u32::MAX);
-    stats.solid_quads =
-        u32::try_from(backgrounds.len() + decorations.len() + cursor.len()).unwrap_or(u32::MAX);
-    stats.glyph_quads = u32::try_from(glyphs.len()).unwrap_or(u32::MAX);
-
-    let mut instances = Vec::with_capacity(stats.solid_quads as usize + stats.glyph_quads as usize);
-    let mut batches = Vec::new();
-    let primary_atlas = glyph_atlas.id;
-    append_batch_with(
-        &mut instances,
-        &mut batches,
-        primary_atlas,
-        backgrounds,
-        true,
-    );
-    append_glyph_batches(&mut instances, &mut batches, glyphs);
-    append_batch(&mut instances, &mut batches, primary_atlas, decorations);
-    append_batch(&mut instances, &mut batches, primary_atlas, cursor);
+    stats.solid_quads = u32::try_from(solid_quads).unwrap_or(u32::MAX);
+    stats.glyph_quads = u32::try_from(quads.instances.len() - solid_quads).unwrap_or(u32::MAX);
+    let SceneQuads { instances, batches } = quads;
     let (atlas_uploads, atlas_fresh) = glyph_atlas.take_uploads();
     BatchScene {
         submission: None,
@@ -924,53 +920,50 @@ pub(super) fn clip_rect(geometry: PixelGeometry, target: Vec2) -> Vec4 {
     Vec4::new(left, top, right, bottom)
 }
 
-pub(super) fn append_batch(
-    instances: &mut Vec<QuadInstance>,
-    batches: &mut Vec<DrawBatch>,
-    texture: AssetId<Image>,
-    quads: &[QuadInstance],
-) {
-    append_batch_with(instances, batches, texture, quads, false);
+/// A scene's quads in paint order and the draw batches over them. Each
+/// quad is written once; it joins the previous batch when that uses the
+/// same texture and blending.
+pub(super) struct SceneQuads {
+    pub(super) instances: Vec<QuadInstance>,
+    pub(super) batches: Vec<DrawBatch>,
 }
 
-pub(super) fn append_batch_with(
-    instances: &mut Vec<QuadInstance>,
-    batches: &mut Vec<DrawBatch>,
-    texture: AssetId<Image>,
-    quads: &[QuadInstance],
-    replace: bool,
-) {
-    if quads.is_empty() {
-        return;
+impl SceneQuads {
+    pub(super) fn with_capacity(quads: usize) -> Self {
+        Self {
+            instances: Vec::with_capacity(quads),
+            batches: Vec::new(),
+        }
     }
-    let start = instances.len() as u32;
-    let count = quads.len() as u32;
-    instances.extend_from_slice(quads);
-    if let Some(previous) = batches.last_mut()
-        && previous.texture == texture
-        && previous.replace == replace
-        && previous.start + previous.count == start
-    {
-        previous.count += count;
-    } else {
-        batches.push(DrawBatch {
-            texture,
-            start,
-            count,
-            replace,
-        });
-    }
-}
 
-pub(super) fn append_glyph_batches(
-    instances: &mut Vec<QuadInstance>,
-    batches: &mut Vec<DrawBatch>,
-    glyphs: &[(AssetId<Image>, QuadInstance)],
-) {
-    // The renderer-owned atlas makes this one contiguous run in normal operation. Preserve
-    // source order if an unusually large glyph set falls back to Bevy's source atlases; adjacent
-    // runs still coalesce without changing paint order.
-    for &(texture, glyph) in glyphs {
-        append_batch(instances, batches, texture, std::slice::from_ref(&glyph));
+    pub(super) fn push(&mut self, texture: AssetId<Image>, replace: bool, quad: QuadInstance) {
+        let index = self.instances.len() as u32;
+        self.instances.push(quad);
+        match self.batches.last_mut() {
+            Some(batch)
+                if batch.texture == texture
+                    && batch.replace == replace
+                    && batch.start + batch.count == index =>
+            {
+                batch.count += 1;
+            }
+            _ => self.batches.push(DrawBatch {
+                texture,
+                start: index,
+                count: 1,
+                replace,
+            }),
+        }
+    }
+
+    pub(super) fn extend(
+        &mut self,
+        texture: AssetId<Image>,
+        replace: bool,
+        quads: impl IntoIterator<Item = QuadInstance>,
+    ) {
+        for quad in quads {
+            self.push(texture, replace, quad);
+        }
     }
 }

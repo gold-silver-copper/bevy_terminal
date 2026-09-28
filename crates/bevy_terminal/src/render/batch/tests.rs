@@ -1458,9 +1458,11 @@ fn glyph_batches_preserve_paint_order_and_coalesce_adjacent_atlases() {
         (atlas_b, quad(3.0)),
         (atlas_a, quad(4.0)),
     ];
-    let mut instances = Vec::new();
-    let mut batches = Vec::new();
-    append_glyph_batches(&mut instances, &mut batches, &glyphs);
+    let mut quads = SceneQuads::with_capacity(0);
+    for (texture, quad) in glyphs {
+        quads.push(texture, false, quad);
+    }
+    let SceneQuads { instances, batches } = quads;
 
     assert_eq!(instances.len(), 4);
     assert_eq!(batches.len(), 3);
@@ -1480,28 +1482,25 @@ fn glyph_batches_preserve_paint_order_and_coalesce_adjacent_atlases() {
 fn replacement_batches_never_address_stale_capacity() {
     let mut images = Assets::<Image>::default();
     let atlas = images.add(Image::default()).id();
-    let mut instances = Vec::with_capacity(32);
-    let mut batches = Vec::new();
-    let first = vec![quad(1.0); 12];
-    append_batch(&mut instances, &mut batches, atlas, &first);
-    assert_eq!(batches[0].count, 12);
+    let mut quads = SceneQuads::with_capacity(32);
+    quads.extend(atlas, false, vec![quad(1.0); 12]);
+    assert_eq!(quads.batches[0].count, 12);
 
-    instances.clear();
-    batches.clear();
-    let second = vec![quad(2.0); 2];
-    append_batch(&mut instances, &mut batches, atlas, &second);
-    assert_eq!(instances.len(), 2);
-    assert_eq!((batches[0].start, batches[0].count), (0, 2));
+    let mut quads = SceneQuads::with_capacity(32);
+    quads.extend(atlas, true, vec![quad(2.0); 2]);
+    quads.extend(atlas, false, vec![quad(3.0); 3]);
+    assert_eq!(quads.instances.len(), 5);
+    assert_eq!((quads.batches[0].start, quads.batches[0].count), (0, 2));
+    assert_eq!((quads.batches[1].start, quads.batches[1].count), (2, 3));
 }
 
 #[test]
 fn empty_scene_produces_no_upload_or_draw_batch() {
     let mut images = Assets::<Image>::default();
     let atlas = images.add(Image::default()).id();
-    let mut instances = Vec::new();
-    let mut batches = Vec::new();
-    append_batch(&mut instances, &mut batches, atlas, &[]);
-    append_glyph_batches(&mut instances, &mut batches, &[]);
+    let mut quads = SceneQuads::with_capacity(0);
+    quads.extend(atlas, false, []);
+    let SceneQuads { instances, batches } = quads;
     assert!(instances.is_empty());
     assert!(batches.is_empty());
     let mut bytes = Vec::new();
