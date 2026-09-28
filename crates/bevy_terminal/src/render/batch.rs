@@ -40,6 +40,7 @@ use bevy::{
     text::{FontAtlasSet, FontCx, LayoutCx, ScaleCx, TextPipeline},
 };
 
+use super::terminal::Measurement;
 use super::{
     Palette, PixelGeometry, ResolvedStyle, TerminalGeometry, TerminalRenderConfig,
     TerminalRenderer, TerminalStats, TerminalStatus, TerminalTexture, cell_span,
@@ -47,7 +48,7 @@ use super::{
 };
 use crate::{
     scene::{GridSize, TerminalSnapshot},
-    surface::TerminalSurface,
+    surface::{TerminalSurface, WeakSurface},
 };
 
 /// The terminal texture format: the shader emits linear colors and the sRGB
@@ -185,12 +186,14 @@ fn initialize_terminals(
                 image: output.clone(),
                 geometry: TerminalGeometry {
                     surface: terminal.surface().downgrade(),
-                    resize_generation: terminal.surface().info().resize_generation,
-                    grid: terminal.surface().size(),
-                    size,
-                    raster_scale,
-                    physical_cell_size: raster_config.cell_size,
-                    physical_font_size: raster_config.font_size,
+                    measurement: Measurement {
+                        resize_generation: terminal.surface().info().resize_generation,
+                        grid: terminal.surface().size(),
+                        size,
+                        raster_scale,
+                        physical_cell_size: raster_config.cell_size,
+                        physical_font_size: raster_config.font_size,
+                    },
                 },
             },
             BatchMainState::new(output.clone(), raster_scale, raster_config),
@@ -565,7 +568,8 @@ fn sync_batch_terminals(
             suspend_terminal(&mut state, &mut output, status);
             continue;
         }
-        let mut next_output = output.clone();
+        // Plain values only: the texture's handles are not cloned each frame.
+        let mut measurement = output.geometry.measurement;
         let mut next_stats = TerminalStats::default();
         let mut context = text.context(&mut images);
         let result = sync_batch_terminal(
@@ -580,14 +584,27 @@ fn sync_batch_terminals(
                 texture_limit: texture_limit(device.as_deref()),
             },
             &mut state,
-            &mut next_output,
+            &output.geometry.surface,
+            &mut measurement,
             &mut next_stats,
             &mut context,
         );
         match result {
-            Ok(()) => {
+            Ok(surface_changed) => {
                 state.last_failure = None;
-                next_output.status = TerminalStatus::Ready;
+                // Write the texture component only when something changed so
+                // `Changed<TerminalTexture>` observers are not woken every frame.
+                if output.status != TerminalStatus::Ready
+                    || output.geometry.measurement != measurement
+                    || surface_changed
+                {
+                    let output = &mut *output;
+                    output.status = TerminalStatus::Ready;
+                    output.geometry.measurement = measurement;
+                    if surface_changed {
+                        output.geometry.surface = terminal.surface().downgrade();
+                    }
+                }
             }
             Err(status) => {
                 if let Some(failure) = context.failure.take()
@@ -603,7 +620,6 @@ fn sync_batch_terminals(
             }
         };
         stats.set_if_neq(next_stats);
-        output.set_if_neq(next_output);
     }
 }
 
@@ -648,14 +664,19 @@ struct SyncInput<'a> {
     texture_limit: u32,
 }
 
+/// Brings one terminal's scene up to date. Measured values are written to
+/// `measurement`; the result says whether the geometry must now refer to
+/// the renderer's surface instead of `measured_surface`. Nothing is
+/// published on failure, so partial construction never leaks geometry.
 fn sync_batch_terminal(
     terminal: &TerminalRenderer,
     input: SyncInput<'_>,
     state: &mut BatchMainState,
-    output: &mut TerminalTexture,
+    measured_surface: &WeakSurface,
+    measurement: &mut Measurement,
     stats: &mut TerminalStats,
     cx: &mut TextContext<'_>,
-) -> Result<(), TerminalStatus> {
+) -> Result<bool, TerminalStatus> {
     let SyncInput {
         config,
         config_changed,
@@ -731,8 +752,8 @@ fn sync_batch_terminal(
         if cx.failure.is_some() {
             return Err(TerminalStatus::ShapingFailed);
         }
-        output.geometry.physical_font_size = state.raster_config.font_size;
-        output.geometry.physical_cell_size = state.raster_config.cell_size;
+        measurement.physical_font_size = state.raster_config.font_size;
+        measurement.physical_cell_size = state.raster_config.cell_size;
     }
     if text_assets_changed {
         state.shapes.clear();
@@ -759,7 +780,7 @@ fn sync_batch_terminal(
         // Keep the recorded phases current so an irrelevant flip is not
         // mistaken for a change once blinking content appears later.
         state.blink = blink;
-        return Ok(());
+        return Ok(false);
     }
 
     #[cfg(feature = "timings")]
@@ -806,7 +827,7 @@ fn sync_batch_terminal(
     }
     if changed_rows.is_empty() && !full && !blink_changed {
         state.last_snapshot = Some(snapshot);
-        return Ok(());
+        return Ok(false);
     }
     // Extraction can be delayed while a newly created output or glyph atlas reaches the render
     // world. If a newer payload is already waiting in the main world, make its replacement a
@@ -818,11 +839,10 @@ fn sync_batch_terminal(
     if new_size.max_element() > texture_limit {
         return Err(TerminalStatus::TextureTooLarge);
     }
-    output.geometry.surface = surface.downgrade();
-    output.geometry.grid = snapshot.size();
-    output.geometry.resize_generation = snapshot.resize_generation;
-    let output_resized = output.geometry.size != new_size;
-    let logical_size = new_size.as_vec2() / raster_scale;
+    let surface_changed = !measured_surface.matches(surface);
+    measurement.grid = snapshot.size();
+    measurement.resize_generation = snapshot.resize_generation;
+    let output_resized = measurement.size != new_size;
     if output_resized {
         // Reallocate the image in place so the handle stays stable; the render world
         // recreates the GPU texture for the modified asset.
@@ -833,15 +853,9 @@ fn sync_batch_terminal(
         {
             warn!("bevy_terminal: could not reallocate a terminal texture in place");
         }
-        output.geometry.size = new_size;
+        measurement.size = new_size;
     }
-    // Write the texture component only when something changed so `Changed<TerminalTexture>`
-    // observers are not woken on every synced frame.
-    if output.geometry.logical_size() != logical_size
-        || output.geometry.raster_scale != raster_scale
-    {
-        output.geometry.raster_scale = raster_scale;
-    }
+    measurement.raster_scale = raster_scale;
 
     let rows: Vec<u16> = if full {
         (0..snapshot.size().height).collect()
@@ -926,7 +940,7 @@ fn sync_batch_terminal(
     state.last_snapshot = Some(snapshot);
     state.blink = blink;
     state.raster_scale = raster_scale;
-    Ok(())
+    Ok(surface_changed)
 }
 
 #[cfg(test)]

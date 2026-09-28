@@ -291,7 +291,8 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
             texture_limit: 8192,
         },
         &mut state,
-        &mut output,
+        &output.geometry.surface,
+        &mut output.geometry.measurement,
         &mut stats,
         &mut text.context(&mut images),
     );
@@ -319,7 +320,8 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
             texture_limit: 8192,
         },
         &mut state,
-        &mut output,
+        &output.geometry.surface,
+        &mut output.geometry.measurement,
         &mut stats,
         &mut text.context(&mut images),
     )
@@ -455,7 +457,7 @@ fn shared_content_has_independent_renderers_and_measurements() {
             .measured()
             .unwrap();
         assert_eq!(output.cell_size(), Vec2::new(width, 24.0));
-        assert_eq!(output.size, UVec2::new(width as u32 * 4, 48));
+        assert_eq!(output.size(), UVec2::new(width as u32 * 4, 48));
         let state = app.world().get::<BatchMainState>(entity).unwrap();
         let snapshot = state.last_snapshot.as_ref().unwrap();
         assert_eq!(snapshot.row_text(0), "AAAA");

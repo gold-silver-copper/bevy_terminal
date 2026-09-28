@@ -99,6 +99,13 @@ impl TerminalTexture {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerminalGeometry {
     pub(super) surface: crate::surface::WeakSurface,
+    pub(super) measurement: Measurement,
+}
+
+/// The measured values of a [`TerminalGeometry`], without the surface
+/// identity: plain data the sync system updates without cloning handles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Measurement {
     pub(super) resize_generation: u64,
     pub(super) grid: GridSize,
     pub(super) size: UVec2,
@@ -107,55 +114,62 @@ pub struct TerminalGeometry {
     pub(super) raster_scale: f32,
 }
 
+impl Measurement {
+    /// Logical presentation dimensions.
+    pub(super) fn logical_size(&self) -> Vec2 {
+        self.size.as_vec2() / self.raster_scale
+    }
+}
+
 impl TerminalGeometry {
     /// Measured dimensions in cells.
     #[must_use]
     pub const fn grid(&self) -> GridSize {
-        self.grid
+        self.measurement.grid
     }
 
     /// Physical image dimensions in pixels.
     #[must_use]
     pub const fn size(&self) -> UVec2 {
-        self.size
+        self.measurement.size
     }
 
     /// Logical presentation dimensions.
     #[must_use]
     pub fn logical_size(&self) -> Vec2 {
-        self.size.as_vec2() / self.raster_scale
+        self.measurement.logical_size()
     }
 
     /// Physical pixels per logical pixel.
     #[must_use]
     pub const fn raster_scale(&self) -> f32 {
-        self.raster_scale
+        self.measurement.raster_scale
     }
 
     /// Effective logical cell dimensions, after physical-pixel snapping.
     #[must_use]
     pub fn cell_size(&self) -> Vec2 {
-        self.physical_cell_size / self.raster_scale
+        self.measurement.physical_cell_size / self.measurement.raster_scale
     }
 
     /// Effective logical font size.
     #[must_use]
     pub fn font_size(&self) -> f32 {
-        self.physical_font_size / self.raster_scale
+        self.measurement.physical_font_size / self.measurement.raster_scale
     }
 
     /// Physical font size glyphs are rasterized at; exact, unlike
     /// `font_size() * raster_scale()`.
     #[must_use]
     pub const fn physical_font_size(&self) -> f32 {
-        self.physical_font_size
+        self.measurement.physical_font_size
     }
 
     /// Physical cell size in whole pixels; exact, unlike
     /// `cell_size() * raster_scale()`. `size()` is the grid times this.
     #[must_use]
     pub const fn physical_cell_size(&self) -> Vec2 {
-        self.physical_cell_size
+        self.measurement.physical_cell_size
     }
 
     /// Grid fitting the available logical space, bounded by surface limits.
@@ -174,7 +188,7 @@ impl TerminalGeometry {
     /// Whether the source surface has retained its measured grid generation.
     #[must_use]
     pub fn is_current(&self) -> bool {
-        self.surface.is_current(self.resize_generation)
+        self.surface.is_current(self.measurement.resize_generation)
     }
 }
 
