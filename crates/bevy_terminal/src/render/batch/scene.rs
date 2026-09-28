@@ -428,7 +428,7 @@ pub(super) fn build_scene(
         #[cfg(test)]
         if let Some(pieces) = emitted.get_mut(placed_index) {
             pieces.extend(quads.instances[pieces_before..].iter().map(|quad| {
-                let [left, top, right, bottom] = quad.rect.to_array();
+                let [left, top, right, bottom] = quad.rect;
                 PixelGeometry {
                     x: (left + 1.0) / 2.0 * size.x,
                     y: (1.0 - top) / 2.0 * size.y,
@@ -513,7 +513,6 @@ pub(super) fn build_scene(
         batches,
         clear: full,
         clear_color: config.theme.background,
-        requires_prepared_assets: false,
     }
 }
 
@@ -825,10 +824,10 @@ pub(super) fn solid_quad(
     target: Vec2,
 ) -> QuadInstance {
     QuadInstance {
-        rect: clip_rect(snap_geometry(geometry), target),
+        rect: clip_rect(snap_geometry(geometry), target).to_array(),
         // A negative final UV component lets the unified fragment shader skip the atlas sample.
-        uv: Vec4::new(0.0, 0.0, 0.0, -1.0),
-        color: color.into().to_f32_array().into(),
+        uv: [0.0, 0.0, 0.0, -1.0],
+        color: color.into().to_f32_array(),
         background: -1.0,
     }
 }
@@ -848,9 +847,9 @@ pub(super) fn glyph_quad(
         color[3] = -1.0;
     }
     QuadInstance {
-        rect: clip_rect(snap_geometry(geometry), target),
-        uv,
-        color: color.into(),
+        rect: clip_rect(snap_geometry(geometry), target).to_array(),
+        uv: uv.to_array(),
+        color,
         background,
     }
 }

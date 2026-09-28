@@ -98,27 +98,32 @@ impl Canvas {
     }
 
     fn draw(&mut self, quad: &QuadInstance, atlas: Option<(&[u8], u32, u32)>, replace: bool) {
+        let (rect, uv, color) = (
+            Vec4::from_array(quad.rect),
+            Vec4::from_array(quad.uv),
+            Vec4::from_array(quad.color),
+        );
         let size = self.size.as_vec2();
-        let x0 = ((quad.rect.x + 1.0) * 0.5 * size.x).round();
-        let x1 = ((quad.rect.z + 1.0) * 0.5 * size.x).round();
-        let y0 = ((1.0 - quad.rect.y) * 0.5 * size.y).round();
-        let y1 = ((1.0 - quad.rect.w) * 0.5 * size.y).round();
-        let solid = quad.uv.w < 0.0;
+        let x0 = ((rect.x + 1.0) * 0.5 * size.x).round();
+        let x1 = ((rect.z + 1.0) * 0.5 * size.x).round();
+        let y0 = ((1.0 - rect.y) * 0.5 * size.y).round();
+        let y1 = ((1.0 - rect.w) * 0.5 * size.y).round();
+        let solid = uv.w < 0.0;
         for y in y0.max(0.0) as u32..y1.min(size.y) as u32 {
             for x in x0.max(0.0) as u32..x1.min(size.x) as u32 {
                 let source = if solid {
-                    quad.color
+                    color
                 } else {
                     let (data, width, height) = atlas.expect("glyph atlas");
-                    let u = quad.uv.x + (x as f32 + 0.5 - x0) / (x1 - x0) * (quad.uv.z - quad.uv.x);
-                    let v = quad.uv.y + (y as f32 + 0.5 - y0) / (y1 - y0) * (quad.uv.w - quad.uv.y);
+                    let u = uv.x + (x as f32 + 0.5 - x0) / (x1 - x0) * (uv.z - uv.x);
+                    let v = uv.y + (y as f32 + 0.5 - y0) / (y1 - y0) * (uv.w - uv.y);
                     let tx = ((u * width as f32).floor() as u32).min(width - 1);
                     let ty = ((v * height as f32).floor() as u32).min(height - 1);
                     let offset = ((ty * width + tx) * 4) as usize;
                     let sample = decode(data[offset..offset + 4].try_into().unwrap());
-                    if quad.color.w >= 0.0 {
-                        let coverage = corrected(sample.w, quad.color.truncate(), quad.background);
-                        quad.color.truncate().extend(quad.color.w * coverage)
+                    if color.w >= 0.0 {
+                        let coverage = corrected(sample.w, color.truncate(), quad.background);
+                        color.truncate().extend(color.w * coverage)
                     } else {
                         sample
                     }
@@ -530,7 +535,7 @@ fn overflowing_coverage_is_corrected_against_each_background_it_covers() {
         .flat_map(|batch| {
             &scene.instances[batch.start as usize..(batch.start + batch.count) as usize]
         })
-        .filter(|quad| quad.uv.w >= 0.0 && quad.color.w >= 0.0)
+        .filter(|quad| quad.uv[3] >= 0.0 && quad.color[3] >= 0.0)
         .map(|quad| quad.background)
         .collect();
     assert!(

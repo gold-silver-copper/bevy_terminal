@@ -1,32 +1,37 @@
-//! Extraction, resource lifetimes, and GPU submission.
+//! Extraction, resource lifetimes, pipelines and drawing.
 use super::{
     BatchScene, GLYPH_ATLAS_SIZE, GLYPH_FORMAT, PendingBatchScenes, QuadInstance, SceneQueue,
     TARGET_FORMAT,
 };
 use bevy::{
+    asset::{embedded_asset, load_embedded_asset},
     platform::collections::HashMap,
     prelude::*,
     render::{
         MainWorld,
+        mesh::VertexBufferLayout,
         render_asset::RenderAssets,
         render_resource::{
-            BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingResource,
-            BindingType, BlendState, Buffer, BufferDescriptor, BufferUsages, ColorTargetState,
-            ColorWrites, CommandEncoderDescriptor, Extent3d, LoadOp, MultisampleState, Operations,
-            Origin3d, PipelineCompilationOptions, PipelineLayoutDescriptor, PrimitiveState,
-            RawFragmentState, RawRenderPipelineDescriptor, RawVertexBufferLayout, RawVertexState,
-            RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, Sampler,
-            SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource,
-            ShaderStages, StoreOp, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture,
-            TextureAspect, TextureDescriptor, TextureDimension, TextureSampleType, TextureUsages,
-            TextureViewDescriptor, TextureViewDimension, VertexAttribute, VertexFormat,
-            VertexStepMode,
+            BindGroup, BindGroupEntries, BindGroupLayout, BindGroupLayoutDescriptor,
+            BindGroupLayoutEntries, BlendState, BufferUsages, CachedRenderPipelineId,
+            ColorTargetState, ColorWrites, Extent3d, FragmentState, LoadOp, Operations, Origin3d,
+            PipelineCache, RawBufferVec, RenderPassColorAttachment, RenderPassDescriptor,
+            RenderPipelineDescriptor, Sampler, SamplerBindingType, SamplerDescriptor, ShaderStages,
+            StoreOp, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect,
+            TextureDescriptor, TextureDimension, TextureSampleType, TextureUsages,
+            TextureViewDescriptor, VertexAttribute, VertexFormat, VertexState, VertexStepMode,
+            binding_types::{sampler, texture_2d},
         },
-        renderer::{RenderDevice, RenderQueue},
+        renderer::{RenderContext, RenderDevice, RenderQueue},
         texture::GpuImage,
     },
 };
 use std::sync::atomic::Ordering;
+
+/// Embeds the terminal shader (`batch.wgsl`) in the app's assets.
+pub(super) fn embed_shader(app: &mut App) {
+    embedded_asset!(app, "batch.wgsl");
+}
 
 pub(super) fn extract_batch_scenes(
     mut main_world: ResMut<MainWorld>,
@@ -63,94 +68,102 @@ pub(super) fn collect_batch_scenes(main_world: &mut World, pending: &mut Pending
     }
 }
 
-pub(super) fn batch_scenes_can_render_early(pending: Res<PendingBatchScenes>) -> bool {
-    !pending.scenes.is_empty()
-        && pending
-            .scenes
-            .values()
-            .all(|scene| !scene.requires_prepared_assets)
+/// The terminal pipelines (alpha-blended and replacing) and their bind
+/// group layout, queued once per render device.
+#[derive(Resource)]
+pub(super) struct BatchPipelines {
+    layout: BindGroupLayoutDescriptor,
+    alpha: CachedRenderPipelineId,
+    replace: CachedRenderPipelineId,
+    atlas_sampler: Sampler,
+}
+
+/// The instance layout: `QuadInstance`'s fields, in order.
+fn instance_layout() -> VertexBufferLayout {
+    let attribute = |format, offset, shader_location| VertexAttribute {
+        format,
+        offset,
+        shader_location,
+    };
+    VertexBufferLayout {
+        array_stride: size_of::<QuadInstance>() as u64,
+        step_mode: VertexStepMode::Instance,
+        attributes: vec![
+            attribute(VertexFormat::Float32x4, 0, 0),
+            attribute(VertexFormat::Float32x4, 16, 1),
+            attribute(VertexFormat::Float32x4, 32, 2),
+            attribute(VertexFormat::Float32, 48, 3),
+        ],
+    }
+}
+
+/// Queues the pipelines and starts the GPU state afresh; `RenderStartup`
+/// also runs after a render device is recreated.
+pub(super) fn init_batch_pipelines(
+    mut commands: Commands,
+    device: Res<RenderDevice>,
+    asset_server: Res<AssetServer>,
+    pipeline_cache: Res<PipelineCache>,
+) {
+    let layout = BindGroupLayoutDescriptor::new(
+        "bevy_terminal glyph atlas layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::FRAGMENT,
+            (
+                texture_2d(TextureSampleType::Float { filterable: true }),
+                sampler(SamplerBindingType::Filtering),
+            ),
+        ),
+    );
+    let shader = load_embedded_asset!(asset_server.as_ref(), "batch.wgsl");
+    let pipeline = |blend| RenderPipelineDescriptor {
+        label: Some("bevy_terminal batch pipeline".into()),
+        layout: vec![layout.clone()],
+        vertex: VertexState {
+            shader: shader.clone(),
+            entry_point: Some("vertex".into()),
+            buffers: vec![instance_layout()],
+            ..default()
+        },
+        fragment: Some(FragmentState {
+            shader: shader.clone(),
+            entry_point: Some("fragment".into()),
+            targets: vec![Some(ColorTargetState {
+                format: TARGET_FORMAT,
+                blend: Some(blend),
+                write_mask: ColorWrites::ALL,
+            })],
+            ..default()
+        }),
+        ..default()
+    };
+    commands.insert_resource(BatchPipelines {
+        alpha: pipeline_cache.queue_render_pipeline(pipeline(BlendState::ALPHA_BLENDING)),
+        replace: pipeline_cache.queue_render_pipeline(pipeline(BlendState::REPLACE)),
+        layout,
+        atlas_sampler: device.create_sampler(&SamplerDescriptor {
+            label: Some("bevy_terminal glyph atlas sampler"),
+            ..default()
+        }),
+    });
+    commands.insert_resource(BatchGpuState::default());
 }
 
 #[derive(Default, Resource)]
 pub(super) struct BatchGpuState {
-    pub(super) vertex_buffer: Option<Buffer>,
-    pub(super) vertex_capacity: u64,
-    /// Persistent CPU staging for instance serialization, reused every frame.
-    pub(super) staging: Vec<u8>,
-    pub(super) texture_layout: Option<BindGroupLayout>,
-    pub(super) pipeline: Option<RenderPipeline>,
-    pub(super) replace_pipeline: Option<RenderPipeline>,
+    /// Instance buffers, one per upload chunk: a single one unless a frame's
+    /// instances exceed the device's maximum buffer size.
+    instances: Vec<RawBufferVec<QuadInstance>>,
     /// Terminals' glyph atlases, created on their first entry.
-    pub(super) atlases: HashMap<AssetId<Image>, GpuAtlas>,
-    pub(super) atlas_sampler: Option<Sampler>,
+    atlases: HashMap<AssetId<Image>, GpuAtlas>,
     /// Binding for scenes whose atlas holds nothing yet (solid quads only).
-    pub(super) empty_atlas: Option<BindGroup>,
+    empty_atlas: Option<BindGroup>,
 }
 
 /// A terminal's glyph atlas texture.
 pub(super) struct GpuAtlas {
     texture: Texture,
     bind_group: BindGroup,
-}
-
-impl BatchGpuState {
-    fn ensure_pipeline(&mut self, device: &RenderDevice) {
-        if self.pipeline.is_some() {
-            return;
-        }
-        let texture_layout = device.create_bind_group_layout(
-            "bevy_terminal batch texture layout",
-            &[
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        sample_type: TextureSampleType::Float { filterable: true },
-                        view_dimension: TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        );
-        let pipeline = create_pipeline(
-            device,
-            &[&texture_layout],
-            "fragment",
-            BlendState::ALPHA_BLENDING,
-        );
-        let replace_pipeline =
-            create_pipeline(device, &[&texture_layout], "fragment", BlendState::REPLACE);
-        let sampler = device.create_sampler(&SamplerDescriptor {
-            label: Some("bevy_terminal glyph atlas sampler"),
-            ..default()
-        });
-        let empty = device.create_texture(&TextureDescriptor {
-            label: Some("bevy_terminal empty glyph atlas"),
-            size: Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: GLYPH_FORMAT,
-            usage: TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        self.empty_atlas = Some(atlas_bind_group(device, &texture_layout, &empty, &sampler));
-        self.atlas_sampler = Some(sampler);
-        self.texture_layout = Some(texture_layout);
-        self.pipeline = Some(pipeline);
-        self.replace_pipeline = Some(replace_pipeline);
-    }
 }
 
 fn atlas_bind_group(
@@ -163,30 +176,37 @@ fn atlas_bind_group(
     device.create_bind_group(
         "bevy_terminal glyph atlas",
         layout,
-        &[
-            BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::TextureView(&view),
-            },
-            BindGroupEntry {
-                binding: 1,
-                resource: BindingResource::Sampler(sampler),
-            },
-        ],
+        &BindGroupEntries::sequential((&view, sampler)),
     )
+}
+
+fn atlas_texture(device: &RenderDevice, size: u32, usage: TextureUsages) -> Texture {
+    device.create_texture(&TextureDescriptor {
+        label: Some("bevy_terminal glyph atlas"),
+        size: Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: GLYPH_FORMAT,
+        usage,
+        view_formats: &[],
+    })
 }
 
 /// Writes a scene's new atlas entries, creating the atlas on its first.
 fn upload_atlas(
-    gpu: &mut BatchGpuState,
+    atlases: &mut HashMap<AssetId<Image>, GpuAtlas>,
     device: &RenderDevice,
     queue: &RenderQueue,
+    layout: &BindGroupLayout,
+    sampler: &Sampler,
     scene: &BatchScene,
 ) {
-    if scene.atlas_uploads.is_empty() && gpu.atlases.contains_key(&scene.atlas) {
-        return;
-    }
-    if !gpu.atlases.contains_key(&scene.atlas) && !scene.atlas_fresh {
+    if !atlases.contains_key(&scene.atlas) && !scene.atlas_fresh {
         // Earlier entries never reached this texture (the render world was
         // reset): have the main world rebuild the atlas.
         scene.atlas_lost.store(true, Ordering::Release);
@@ -194,37 +214,13 @@ fn upload_atlas(
     if scene.atlas_uploads.is_empty() {
         return;
     }
-    let BatchGpuState {
-        atlases,
-        texture_layout,
-        atlas_sampler,
-        ..
-    } = gpu;
     let atlas = atlases.entry(scene.atlas).or_insert_with(|| {
-        let texture = device.create_texture(&TextureDescriptor {
-            label: Some("bevy_terminal glyph atlas"),
-            size: Extent3d {
-                width: GLYPH_ATLAS_SIZE,
-                height: GLYPH_ATLAS_SIZE,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: GLYPH_FORMAT,
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let bind_group = atlas_bind_group(
+        let texture = atlas_texture(
             device,
-            texture_layout
-                .as_ref()
-                .expect("pipeline initialization creates texture layout"),
-            &texture,
-            atlas_sampler
-                .as_ref()
-                .expect("pipeline initialization creates the sampler"),
+            GLYPH_ATLAS_SIZE,
+            TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
         );
+        let bind_group = atlas_bind_group(device, layout, &texture, sampler);
         GpuAtlas {
             texture,
             bind_group,
@@ -256,112 +252,6 @@ fn upload_atlas(
         );
     }
 }
-
-pub(super) fn reset_batch_gpu_state(mut gpu: ResMut<BatchGpuState>) {
-    *gpu = BatchGpuState::default();
-}
-
-pub(super) fn create_pipeline(
-    device: &RenderDevice,
-    layouts: &[&BindGroupLayout],
-    fragment_entry: &'static str,
-    blend: BlendState,
-) -> RenderPipeline {
-    let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-        label: Some("bevy_terminal batch shader"),
-        source: ShaderSource::Wgsl(BATCH_SHADER.into()),
-    });
-    let raw_layouts = layouts
-        .iter()
-        .map(|layout| Some(&***layout))
-        .collect::<Vec<_>>();
-    let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-        label: Some("bevy_terminal batch pipeline layout"),
-        bind_group_layouts: &raw_layouts,
-        immediate_size: 0,
-    });
-    let compilation = PipelineCompilationOptions::default();
-    const ATTRIBUTES: [VertexAttribute; 4] = [
-        VertexAttribute {
-            format: VertexFormat::Float32x4,
-            offset: 0,
-            shader_location: 0,
-        },
-        VertexAttribute {
-            format: VertexFormat::Float32x4,
-            offset: 16,
-            shader_location: 1,
-        },
-        VertexAttribute {
-            format: VertexFormat::Float32x4,
-            offset: 32,
-            shader_location: 2,
-        },
-        VertexAttribute {
-            format: VertexFormat::Float32,
-            offset: 48,
-            shader_location: 3,
-        },
-    ];
-    let vertex_buffers = [RawVertexBufferLayout {
-        array_stride: INSTANCE_BYTES as u64,
-        step_mode: VertexStepMode::Instance,
-        attributes: &ATTRIBUTES,
-    }];
-    device.create_render_pipeline(&RawRenderPipelineDescriptor {
-        label: Some("bevy_terminal batch pipeline"),
-        layout: Some(&layout),
-        vertex: RawVertexState {
-            module: &shader,
-            entry_point: Some("vertex"),
-            compilation_options: compilation.clone(),
-            buffers: &vertex_buffers,
-        },
-        fragment: Some(RawFragmentState {
-            module: &shader,
-            entry_point: Some(fragment_entry),
-            compilation_options: compilation,
-            targets: &[Some(ColorTargetState {
-                format: TARGET_FORMAT,
-                blend: Some(blend),
-                write_mask: ColorWrites::ALL,
-            })],
-        }),
-        primitive: PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
-/// Appends the 52-byte GPU encoding of each instance, writing whole instances
-/// into pre-sized chunks instead of growing the vector one scalar at a time.
-pub(super) fn append_instance_bytes(instances: &[QuadInstance], bytes: &mut Vec<u8>) {
-    let start = bytes.len();
-    bytes.resize(start + instances.len() * INSTANCE_BYTES, 0);
-    for (chunk, instance) in bytes[start..]
-        .as_chunks_mut::<INSTANCE_BYTES>()
-        .0
-        .iter_mut()
-        .zip(instances)
-    {
-        let values = [
-            instance.rect.to_array(),
-            instance.uv.to_array(),
-            instance.color.to_array(),
-        ];
-        let values = values
-            .as_flattened()
-            .iter()
-            .chain(std::iter::once(&instance.background));
-        for (slot, value) in chunk.as_chunks_mut::<4>().0.iter_mut().zip(values) {
-            slot.copy_from_slice(&value.to_ne_bytes());
-        }
-    }
-}
-
-const INSTANCE_BYTES: usize = 52;
 
 #[derive(Debug, PartialEq, Eq)]
 struct UploadSlice {
@@ -407,6 +297,7 @@ fn plan_uploads(counts: impl IntoIterator<Item = usize>, limit: usize) -> Vec<Up
     chunks
 }
 
+/// Instances to allocate for `required`, doubling up to `limit`.
 fn buffer_capacity(required: u64, limit: u64) -> u64 {
     debug_assert!(required <= limit);
     required
@@ -415,16 +306,35 @@ fn buffer_capacity(required: u64, limit: u64) -> u64 {
         .min(limit)
 }
 
+/// Draws the pending scenes into their terminals' textures, in the
+/// `RenderGraph` schedule: after every prepare system and before cameras
+/// sample the textures, in Bevy's own submission. Scenes whose target or
+/// source textures, or the pipelines, are not ready stay pending.
 pub(super) fn render_batch_scenes(
+    mut render_context: RenderContext,
     mut pending: ResMut<PendingBatchScenes>,
     mut gpu: ResMut<BatchGpuState>,
+    pipelines: Option<Res<BatchPipelines>>,
+    pipeline_cache: Res<PipelineCache>,
     gpu_images: Res<RenderAssets<GpuImage>>,
-    device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
 ) {
-    for atlas in pending.released_atlases.drain(..) {
+    for atlas in std::mem::take(&mut pending.released_atlases) {
         gpu.atlases.remove(&atlas);
     }
+    if pending.scenes.is_empty() {
+        return;
+    }
+    let Some(pipelines) = pipelines else {
+        return;
+    };
+    let (Some(alpha_pipeline), Some(replace_pipeline)) = (
+        pipeline_cache.get_render_pipeline(pipelines.alpha),
+        pipeline_cache.get_render_pipeline(pipelines.replace),
+    ) else {
+        return;
+    };
+    let layout = pipeline_cache.get_bind_group_layout(&pipelines.layout);
     let scenes = std::mem::take(&mut pending.scenes);
     let mut renderable = Vec::with_capacity(scenes.len());
     for scene in scenes.into_values() {
@@ -455,83 +365,80 @@ pub(super) fn render_batch_scenes(
         return;
     }
 
-    gpu.ensure_pipeline(&device);
+    let device = render_context.render_device().clone();
+    let BatchGpuState {
+        instances,
+        atlases,
+        empty_atlas,
+    } = &mut *gpu;
+    let empty_atlas = empty_atlas.get_or_insert_with(|| {
+        let empty = atlas_texture(&device, 1, TextureUsages::TEXTURE_BINDING);
+        atlas_bind_group(&device, &layout, &empty, &pipelines.atlas_sampler)
+    });
     // Glyphs that did not fit a terminal's atlas are drawn from Bevy's font
     // atlases, rarely; their bind groups live for this draw only.
     let mut source_bind_groups = HashMap::<AssetId<Image>, BindGroup>::default();
     for scene in &renderable {
-        upload_atlas(&mut gpu, &device, &queue, scene);
+        upload_atlas(
+            atlases,
+            &device,
+            &queue,
+            &layout,
+            &pipelines.atlas_sampler,
+            scene,
+        );
         for batch in scene
             .batches
             .iter()
             .filter(|batch| batch.texture != scene.atlas)
         {
-            let texture = batch.texture;
             let image = gpu_images
-                .get(texture)
+                .get(batch.texture)
                 .expect("glyph readiness was checked before bind-group creation");
-            source_bind_groups.entry(texture).or_insert_with(|| {
+            source_bind_groups.entry(batch.texture).or_insert_with(|| {
                 device.create_bind_group(
                     "bevy_terminal glyph atlas",
-                    gpu.texture_layout
-                        .as_ref()
-                        .expect("pipeline initialization creates texture layout"),
-                    &[
-                        BindGroupEntry {
-                            binding: 0,
-                            resource: BindingResource::TextureView(&image.texture_view),
-                        },
-                        BindGroupEntry {
-                            binding: 1,
-                            resource: BindingResource::Sampler(&image.sampler),
-                        },
-                    ],
+                    &layout,
+                    &BindGroupEntries::sequential((&image.texture_view, &image.sampler)),
                 )
             });
         }
     }
 
+    // Each chunk of instances gets its own buffer, so every scene is recorded
+    // in one encoder and nothing is submitted before Bevy's submission. WGPU's
+    // minimum supported buffer size exceeds one instance; the limit is also
+    // clamped to the host address space.
     let buffer_limit = device.limits().max_buffer_size;
-    // WGPU's minimum supported buffer size exceeds one instance. Clamp to the
-    // host address space as well so serialization arithmetic cannot overflow.
-    let instance_limit = (buffer_limit / INSTANCE_BYTES as u64)
-        .min((usize::MAX / INSTANCE_BYTES) as u64)
-        .min(u64::from(u32::MAX)) as usize;
+    let instance_limit = (buffer_limit / size_of::<QuadInstance>() as u64)
+        .min(u64::from(u32::MAX))
+        .min(usize::MAX as u64) as usize;
     let chunks = plan_uploads(
         renderable.iter().map(|scene| scene.instances.len()),
         instance_limit,
     );
-    let mut staging = std::mem::take(&mut gpu.staging);
-    for chunk in chunks {
-        staging.clear();
+    instances.truncate(chunks.len());
+    instances.resize_with(chunks.len(), || {
+        let mut buffer = RawBufferVec::new(BufferUsages::VERTEX);
+        buffer.set_label(Some("bevy_terminal terminal instances"));
+        buffer
+    });
+    for (chunk, buffer) in chunks.iter().zip(instances.iter_mut()) {
+        buffer.clear();
         for slice in &chunk.slices {
-            append_instance_bytes(
-                &renderable[slice.scene].instances[slice.instances.clone()],
-                &mut staging,
-            );
-        }
-        if !staging.is_empty() {
-            let required = staging.len() as u64;
-            if required > gpu.vertex_capacity {
-                gpu.vertex_capacity = buffer_capacity(required, buffer_limit);
-                gpu.vertex_buffer = Some(device.create_buffer(&BufferDescriptor {
-                    label: Some("bevy_terminal terminal instances"),
-                    size: gpu.vertex_capacity,
-                    usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }));
+            for instance in &renderable[slice.scene].instances[slice.instances.clone()] {
+                buffer.push(*instance);
             }
-            queue.write_buffer(
-                gpu.vertex_buffer
-                    .as_ref()
-                    .expect("non-empty upload allocates a buffer"),
-                0,
-                &staging,
-            );
         }
-        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("bevy_terminal terminal batch"),
-        });
+        if !buffer.is_empty() {
+            let capacity = buffer_capacity(buffer.len() as u64, instance_limit as u64);
+            buffer.reserve(capacity as usize, &device);
+            buffer.write_buffer(&device, &queue);
+        }
+    }
+
+    let encoder = render_context.command_encoder();
+    for (chunk, buffer) in chunks.iter().zip(instances.iter()) {
         for slice in &chunk.slices {
             let scene = &renderable[slice.scene];
             let target = gpu_images
@@ -559,13 +466,10 @@ pub(super) fn render_batch_scenes(
                 multiview_mask: None,
             });
             if !slice.instances.is_empty() {
-                let vertex_buffer = gpu
-                    .vertex_buffer
-                    .as_ref()
-                    .expect("upload allocated a buffer");
+                let vertex_buffer = buffer.buffer().expect("non-empty chunks are written");
                 pass.set_vertex_buffer(
                     0,
-                    *vertex_buffer.slice((slice.offset * INSTANCE_BYTES) as u64..),
+                    *vertex_buffer.slice((slice.offset * size_of::<QuadInstance>()) as u64..),
                 );
                 let mut current_replace = None;
                 for batch in &scene.batches {
@@ -577,22 +481,20 @@ pub(super) fn render_batch_scenes(
                     }
                     if current_replace != Some(batch.replace) {
                         current_replace = Some(batch.replace);
-                        let pipeline = if batch.replace {
-                            &gpu.replace_pipeline
+                        pass.set_pipeline(if batch.replace {
+                            replace_pipeline
                         } else {
-                            &gpu.pipeline
-                        };
-                        pass.set_pipeline(pipeline.as_ref().expect("pipeline was initialized"));
+                            alpha_pipeline
+                        });
                     }
                     let bind_group = if batch.texture == scene.atlas {
-                        gpu.atlases
+                        atlases
                             .get(&scene.atlas)
-                            .map(|atlas| &atlas.bind_group)
-                            .or(gpu.empty_atlas.as_ref())
+                            .map_or(&*empty_atlas, |atlas| &atlas.bind_group)
                     } else {
-                        source_bind_groups.get(&batch.texture)
+                        &source_bind_groups[&batch.texture]
                     };
-                    pass.set_bind_group(0, bind_group.expect("atlas bind group was prepared"), &[]);
+                    pass.set_bind_group(0, bind_group, &[]);
                     pass.draw(
                         0..6,
                         (start - slice.instances.start) as u32
@@ -601,90 +503,15 @@ pub(super) fn render_batch_scenes(
                 }
             }
         }
-        // Queue writes take effect on submission. Submit each chunk before
-        // overwriting the retained buffer for the next chunk.
-        queue.submit([encoder.finish()]);
-        for slice in &chunk.slices {
-            let scene = &renderable[slice.scene];
-            if slice.instances.end == scene.instances.len()
-                && let Some((submitted, generation)) = &scene.submission
-            {
-                submitted.store(*generation, Ordering::Release);
-            }
+    }
+    // Recorded for this frame's submission, ahead of any later scene, so a
+    // partial repaint built on an acknowledged scene draws after it.
+    for scene in &renderable {
+        if let Some((submitted, generation)) = &scene.submission {
+            submitted.store(*generation, Ordering::Release);
         }
     }
-    gpu.staging = staging;
 }
-
-pub(super) const BATCH_SHADER: &str = r#"
-@group(0) @binding(0) var glyph_atlas: texture_2d<f32>;
-@group(0) @binding(1) var glyph_sampler: sampler;
-
-struct VertexInput {
-    @location(0) rect: vec4<f32>,
-    @location(1) uv: vec4<f32>,
-    @location(2) color: vec4<f32>,
-    @location(3) background: f32,
-}
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) @interpolate(flat) solid: u32,
-    @location(3) @interpolate(flat) background: f32,
-}
-
-@vertex
-fn vertex(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutput {
-    let corners = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0),
-        vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 1.0),
-    );
-    let corner = corners[index % 6u];
-    var output: VertexOutput;
-    output.position = vec4<f32>(mix(input.rect.xy, input.rect.zw, corner), 0.0, 1.0);
-    output.uv = mix(input.uv.xy, input.uv.zw, corner);
-    output.color = input.color;
-    output.solid = select(0u, 1u, input.uv.w < 0.0);
-    output.background = input.background;
-    return output;
-}
-
-fn linearize(v: f32) -> f32 {
-    return select(pow((v + 0.055) / 1.055, 2.4), v / 12.92, v <= 0.04045);
-}
-
-fn unlinearize(v: f32) -> f32 {
-    return select(pow(v, 1.0 / 2.4) * 1.055 - 0.055, v * 12.92, v <= 0.0031308);
-}
-
-fn luminance(color: vec3<f32>) -> f32 {
-    return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-}
-
-@fragment
-fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
-    if input.solid != 0u {
-        return input.color;
-    }
-    let sample = textureSample(glyph_atlas, glyph_sampler, input.uv);
-    if input.color.a < 0.0 {
-        return sample;
-    }
-    // Ghostty's linear-corrected blending: blend in linear light, with the
-    // coverage remapped so the result has the luminance a gamma-space blend
-    // of the text and cell background would have.
-    var coverage = sample.a;
-    let bg_l = input.background;
-    let fg_l = luminance(input.color.rgb);
-    if bg_l >= 0.0 && abs(fg_l - bg_l) > 0.001 {
-        let blend_l = linearize(unlinearize(fg_l) * coverage + unlinearize(bg_l) * (1.0 - coverage));
-        coverage = clamp((blend_l - bg_l) / (fg_l - bg_l), 0.0, 1.0);
-    }
-    return vec4<f32>(input.color.rgb, input.color.a * coverage);
-}
-"#;
 
 #[cfg(test)]
 mod upload_tests {

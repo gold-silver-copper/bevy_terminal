@@ -1,19 +1,14 @@
 use super::*;
-use super::{
-    gpu::{append_instance_bytes, collect_batch_scenes},
-    metrics::*,
-    scene::*,
-    shaping::*,
-};
+use super::{gpu::collect_batch_scenes, metrics::*, scene::*, shaping::*};
 use crate::render::TerminalSizing;
 use crate::render::grid_for;
 use crate::scene::{GridSize, StyleFlags, TerminalCell, TerminalStyle};
 
 fn quad(value: f32) -> QuadInstance {
     QuadInstance {
-        rect: Vec4::splat(value),
-        uv: Vec4::ZERO,
-        color: Vec4::ONE,
+        rect: [value; 4],
+        uv: [0.0; 4],
+        color: [1.0; 4],
         background: value,
     }
 }
@@ -1480,10 +1475,10 @@ fn glyph_batches_preserve_paint_order_and_coalesce_adjacent_atlases() {
     assert_eq!((batches[1].start, batches[1].count), (2, 1));
     assert_eq!(batches[2].texture, atlas_a);
     assert_eq!((batches[2].start, batches[2].count), (3, 1));
-    assert_eq!(instances[0].rect, Vec4::splat(1.0));
-    assert_eq!(instances[1].rect, Vec4::splat(2.0));
-    assert_eq!(instances[2].rect, Vec4::splat(3.0));
-    assert_eq!(instances[3].rect, Vec4::splat(4.0));
+    assert_eq!(instances[0].rect, [1.0; 4]);
+    assert_eq!(instances[1].rect, [2.0; 4]);
+    assert_eq!(instances[2].rect, [3.0; 4]);
+    assert_eq!(instances[3].rect, [4.0; 4]);
 }
 
 #[test]
@@ -1511,9 +1506,7 @@ fn empty_scene_produces_no_upload_or_draw_batch() {
     let SceneQuads { instances, batches } = quads;
     assert!(instances.is_empty());
     assert!(batches.is_empty());
-    let mut bytes = Vec::new();
-    append_instance_bytes(&instances, &mut bytes);
-    assert!(bytes.is_empty());
+    assert!(bytemuck::cast_slice::<_, u8>(&instances).is_empty());
 }
 
 #[test]
@@ -1820,38 +1813,29 @@ fn ascii_and_non_ascii_symbols_reuse_the_shape_cache() {
     assert_eq!(stats.shape_misses, 1, "{stats}");
 }
 
+/// Instances are uploaded as their bytes, so their layout must be what
+/// `gpu::instance_layout` declares: four tightly packed fields, 52 bytes.
 #[test]
-fn instance_bytes_append_whole_instances_in_order() {
-    let instances = [
-        QuadInstance {
-            rect: Vec4::new(1.0, 2.0, 3.0, 4.0),
-            uv: Vec4::new(5.0, 6.0, 7.0, 8.0),
-            color: Vec4::new(9.0, 10.0, 11.0, 12.0),
-            background: 13.0,
-        },
-        quad(42.0),
-    ];
-    let mut bytes = Vec::new();
-    append_instance_bytes(&instances, &mut bytes);
-    assert_eq!(bytes.len(), 104);
-    let floats: Vec<f32> = bytes
+fn quad_instances_are_the_shaders_52_byte_vertex_layout() {
+    let instance = QuadInstance {
+        rect: [1.0, 2.0, 3.0, 4.0],
+        uv: [5.0, 6.0, 7.0, 8.0],
+        color: [9.0, 10.0, 11.0, 12.0],
+        background: 13.0,
+    };
+    assert_eq!(size_of::<QuadInstance>(), 52);
+    let floats: Vec<f32> = bytemuck::bytes_of(&instance)
         .as_chunks::<4>()
         .0
         .iter()
         .map(|chunk| f32::from_ne_bytes(*chunk))
         .collect();
     assert_eq!(
-        &floats[..13],
-        &[
+        floats,
+        [
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0
         ]
     );
-    assert_eq!(&floats[13..17], &[42.0; 4]);
-    assert_eq!(floats[25], 42.0);
-    // Appending again extends at the previous end, as the shared staging
-    // buffer relies on.
-    append_instance_bytes(&instances[1..], &mut bytes);
-    assert_eq!(bytes.len(), 156);
 }
 
 #[test]

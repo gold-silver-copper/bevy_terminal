@@ -8,10 +8,7 @@ mod nerd_font;
 mod scene;
 mod shaping;
 mod sprite;
-use gpu::{
-    BatchGpuState, batch_scenes_can_render_early, extract_batch_scenes, render_batch_scenes,
-    reset_batch_gpu_state,
-};
+use gpu::{embed_shader, extract_batch_scenes, init_batch_pipelines, render_batch_scenes};
 use metrics::{
     LogicalMetrics, RasterMetrics, measure_advance, physical_config, refine_metrics,
     resolve_metrics,
@@ -33,9 +30,9 @@ use bevy::{
     platform::collections::{HashMap, HashSet},
     prelude::*,
     render::{
-        ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems,
+        ExtractSchedule, RenderApp, RenderStartup,
         render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
-        renderer::RenderDevice,
+        renderer::{RenderDevice, RenderGraph, RenderGraphSystems},
     },
     text::{FontAtlasSet, FontCx, LayoutCx, ScaleCx, TextPipeline},
 };
@@ -77,23 +74,20 @@ impl Plugin for TerminalPlugin {
                 Update,
                 sync_batch_terminals.in_set(super::TerminalSystems::Sync),
             );
-        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app
-                .init_resource::<PendingBatchScenes>()
-                .init_resource::<BatchGpuState>()
-                .add_systems(RenderStartup, reset_batch_gpu_state)
-                .add_systems(ExtractSchedule, extract_batch_scenes)
-                .add_systems(
-                    Render,
-                    render_batch_scenes
-                        .run_if(batch_scenes_can_render_early)
-                        .in_set(RenderSystems::ExtractCommands),
-                )
-                .add_systems(
-                    Render,
-                    render_batch_scenes.in_set(RenderSystems::PrepareMeshes),
-                );
+        if app.get_sub_app(RenderApp).is_none() {
+            return;
         }
+        embed_shader(app);
+        app.sub_app_mut(RenderApp)
+            .init_resource::<PendingBatchScenes>()
+            .add_systems(RenderStartup, init_batch_pipelines)
+            .add_systems(ExtractSchedule, extract_batch_scenes)
+            // Terminal textures are drawn first, so cameras sample this
+            // frame's content.
+            .add_systems(
+                RenderGraph,
+                render_batch_scenes.in_set(RenderGraphSystems::Begin),
+            );
     }
 }
 
@@ -414,11 +408,18 @@ struct DrawBatch {
     replace: bool,
 }
 
-#[derive(Clone, Copy)]
+/// One quad as the shader reads it (`batch.wgsl`'s `VertexInput`): 52
+/// tightly packed bytes, uploaded as they are. Built by `solid_quad` and
+/// `glyph_quad`.
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 struct QuadInstance {
-    rect: Vec4,
-    uv: Vec4,
-    color: Vec4,
+    /// Clip-space `[left, top, right, bottom]`.
+    rect: [f32; 4],
+    /// Atlas `[u0, v0, u1, v1]`; a negative `v1` marks a solid quad.
+    uv: [f32; 4],
+    /// Linear colour; a negative alpha marks a colour glyph.
+    color: [f32; 4],
     /// Linear luminance of the cell background under a coverage glyph, for
     /// Ghostty's linear-corrected blending; negative for no correction.
     background: f32,
@@ -439,7 +440,6 @@ struct BatchScene {
     batches: Vec<DrawBatch>,
     clear: bool,
     clear_color: Color,
-    requires_prepared_assets: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -572,7 +572,6 @@ impl BatchScene {
         self.batches.clear();
         self.clear = false;
         self.submission = None;
-        self.requires_prepared_assets = false;
     }
 }
 
@@ -1035,8 +1034,7 @@ fn sync_batch_terminal(
     let surface_changed = !measured_surface.matches(surface);
     measurement.grid = snapshot.size();
     measurement.resize_generation = snapshot.resize_generation;
-    let output_resized = measurement.size != new_size;
-    if output_resized {
+    if measurement.size != new_size {
         // Reallocate the image in place so the handle stays stable; the render world
         // recreates the GPU texture for the modified asset.
         if cx
@@ -1102,15 +1100,6 @@ fn sync_batch_terminal(
     if cx.failure.is_some() {
         return Err(TerminalStatus::ShapingFailed);
     }
-    // Existing GPU textures are safe to consume before Bevy's asset preparation systems. A
-    // resize creates an Image, and glyphs drawn straight from Bevy's font atlases may use
-    // images modified this frame, so those scenes use the later submission point after
-    // RenderAsset preparation instead.
-    scene.requires_prepared_assets = output_resized
-        || scene
-            .batches
-            .iter()
-            .any(|batch| batch.texture != scene.atlas);
     #[cfg(feature = "timings")]
     {
         stats.scene_ns = scene_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;

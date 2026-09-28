@@ -93,11 +93,7 @@ fn step(
     };
     out.extend_from_slice(&(scene.instances.len() as u32).to_le_bytes());
     for instance in &scene.instances {
-        let values = [
-            instance.rect.to_array(),
-            instance.uv.to_array(),
-            instance.color.to_array(),
-        ];
+        let values = [instance.rect, instance.uv, instance.color];
         for value in values.as_flattened().iter().chain([&instance.background]) {
             out.extend_from_slice(&value.to_bits().to_le_bytes());
         }
