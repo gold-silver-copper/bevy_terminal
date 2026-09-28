@@ -2172,3 +2172,49 @@ fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
     let stats = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!((stats.shape_misses, stats.changed_rows), (0, 1), "{stats}");
 }
+
+/// A sprite without atlas room is drawn nowhere this frame but is not cached
+/// as empty: the atlas-overflow rebuild (or a later frame) draws it again.
+#[test]
+fn sprites_without_atlas_room_are_not_cached_empty() {
+    use bevy::ecs::system::SystemState;
+    let mut app = text_app();
+    let config = TerminalRenderConfig {
+        sizing: TerminalSizing::Fixed {
+            cell_size: Vec2::new(10.0, 20.0),
+            font_size: 16.0,
+        },
+        ..default()
+    };
+    let raster = physical_config(resolve_metrics(&config, None), 1.0);
+    let mut atlas = UnifiedGlyphAtlas {
+        cursor: UVec2::new(1, GLYPH_ATLAS_SIZE - 4),
+        row_height: 3,
+        ..default()
+    };
+    let mut shapes = ShapeCaches::default();
+    let mut stats = TerminalStats::default();
+    let mut resources = SystemState::<(TextResources, ResMut<Assets<Image>>)>::new(app.world_mut());
+    let (mut text, mut images) = resources.get_mut(app.world_mut()).unwrap();
+    let mut cx = text.context(&mut images);
+    let run = cached_shape(
+        "\u{2592}",
+        1,
+        &ResolvedStyle::plain(),
+        &config,
+        raster,
+        Vec2::splat(100.0),
+        &mut cx,
+        &mut shapes,
+        &mut atlas,
+        &mut stats,
+    );
+    assert!(run.is_empty());
+    drop(run);
+    assert!(atlas.overflowed, "the overflow triggers a rebuild");
+    assert!(
+        shapes
+            .lookup_current(&ResolvedStyle::plain(), "\u{2592}", 1)
+            .is_none()
+    );
+}

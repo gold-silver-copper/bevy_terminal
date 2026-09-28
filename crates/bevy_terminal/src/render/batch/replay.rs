@@ -587,3 +587,80 @@ fn atlas_uploads_reach_the_texture_across_font_switches() {
         "every atlas entry was uploaded"
     );
 }
+
+#[test]
+fn a_lost_atlas_texture_is_rebuilt_from_scratch() {
+    let mut replay = Replay::new("jetbrains-mono", (6, 2), TerminalSizing::font(18.0), 1.0);
+    replay.write(0, "abc\u{2592}", TerminalStyle::new());
+    replay.assert_matches_full("initial");
+    // The render world lost the texture (a device reset): it starts blank
+    // and flags the main world, which re-uploads every entry.
+    replay.atlas = Atlas::default();
+    let state = replay
+        .app
+        .world()
+        .get::<BatchMainState>(replay.entity)
+        .unwrap();
+    state
+        .glyph_atlas
+        .lost
+        .store(true, std::sync::atomic::Ordering::Release);
+    replay.write(1, "x", TerminalStyle::new());
+    replay.assert_matches_full("after the reset");
+    let scene_fresh = replay
+        .app
+        .world()
+        .get::<BatchMainState>(replay.entity)
+        .unwrap()
+        .glyph_atlas
+        .fresh;
+    assert!(!scene_fresh, "the rebuilt entries went out with the scene");
+}
+
+#[test]
+fn wide_and_translucent_block_elements_cover_their_cells_once() {
+    // 18 px DejaVu Sans Mono: cells 11 pixels wide, so Ghostty's
+    // complementary rounding makes quadrant rectangles overlap.
+    let mut replay = Replay::new("dejavu-sans-mono", (5, 1), TerminalSizing::font(18.0), 1.0);
+    replay
+        .app
+        .world_mut()
+        .get_mut::<TerminalRenderConfig>(replay.entity)
+        .unwrap()
+        .theme
+        .foreground = Color::srgba(1.0, 1.0, 1.0, 0.5);
+    let black = TerminalStyle::new().bg(TerminalColor::Rgb(0, 0, 0));
+    replay.surface.update(|update| {
+        update.set_cell((0, 0), &TerminalCell::wide("█", 2).with_style(black));
+        update.set_cell((3, 0), &TerminalCell::new("▙").with_style(black));
+    });
+    replay.assert_matches_full("blocks");
+    let cell = replay
+        .app
+        .world()
+        .get::<BatchMainState>(replay.entity)
+        .unwrap()
+        .raster_config
+        .cell_size
+        .as_uvec2();
+    let pixel = |x: u32, y: u32| replay.canvas.pixels[(y * replay.canvas.size.x + x) as usize];
+    assert!(
+        cell.x % 2 == 1,
+        "an odd width makes quadrants overlap: {cell:?}"
+    );
+    // The wide full block fills both of its columns.
+    let white = pixel(0, 0);
+    for x in 0..2 * cell.x {
+        for y in 0..cell.y {
+            assert_eq!(pixel(x, y), white, "wide block at ({x},{y})");
+        }
+    }
+    // `▙` at an odd cell size: every covered pixel is covered exactly once.
+    let covered: Vec<[u8; 4]> = (0..cell.y)
+        .flat_map(|y| (0..cell.x).map(move |x| (x, y)))
+        .map(|(x, y)| pixel(3 * cell.x + x, y))
+        .filter(|p| p[0] > 0)
+        .collect();
+    assert!(!covered.is_empty());
+    assert!(covered.iter().all(|p| *p == covered[0]), "{covered:?}");
+}

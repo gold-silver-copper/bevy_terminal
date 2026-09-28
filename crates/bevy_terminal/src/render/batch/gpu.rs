@@ -193,6 +193,14 @@ fn upload_atlas(
     queue: &RenderQueue,
     scene: &BatchScene,
 ) {
+    if scene.atlas_uploads.is_empty() && gpu.atlases.contains_key(&scene.atlas) {
+        return;
+    }
+    if !gpu.atlases.contains_key(&scene.atlas) && !scene.atlas_fresh {
+        // Earlier entries never reached this texture (the render world was
+        // reset): have the main world rebuild the atlas.
+        scene.atlas_lost.store(true, Ordering::Release);
+    }
     if scene.atlas_uploads.is_empty() {
         return;
     }

@@ -287,7 +287,20 @@ pub(super) fn build_scene(
     // backgrounds; coverage glyphs are split where the background changes
     // so every piece is blended against the background under it.
     let cell_height = raster.cell_size.y;
+    #[cfg(test)]
+    let mut emitted = vec![
+        Vec::new();
+        if probe.is_some() && full {
+            placed.len()
+        } else {
+            0
+        }
+    ];
+    #[cfg(test)]
+    let mut placed_index = 0;
     for glyph in placed.iter() {
+        #[cfg(test)]
+        let pieces_before = glyphs.len();
         let first = (glyph.geometry.y / cell_height).floor().max(0.0) as u16;
         let last =
             (((glyph.geometry.y + glyph.geometry.height) / cell_height).ceil() as u16).min(height);
@@ -355,6 +368,30 @@ pub(super) fn build_scene(
                 }
             }
         }
+        #[cfg(test)]
+        if let Some(pieces) = emitted.get_mut(placed_index) {
+            pieces.extend(glyphs[pieces_before..].iter().map(|(_, quad)| {
+                let [left, top, right, bottom] = quad.rect.to_array();
+                PixelGeometry {
+                    x: (left + 1.0) / 2.0 * size.x,
+                    y: (1.0 - top) / 2.0 * size.y,
+                    width: (right - left) / 2.0 * size.x,
+                    height: (top - bottom) / 2.0 * size.y,
+                }
+            }));
+        }
+        #[cfg(test)]
+        {
+            placed_index += 1;
+        }
+    }
+    #[cfg(test)]
+    if let Some(probe) = probe.as_mut() {
+        for glyph in probe.iter_mut() {
+            if let Some(pieces) = emitted.get_mut(glyph.placed) {
+                glyph.pieces = std::mem::take(pieces);
+            }
+        }
     }
 
     backgrounds.extend(
@@ -418,11 +455,14 @@ pub(super) fn build_scene(
     append_glyph_batches(&mut instances, &mut batches, glyphs);
     append_batch(&mut instances, &mut batches, primary_atlas, decorations);
     append_batch(&mut instances, &mut batches, primary_atlas, cursor);
+    let (atlas_uploads, atlas_fresh) = glyph_atlas.take_uploads();
     BatchScene {
         submission: None,
         destination,
         atlas: glyph_atlas.id,
-        atlas_uploads: std::mem::take(&mut glyph_atlas.uploads),
+        atlas_uploads,
+        atlas_fresh,
+        atlas_lost: glyph_atlas.lost.clone(),
         destination_size: size.as_uvec2(),
         instances,
         batches,
@@ -555,16 +595,20 @@ impl RowPainter<'_, '_> {
             }
             let cell_x = column as f32 * raster.cell_size.x;
             let cell_y = f32::from(row) * raster.cell_size.y;
+            // A wide cell is drawn as one cell spanning its columns.
             let sprite_metrics = sprite::Metrics {
-                cell_width: raster.cell_size.x as u32,
+                cell_width: raster.cell_size.x as u32 * width as u32,
                 cell_height: raster.cell_size.y as u32,
                 box_thickness: raster.box_thickness,
             };
             if let Some(rects) = sprite_codepoint(symbol)
                 .and_then(|codepoint| sprite::block_rects(codepoint, sprite_metrics))
+                .filter(|rects| rects.len() == 1)
             {
-                // Opaque block elements are Ghostty's sprite rectangles,
-                // drawn as solid quads in the glyphs' paint order.
+                // Opaque single-rectangle block elements are Ghostty's sprite
+                // rectangles, drawn as solid quads in the glyphs' paint order
+                // (combined quadrants overlap at odd sizes, so they are drawn
+                // from the atlas instead).
                 let foreground = style.foreground.to_linear();
                 for [x0, y0, x1, y1] in rects {
                     placed.push(PlacedGlyph {
@@ -633,12 +677,8 @@ impl RowPainter<'_, '_> {
                             texture: glyph.texture,
                             uv: glyph.uv,
                             geometry,
-                            clip: PixelGeometry {
-                                x: 0.0,
-                                y: 0.0,
-                                width: size.x,
-                                height: size.y,
-                            },
+                            placed: placed.len(),
+                            pieces: Vec::new(),
                             shift: shift.x,
                         });
                     }

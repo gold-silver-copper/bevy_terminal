@@ -39,8 +39,10 @@ pub(super) struct ProbeGlyph {
     pub(super) uv: Vec4,
     /// The placed bitmap.
     pub(super) geometry: PixelGeometry,
-    /// The rectangle the scene clipped the bitmap to.
-    pub(super) clip: PixelGeometry,
+    /// Index of the glyph among the scene's placed glyphs.
+    pub(super) placed: usize,
+    /// The quads the scene emitted for it, after clipping.
+    pub(super) pieces: Vec<PixelGeometry>,
     /// Horizontal shift applied on top of the run's own placement.
     pub(super) shift: f32,
 }
@@ -428,11 +430,12 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
                 let y = glyph.geometry.y + (ty as f32 - texels.y);
                 entry.ink += 1;
                 let in_texture = x >= 0.0 && y >= 0.0 && x < size.x as f32 && y < size.y as f32;
-                let clip = glyph.clip;
-                let in_clip = x >= clip.x
-                    && y >= clip.y
-                    && x < clip.x + clip.width
-                    && y < clip.y + clip.height;
+                let in_clip = glyph.pieces.iter().any(|piece| {
+                    x >= piece.x - 0.01
+                        && y >= piece.y - 0.01
+                        && x + 1.0 <= piece.x + piece.width + 0.01
+                        && y + 1.0 <= piece.y + piece.height + 0.01
+                });
                 if !in_texture {
                     entry.lost_edge += 1;
                 } else if !in_clip {

@@ -150,7 +150,8 @@ look like (or whether it has them at all): box drawing (U+2500–257F), block
 elements and shades (U+2580–259F), Braille (U+2800–28FF), `◢◣◤◥◸◹◺◿`, the
 geometric Powerline glyphs (U+E0B0–E0BF, E0D2, E0D4), branch drawing
 (U+F5D0–F60D) and Symbols for Legacy Computing (U+1FB00–1FBEF and its
-supplement). Their lines use the font's underline thickness, as in Ghostty.
+supplement). Their lines use the font's underline thickness, as in Ghostty. A
+wide cell holding one is drawn as a single cell spanning its columns.
 
 The crate is MIT licensed; the test fonts under `assets/fonts` are bundled
 under their own licenses (OFL 1.1) and are used only by tests.

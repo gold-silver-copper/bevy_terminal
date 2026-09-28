@@ -278,6 +278,7 @@ impl BatchMainState {
             let mut uploads = scene.atlas_uploads;
             uploads.append(&mut self.glyph_atlas.uploads);
             self.glyph_atlas.uploads = uploads;
+            self.glyph_atlas.fresh |= scene.atlas_fresh;
         }
     }
 
@@ -340,6 +341,10 @@ struct BatchScene {
     /// The terminal's atlas texture, and the entries to write to it first.
     atlas: AssetId<Image>,
     atlas_uploads: Vec<AtlasUpload>,
+    /// Whether `atlas_uploads` holds every entry of the atlas.
+    atlas_fresh: bool,
+    /// Raised when the render world lost the atlas this scene relies on.
+    atlas_lost: Arc<std::sync::atomic::AtomicBool>,
     destination_size: UVec2,
     instances: Vec<QuadInstance>,
     batches: Vec<DrawBatch>,
@@ -384,6 +389,7 @@ impl BatchScene {
         let mut uploads = superseded.atlas_uploads;
         uploads.append(&mut self.atlas_uploads);
         self.atlas_uploads = uploads;
+        self.atlas_fresh |= superseded.atlas_fresh;
     }
 }
 
@@ -666,6 +672,13 @@ fn sync_batch_terminal(
         state.last_snapshot = None;
         state.discard_pending();
         state.snapshot_blinks = false;
+    }
+    if state.glyph_atlas.lost.swap(false, Ordering::AcqRel) {
+        // The render world recreated the atlas texture (a device reset):
+        // rebuild every entry and repaint everything.
+        state.shapes.clear();
+        state.glyph_atlas.clear();
+        state.last_snapshot = None;
     }
     let scale_changed = state.raster_scale != raster_scale;
     let needs_measured_advance = needs_measured_advance(config);

@@ -12,6 +12,7 @@ use bevy::{
     text::{ComputedTextBlock, LetterSpacing, LineBreak, LineHeight, TextBounds, TextLayoutInfo},
 };
 use std::borrow::Cow;
+use std::sync::{Arc, atomic::AtomicBool};
 
 // Keep common terminal alphabets hot without retaining every grapheme ever
 // displayed. A full cache starts a fresh working set; individually oversized
@@ -353,6 +354,13 @@ pub(super) struct UnifiedGlyphAtlas {
     pub(super) uploads: Vec<AtlasUpload>,
     /// Whether an entry did not fit since the atlas was last cleared.
     pub(super) overflowed: bool,
+    /// Whether no entry has been handed to a scene since the atlas was last
+    /// cleared: the next scene's uploads then hold every entry.
+    pub(super) fresh: bool,
+    /// Set by the render world when it had to create this atlas's texture for
+    /// a scene that relies on earlier entries (after a render device reset):
+    /// the main world must rebuild the atlas from scratch.
+    pub(super) lost: Arc<AtomicBool>,
     /// The atlas contents, for tests that inspect drawn pixels.
     #[cfg(test)]
     pub(super) shadow: Vec<u8>,
@@ -370,6 +378,8 @@ impl Default for UnifiedGlyphAtlas {
             row_height: 0,
             uploads: Vec::new(),
             overflowed: false,
+            fresh: true,
+            lost: Arc::default(),
             #[cfg(test)]
             shadow: vec![0; (GLYPH_ATLAS_SIZE * GLYPH_ATLAS_SIZE * 4) as usize],
         }
@@ -492,6 +502,16 @@ impl UnifiedGlyphAtlas {
         self.row_height = 0;
         self.uploads.clear();
         self.overflowed = false;
+        self.fresh = true;
+    }
+
+    /// Hands the queued entries to a scene, with whether they are all there is.
+    pub(super) fn take_uploads(&mut self) -> (Vec<AtlasUpload>, bool) {
+        let fresh = self.fresh;
+        if !self.uploads.is_empty() {
+            self.fresh = false;
+        }
+        (std::mem::take(&mut self.uploads), fresh)
     }
 }
 
@@ -851,14 +871,23 @@ pub(super) fn cached_shape<'a>(
             raster.cell_size.x as u32 * u32::from(columns),
             raster.cell_size.y as u32,
         );
+        // A wide sprite cell is drawn as one cell spanning its columns.
         let metrics = sprite::Metrics {
-            cell_width: raster.cell_size.x as u32,
-            cell_height: raster.cell_size.y as u32,
+            cell_width: cell.x,
+            cell_height: cell.y,
             box_thickness: raster.box_thickness,
         };
-        let glyphs = sprite::draw(codepoint, cell.x, cell.y, metrics)
-            .and_then(|drawn| {
-                let uv = glyph_atlas.cache_sprite(codepoint, cell, &drawn)?;
+        let Some(drawn) = sprite::draw(codepoint, cell.x, cell.y, metrics) else {
+            return shapes.insert(style, text, columns, Vec::new());
+        };
+        let Some(uv) = glyph_atlas.cache_sprite(codepoint, cell, &drawn) else {
+            // No room: not cached, so the rebuild after an atlas overflow
+            // (or the next frame) tries again.
+            debug!("bevy_terminal: no atlas space for sprite {text:?}");
+            return Cow::Owned(Vec::new());
+        };
+        let glyphs = Some(drawn)
+            .map(|drawn| {
                 let columns = (0..drawn.size.x as usize)
                     .map(|x| {
                         (0..drawn.size.y as usize)
@@ -866,14 +895,14 @@ pub(super) fn cached_shape<'a>(
                             .sum()
                     })
                     .collect();
-                Some(vec![CachedGlyph::new(
+                vec![CachedGlyph::new(
                     glyph_atlas.id,
                     drawn.offset.as_vec2(),
                     drawn.size.as_vec2(),
                     uv,
                     true,
                     columns,
-                )])
+                )]
             })
             .unwrap_or_default();
         return shapes.insert(style, text, columns, glyphs);
