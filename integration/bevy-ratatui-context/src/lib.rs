@@ -103,8 +103,8 @@ mod tests {
         assert_eq!(output.image, initial.image);
         assert_ne!(output.measured().unwrap().size(), initial_size);
         assert!(
-            initial.measured().is_none(),
-            "a resize invalidates old output"
+            !initial.measured().unwrap().is_current(),
+            "a resize invalidates retained geometry"
         );
         assert_eq!(
             app.world().get::<ImageNode>(entity).unwrap().image,
