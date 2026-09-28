@@ -934,6 +934,8 @@ fn sync_batch_terminal(
 }
 
 #[cfg(test)]
+mod baseline;
+#[cfg(test)]
 mod invariants;
 #[cfg(test)]
 mod probe;
