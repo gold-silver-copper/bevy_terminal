@@ -412,12 +412,13 @@ pub(super) fn refine_metrics(
     raster
 }
 
-/// Sum of alpha over each column of an atlas glyph (all `u32::MAX` when the
-/// atlas has no CPU data, so every column counts as inked).
-pub(super) fn column_coverage(image: &Image, rect: Rect) -> Vec<u32> {
+/// The inked columns of an atlas glyph (every column when the atlas has no
+/// CPU data).
+pub(super) fn inked_columns(image: &Image, rect: Rect) -> InkSpan {
     let width = rect.size().x.max(0.0) as usize;
     let Some(data) = image.data.as_ref() else {
-        return vec![u32::MAX; width];
+        // Unreadable pixels count as ink.
+        return InkSpan::of_columns((0..width).map(|_| true));
     };
     let atlas_width = image.texture_descriptor.size.width as usize;
     let (x0, y0, y1) = (
@@ -425,14 +426,40 @@ pub(super) fn column_coverage(image: &Image, rect: Rect) -> Vec<u32> {
         rect.min.y as usize,
         rect.max.y as usize,
     );
-    (0..width)
-        .map(|x| {
-            (y0..y1)
-                .map(|y| {
-                    data.get((y * atlas_width + x0 + x) * 4 + 3)
-                        .map_or(0, |alpha| u32::from(*alpha))
-                })
-                .sum()
+    InkSpan::of_columns((0..width).map(|x| {
+        (y0..y1).any(|y| {
+            data.get((y * atlas_width + x0 + x) * 4 + 3)
+                .is_some_and(|alpha| *alpha > 0)
         })
-        .collect()
+    }))
+}
+
+/// The horizontal extent `[left, right)` of a bitmap's inked columns,
+/// relative to the bitmap; empty for a transparent bitmap.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct InkSpan {
+    pub(super) left: f32,
+    pub(super) right: f32,
+}
+
+impl InkSpan {
+    /// The span of the columns, left to right, that hold ink.
+    pub(super) fn of_columns(inked: impl IntoIterator<Item = bool>) -> Self {
+        let mut first = None;
+        let mut last = 0;
+        for (column, inked) in inked.into_iter().enumerate() {
+            if inked {
+                first.get_or_insert(column);
+                last = column;
+            }
+        }
+        first.map_or_else(Self::default, |first| Self {
+            left: first as f32,
+            right: last as f32 + 1.0,
+        })
+    }
+
+    pub(super) fn is_empty(self) -> bool {
+        self.right <= self.left
+    }
 }

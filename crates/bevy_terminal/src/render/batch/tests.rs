@@ -1016,7 +1016,7 @@ fn glyph(offset_x: f32, columns: &[u32]) -> CachedGlyph {
         Vec2::new(columns.len() as f32, 10.0),
         Vec4::ZERO,
         true,
-        columns.to_vec(),
+        super::metrics::InkSpan::of_columns(columns.iter().map(|column| *column > 0)),
     )
 }
 

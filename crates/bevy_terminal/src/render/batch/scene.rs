@@ -803,12 +803,12 @@ pub(super) fn visual_columns(cells: &[TerminalCell], column: usize, span: usize)
 /// edge, where Ghostty has window padding, is pushed back in. A run wider
 /// than the texture keeps its place.
 pub(super) fn edge_shift(glyphs: &[CachedGlyph], x: f32, width: f32) -> f32 {
-    let (left, right) = glyphs.iter().filter(|g| g.ink.1 > g.ink.0).fold(
+    let (left, right) = glyphs.iter().filter(|g| !g.ink.is_empty()).fold(
         (f32::INFINITY, f32::NEG_INFINITY),
         |(l, r), g| {
             (
-                l.min(x + g.offset.x + g.ink.0),
-                r.max(x + g.offset.x + g.ink.1),
+                l.min(x + g.offset.x + g.ink.left),
+                r.max(x + g.offset.x + g.ink.right),
             )
         },
     );

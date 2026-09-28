@@ -150,18 +150,24 @@ impl TerminalSurface {
     }
 
     /// Brings `snapshot` up to date by copying only the cells changed since it
-    /// was last synchronized, and reports what changed.
+    /// was last synchronized, and reports what changed; `changed_rows` is
+    /// replaced by the rows containing a changed cell, in ascending order
+    /// (a buffer the caller reuses).
     ///
     /// The renderer calls this once per frame whose revision differs from the
     /// snapshot's; the lock is held only while dirty cells are copied.
-    pub(crate) fn update_snapshot(&self, snapshot: &mut TerminalSnapshot) -> SnapshotDelta {
+    pub(crate) fn update_snapshot(
+        &self,
+        snapshot: &mut TerminalSnapshot,
+        changed_rows: &mut Vec<u16>,
+    ) -> SnapshotDelta {
         let state = self.lock();
+        changed_rows.clear();
         if snapshot.size != state.size || snapshot.resize_generation != state.resize_generation {
             let changed_cells = state.cells.len();
-            let changed_rows = (0..state.size.height).collect();
+            changed_rows.extend(0..state.size.height);
             *snapshot = state.snapshot();
             return SnapshotDelta {
-                changed_rows,
                 changed_cells,
                 resized: true,
                 cursor_position_changed: true,
@@ -171,7 +177,6 @@ impl TerminalSurface {
 
         let width = usize::from(state.size.width);
         let height = state.size.height;
-        let mut changed_rows = Vec::new();
         let mut changed_cells = 0;
         for row in 0..height {
             // Compare ages rather than raw revisions so wrapping the counter is
@@ -207,7 +212,6 @@ impl TerminalSurface {
         snapshot.cursor_visible = state.cursor_visible;
         snapshot.revision = state.revision;
         SnapshotDelta {
-            changed_rows,
             changed_cells,
             resized: false,
             cursor_position_changed,
@@ -238,8 +242,6 @@ impl TerminalSurface {
 /// The result of `TerminalSurface::update_snapshot`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SnapshotDelta {
-    /// Rows containing at least one changed cell, in ascending order.
-    pub(crate) changed_rows: Vec<u16>,
     /// Number of cells copied into the snapshot.
     pub(crate) changed_cells: usize,
     /// Whether the grid size changed; every cell was copied if so.
@@ -575,6 +577,16 @@ mod tests {
     use super::*;
     use crate::scene::{StyleFlags, TerminalColor, TerminalStyle};
 
+    /// The changed rows and delta of one synchronization.
+    fn sync(
+        surface: &TerminalSurface,
+        snapshot: &mut TerminalSnapshot,
+    ) -> (Vec<u16>, SnapshotDelta) {
+        let mut rows = Vec::new();
+        let delta = surface.update_snapshot(snapshot, &mut rows);
+        (rows, delta)
+    }
+
     #[test]
     fn independent_readers_observe_updates_at_different_rates() {
         let surface = TerminalSurface::new((4, 2));
@@ -583,16 +595,16 @@ mod tests {
         surface.update(|u| {
             u.set_cell((1, 0), &TerminalCell::new("A"));
         });
-        surface.update_snapshot(&mut fast);
+        sync(&surface, &mut fast);
         surface.update(|u| {
             u.set_cell((2, 1), &TerminalCell::new("B"));
         });
-        surface.update_snapshot(&mut fast);
-        let delta = surface.update_snapshot(&mut slow);
-        assert_eq!(delta.changed_rows, [0, 1]);
+        sync(&surface, &mut fast);
+        let (delta_rows, _) = sync(&surface, &mut slow);
+        assert_eq!(delta_rows, [0, 1]);
         assert_eq!(slow.to_text(), fast.to_text());
         assert_eq!(slow.revision(), fast.revision());
-        assert!(surface.update_snapshot(&mut slow).changed_rows.is_empty());
+        assert!(sync(&surface, &mut slow).0.is_empty());
     }
 
     #[test]
@@ -607,7 +619,7 @@ mod tests {
         });
         assert!(result.is_err());
         assert_ne!(surface.revision(), snapshot.revision());
-        surface.update_snapshot(&mut snapshot);
+        sync(&surface, &mut snapshot);
         assert_eq!(snapshot.row_text(0), "A ");
         assert!(surface.update(|u| {
             u.set_cell((1, 0), &TerminalCell::new("B"));
@@ -691,13 +703,13 @@ mod tests {
         surface.update(|update| {
             update.set_cell((0, 0), &TerminalCell::new("A"));
         });
-        assert_eq!(surface.update_snapshot(&mut fast).changed_rows, [0]);
+        assert_eq!(sync(&surface, &mut fast).0, [0]);
         surface.update(|update| {
             update.set_cell((0, 1), &TerminalCell::new("B"));
         });
         assert_eq!(surface.revision(), 0);
-        assert_eq!(surface.update_snapshot(&mut fast).changed_rows, [1]);
-        assert_eq!(surface.update_snapshot(&mut slow).changed_rows, [0, 1]);
+        assert_eq!(sync(&surface, &mut fast).0, [1]);
+        assert_eq!(sync(&surface, &mut slow).0, [0, 1]);
         assert_eq!(fast.to_text(), slow.to_text());
     }
 
@@ -782,9 +794,9 @@ mod tests {
             u.set_cell((2, 1), &changed);
         });
 
-        let delta = surface.update_snapshot(&mut snapshot);
+        let (delta_rows, delta) = sync(&surface, &mut snapshot);
         assert_eq!(delta.changed_cells, 1);
-        assert_eq!(delta.changed_rows, [1]);
+        assert_eq!(delta_rows, [1]);
         assert!(!delta.resized);
         assert_eq!(snapshot[(2, 1)], changed);
         assert_eq!(snapshot.revision(), surface.revision());
@@ -792,19 +804,19 @@ mod tests {
         surface.update(|u| {
             u.set_cursor_position((3, 2));
         });
-        let cursor_delta = surface.update_snapshot(&mut snapshot);
+        let (cursor_delta_rows, cursor_delta) = sync(&surface, &mut snapshot);
         assert_eq!(cursor_delta.changed_cells, 0);
-        assert!(cursor_delta.changed_rows.is_empty());
+        assert!(cursor_delta_rows.is_empty());
         assert!(cursor_delta.cursor_position_changed);
         assert!(!cursor_delta.cursor_visibility_changed);
 
         surface.update(|u| {
             u.resize((2, 2));
         });
-        let resized = surface.update_snapshot(&mut snapshot);
+        let (resized_rows, resized) = sync(&surface, &mut snapshot);
         assert!(resized.resized);
         assert_eq!(resized.changed_cells, 4);
-        assert_eq!(resized.changed_rows, [0, 1]);
+        assert_eq!(resized_rows, [0, 1]);
         assert_eq!(snapshot.size(), GridSize::new(2, 2));
     }
 

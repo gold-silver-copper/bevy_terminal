@@ -1,6 +1,6 @@
 //! Glyph rasterization, shape lookup, and atlas storage.
 use super::constraint::{Align, Constraint, GlyphSize, Size};
-use super::metrics::{GlyphBox, column_coverage};
+use super::metrics::{GlyphBox, InkSpan, inked_columns};
 use super::sprite::{self, Sprite};
 use super::{
     GLYPH_ATLAS_SIZE, GLYPH_FORMAT, RasterMetrics, ResolvedStyle, TerminalRenderConfig,
@@ -180,28 +180,19 @@ pub(super) struct CachedGlyph {
     pub(super) size: Vec2,
     pub(super) uv: Vec4,
     pub(super) alpha_mask: bool,
-    /// Horizontal extent `[left, right)` of the bitmap's inked columns,
-    /// relative to the bitmap; empty for a transparent bitmap.
-    pub(super) ink: (f32, f32),
+    /// The bitmap's inked columns.
+    pub(super) ink: InkSpan,
 }
 
 impl CachedGlyph {
-    /// A cached glyph; `columns` is the coverage (sum of alpha) of each
-    /// bitmap column, from which its inked extent is kept.
     pub(super) fn new(
         texture: AssetId<Image>,
         offset: Vec2,
         size: Vec2,
         uv: Vec4,
         alpha_mask: bool,
-        columns: Vec<u32>,
+        ink: InkSpan,
     ) -> Self {
-        let left = columns.iter().position(|c| *c > 0);
-        let right = columns.iter().rposition(|c| *c > 0);
-        let ink = match (left, right) {
-            (Some(left), Some(right)) => (left as f32, right as f32 + 1.0),
-            _ => (0.0, 0.0),
-        };
         Self {
             texture,
             offset,
@@ -401,31 +392,27 @@ impl UnifiedGlyphAtlas {
     }
 
     /// Resamples a Bevy atlas glyph to `scaled` pixels into the atlas,
-    /// returning its UV rectangle and column coverage.
+    /// returning its UV rectangle and inked columns.
     pub(super) fn cache_scaled(
         &mut self,
         source: SourceGlyph,
         scaled: UVec2,
         images: &Assets<Image>,
-    ) -> Option<(Vec4, Vec<u32>)> {
+    ) -> Option<(Vec4, InkSpan)> {
         let key = SourceGlyph { scaled, ..source };
         let pixels = resample(
             &source_pixels(source, images)?,
             UVec2::new(source.width, source.height),
             scaled,
         );
-        let columns = (0..scaled.x as usize)
-            .map(|x| {
-                (0..scaled.y as usize)
-                    .map(|y| u32::from(pixels[(y * scaled.x as usize + x) * 4 + 3]))
-                    .sum()
-            })
-            .collect();
+        let ink = InkSpan::of_columns((0..scaled.x as usize).map(|x| {
+            (0..scaled.y as usize).any(|y| pixels[(y * scaled.x as usize + x) * 4 + 3] > 0)
+        }));
         let uv = match self.glyphs.get(&AtlasKey::Source(key)) {
             Some(uv) => *uv,
             None => self.insert(AtlasKey::Source(key), scaled, pixels)?,
         };
-        Some((uv, columns))
+        Some((uv, ink))
     }
 
     /// Adds a sprite's coverage to the atlas, returning its UV rectangle.
@@ -442,11 +429,11 @@ impl UnifiedGlyphAtlas {
         if let Some(uv) = self.glyphs.get(&key) {
             return Some(*uv);
         }
-        let pixels: Vec<u8> = sprite
-            .alpha
-            .iter()
-            .flat_map(|alpha| [255, 255, 255, *alpha])
-            .collect();
+        // White texels carrying the coverage in alpha.
+        let mut pixels = Vec::with_capacity(sprite.alpha.len() * 4);
+        for &alpha in &sprite.alpha {
+            pixels.extend_from_slice(&[255, 255, 255, alpha]);
+        }
         self.insert(key, sprite.size, pixels)
     }
 
@@ -886,26 +873,19 @@ pub(super) fn cached_shape<'a>(
             debug!("bevy_terminal: no atlas space for sprite {text:?}");
             return Cow::Owned(Vec::new());
         };
-        let glyphs = Some(drawn)
-            .map(|drawn| {
-                let columns = (0..drawn.size.x as usize)
-                    .map(|x| {
-                        (0..drawn.size.y as usize)
-                            .map(|y| u32::from(drawn.alpha[y * drawn.size.x as usize + x]))
-                            .sum()
-                    })
-                    .collect();
-                vec![CachedGlyph::new(
-                    glyph_atlas.id,
-                    drawn.offset.as_vec2(),
-                    drawn.size.as_vec2(),
-                    uv,
-                    true,
-                    columns,
-                )]
-            })
-            .unwrap_or_default();
-        return shapes.insert(style, text, columns, glyphs);
+        let width = drawn.size.x as usize;
+        let ink = InkSpan::of_columns(
+            (0..width).map(|x| (0..drawn.size.y as usize).any(|y| drawn.alpha[y * width + x] > 0)),
+        );
+        let glyph = CachedGlyph::new(
+            glyph_atlas.id,
+            drawn.offset.as_vec2(),
+            drawn.size.as_vec2(),
+            uv,
+            true,
+            ink,
+        );
+        return shapes.insert(style, text, columns, vec![glyph]);
     }
     let Some(layout) = shape_run(text, style, config, raster, viewport, cx) else {
         return Cow::Borrowed(&[]);
@@ -969,19 +949,19 @@ pub(super) fn cached_shape<'a>(
                     height: crop.height() as u32,
                     ..source
                 };
-                if let Some((uv, columns)) = glyph_atlas.cache_scaled(cropped, scaled, cx.images) {
+                if let Some((uv, ink)) = glyph_atlas.cache_scaled(cropped, scaled, cx.images) {
                     return Some(Some(CachedGlyph::new(
                         glyph_atlas.id,
                         measured.min + translate + min,
                         scaled.as_vec2(),
                         uv,
                         glyph.atlas_info.is_alpha_mask,
-                        columns,
+                        ink,
                     )));
                 }
                 debug!("bevy_terminal: no atlas space to stretch {text:?}; drawn as rasterized");
             }
-            let columns = column_coverage(cx.images.get(glyph.atlas_info.texture)?, rect);
+            let ink = inked_columns(cx.images.get(glyph.atlas_info.texture)?, rect);
             let source_uv = Vec4::new(
                 rect.min.x / atlas_size.width as f32,
                 rect.min.y / atlas_size.height as f32,
@@ -997,7 +977,7 @@ pub(super) fn cached_shape<'a>(
                 size,
                 uv,
                 glyph.atlas_info.is_alpha_mask,
-                columns,
+                ink,
             )))
         })
         .collect::<Option<Vec<_>>>()

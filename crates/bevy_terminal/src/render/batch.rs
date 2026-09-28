@@ -269,6 +269,8 @@ struct BatchMainState {
     shapes: ShapeCaches,
     glyph_atlas: UnifiedGlyphAtlas,
     scratch: SceneScratch,
+    /// The rows the next scene repaints, reused between scenes.
+    repaint_rows: Vec<u16>,
     /// How far each row's drawn ink reaches into its neighbours, and which
     /// rows blink.
     row_states: RowStates,
@@ -315,6 +317,7 @@ impl BatchMainState {
             shapes: ShapeCaches::default(),
             glyph_atlas: UnifiedGlyphAtlas::default(),
             scratch: SceneScratch::default(),
+            repaint_rows: Vec::new(),
             row_states: RowStates::default(),
             blink: BlinkPhases::default(),
         }
@@ -785,12 +788,11 @@ fn sync_batch_terminal(
 
     #[cfg(feature = "timings")]
     let snapshot_start = Instant::now();
-    let (snapshot, changed_rows, mut full) = if let Some(mut snapshot) = state.last_snapshot.take()
-    {
+    let mut rows = std::mem::take(&mut state.repaint_rows);
+    let (snapshot, mut full) = if let Some(mut snapshot) = state.last_snapshot.take() {
         let old_cursor = snapshot.cursor_position();
-        let update = surface.update_snapshot(&mut snapshot);
+        let update = surface.update_snapshot(&mut snapshot, &mut rows);
         stats.snapshot_cells = u32::try_from(update.changed_cells).unwrap_or(u32::MAX);
-        let mut rows = update.changed_rows;
         if update.cursor_position_changed || update.cursor_visibility_changed {
             rows.push(old_cursor.y);
             rows.push(snapshot.cursor_position().y);
@@ -810,12 +812,13 @@ fn sync_batch_terminal(
             rows.sort_unstable();
             rows.dedup();
         }
-        (snapshot, rows, full)
+        (snapshot, full)
     } else {
         let snapshot = surface.snapshot();
         stats.snapshot_cells = u32::try_from(snapshot.cells().len()).unwrap_or(u32::MAX);
-        let rows = (0..snapshot.size().height).collect();
-        (snapshot, rows, true)
+        rows.clear();
+        rows.extend(0..snapshot.size().height);
+        (snapshot, true)
     };
 
     #[cfg(feature = "timings")]
@@ -825,8 +828,9 @@ fn sync_batch_terminal(
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
     }
-    if changed_rows.is_empty() && !full && !blink_changed {
+    if rows.is_empty() && !full && !blink_changed {
         state.last_snapshot = Some(snapshot);
+        state.repaint_rows = rows;
         return Ok(false);
     }
     // Extraction can be delayed while a newly created output or glyph atlas reaches the render
@@ -857,11 +861,10 @@ fn sync_batch_terminal(
     }
     measurement.raster_scale = raster_scale;
 
-    let rows: Vec<u16> = if full {
-        (0..snapshot.size().height).collect()
-    } else {
-        changed_rows
-    };
+    if full {
+        rows.clear();
+        rows.extend(0..snapshot.size().height);
+    }
     #[cfg(feature = "timings")]
     let scene_start = Instant::now();
     let destination = state.output.id();
@@ -896,13 +899,14 @@ fn sync_batch_terminal(
         debug!("bevy_terminal: glyph atlas full; rebuilding it for the current frame");
         shapes.clear();
         glyph_atlas.clear();
-        let all: Vec<u16> = (0..snapshot.size().height).collect();
+        rows.clear();
+        rows.extend(0..snapshot.size().height);
         scene = build_scene(
             &snapshot,
             config,
             palette,
             *raster_config,
-            &all,
+            &rows,
             true,
             destination,
             cx,
@@ -914,6 +918,7 @@ fn sync_batch_terminal(
             blink,
         );
     }
+    state.repaint_rows = rows;
     if cx.failure.is_some() {
         return Err(TerminalStatus::ShapingFailed);
     }
