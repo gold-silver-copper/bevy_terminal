@@ -664,3 +664,51 @@ fn wide_and_translucent_block_elements_cover_their_cells_once() {
     assert!(!covered.is_empty());
     assert!(covered.iter().all(|p| *p == covered[0]), "{covered:?}");
 }
+
+#[test]
+fn unextracted_scenes_drop_entries_from_before_an_atlas_clear() {
+    let mut replay = Replay::new("cascadia-mono", (8, 2), TerminalSizing::font(40.0), 1.0);
+    replay.write(0, "日本語中", TerminalStyle::new());
+    replay.write(1, "文字漢", TerminalStyle::new());
+    // Nothing extracts this scene; then the atlas is cleared, as an
+    // overflow rebuild does, and the next scene carries every entry.
+    replay.app.update();
+    {
+        let mut state = replay
+            .app
+            .world_mut()
+            .get_mut::<BatchMainState>(replay.entity)
+            .unwrap();
+        assert!(!state.pending.as_ref().unwrap().atlas_uploads.is_empty());
+        state.shapes.clear();
+        state.glyph_atlas.clear();
+    }
+    replay.write(0, "a", TerminalStyle::new());
+    for _ in 0..4 {
+        replay.app.update();
+    }
+    let state = replay
+        .app
+        .world()
+        .get::<BatchMainState>(replay.entity)
+        .unwrap();
+    let scene = state.pending.as_ref().expect("a pending scene");
+    assert!(scene.atlas_fresh);
+    // Entries from before the clear would overlap the new ones.
+    let uploads = &scene.atlas_uploads;
+    for (i, a) in uploads.iter().enumerate() {
+        for b in &uploads[i + 1..] {
+            let apart = a.origin.x + a.size.x <= b.origin.x
+                || b.origin.x + b.size.x <= a.origin.x
+                || a.origin.y + a.size.y <= b.origin.y
+                || b.origin.y + b.size.y <= a.origin.y;
+            assert!(
+                apart,
+                "overlapping uploads at {} and {}",
+                a.origin, b.origin
+            );
+        }
+    }
+    replay.step();
+    replay.assert_matches_full("after the clear");
+}

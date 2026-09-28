@@ -274,11 +274,13 @@ impl BatchMainState {
     /// Drops the scene waiting for extraction, keeping the atlas entries it
     /// carried for the next one.
     fn discard_pending(&mut self) {
-        if let Some(scene) = self.pending.take() {
+        if let Some(scene) = self.pending.take()
+            && !self.glyph_atlas.fresh
+        {
             let mut uploads = scene.atlas_uploads;
             uploads.append(&mut self.glyph_atlas.uploads);
             self.glyph_atlas.uploads = uploads;
-            self.glyph_atlas.fresh |= scene.atlas_fresh;
+            self.glyph_atlas.fresh = scene.atlas_fresh;
         }
     }
 
@@ -385,11 +387,18 @@ struct PendingBatchScenes {
 impl BatchScene {
     /// Prepends the atlas entries of a superseded scene that never drew, so
     /// no entry the newer scene relies on is lost.
+    ///
+    /// A fresh scene already carries every entry, and the superseded entries
+    /// predate the atlas's last clear, so they are dropped. This keeps queued
+    /// uploads within one atlas's worth when nothing extracts scenes.
     fn absorb(&mut self, superseded: BatchScene) {
+        if self.atlas_fresh {
+            return;
+        }
         let mut uploads = superseded.atlas_uploads;
         uploads.append(&mut self.atlas_uploads);
         self.atlas_uploads = uploads;
-        self.atlas_fresh |= superseded.atlas_fresh;
+        self.atlas_fresh = superseded.atlas_fresh;
     }
 }
 
