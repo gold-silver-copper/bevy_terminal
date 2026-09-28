@@ -270,7 +270,9 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         .unwrap();
     assert!(state.metrics.is_some());
     assert!(state.last_snapshot.is_some());
-    assert!(state.pending.is_some());
+    let output_id = state.output.id();
+    let mut queue = std::mem::take(&mut *app.world_mut().resource_mut::<SceneQueue>());
+    assert!(queue.scene(output_id).is_some());
     let missing = app.world().resource::<Assets<Font>>().reserve_handle();
     let unavailable = TerminalRenderConfig {
         font: super::super::FontFaces::regular(missing),
@@ -283,6 +285,7 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         &renderer,
         SyncInput {
             config: &unavailable,
+            measured_surface: &output.geometry.surface,
             config_changed: true,
             shaping_changed: true,
             fonts_changed: false,
@@ -291,19 +294,19 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
             texture_limit: 8192,
         },
         &mut state,
-        &output.geometry.surface,
         &mut output.geometry.measurement,
         &mut stats,
         &mut text.context(&mut images),
+        &mut queue,
     );
     assert_eq!(result, Err(TerminalStatus::ShapingFailed));
     // Apply the same invalidation boundary as the outer Bevy system.
-    state.invalidate();
+    state.invalidate(&mut queue);
     output.status = result.unwrap_err();
     assert_eq!(output.status, TerminalStatus::ShapingFailed);
     assert!(state.metrics.is_none());
     assert!(state.last_snapshot.is_none());
-    assert!(state.pending.is_none());
+    assert!(queue.scene(output_id).is_none());
 
     // A successful retry must rebuild even if the effective geometry equals
     // the old geometry and no further configuration event arrives.
@@ -312,6 +315,7 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         &renderer,
         SyncInput {
             config: &config,
+            measured_surface: &output.geometry.surface,
             config_changed: false,
             shaping_changed: false,
             fonts_changed: false,
@@ -320,15 +324,15 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
             texture_limit: 8192,
         },
         &mut state,
-        &output.geometry.surface,
         &mut output.geometry.measurement,
         &mut stats,
         &mut text.context(&mut images),
+        &mut queue,
     )
     .unwrap();
     assert!(output.measured().is_some());
     assert!(state.metrics.is_some());
-    assert!(state.pending.as_ref().unwrap().clear);
+    assert!(queue.scene(output_id).unwrap().clear);
     assert!(stats.shape_misses > 0);
 }
 
@@ -407,7 +411,7 @@ fn replacing_surface_with_equal_revision_refreshes_retained_content() {
     app.update();
     let state = app.world().get::<BatchMainState>(entity).unwrap();
     assert_eq!(state.last_snapshot.as_ref().unwrap().row_text(0), "BBBB");
-    assert!(state.pending.as_ref().unwrap().clear);
+    assert!(queued(app.world(), entity).unwrap().clear);
     assert_eq!(
         app.world().get::<TerminalTexture>(entity).unwrap().image,
         handle
@@ -517,7 +521,8 @@ fn repeated_despawns_release_owned_images_and_pending_scenes() {
         }
         collect_batch_scenes(app.world_mut(), &mut pending);
         assert!(pending.scenes.is_empty());
-        assert!(pending.live_textures.is_empty());
+        assert_eq!(pending.released_atlases.len(), 3, "their atlases are freed");
+        pending.released_atlases.clear();
         let images = app.world().resource::<Assets<Image>>();
         for id in owned.into_iter().flatten() {
             assert!(
@@ -905,10 +910,11 @@ fn ready_terminal_exposes_font_failure_and_recovers_with_the_same_image() {
         TerminalStatus::Loading
     );
     collect_batch_scenes(app.world_mut(), &mut pending);
-    assert!(
-        pending.scenes.is_empty(),
-        "old payload cannot render after a font switch"
-    );
+    // The old payload cannot render after a font switch: it is withdrawn,
+    // keeping only the atlas entries it carried.
+    let old = &pending.scenes[&image.id()];
+    assert!(old.instances.is_empty() && old.batches.is_empty());
+    assert!(!old.clear && old.submission.is_none());
     app.world_mut()
         .resource_mut::<Assets<Font>>()
         .insert(replacement.id(), Font::from_bytes(Vec::new()))
@@ -920,13 +926,7 @@ fn ready_terminal_exposes_font_failure_and_recovers_with_the_same_image() {
     assert_eq!(failed.status, TerminalStatus::FontFailed);
     assert!(failed.measured().is_none());
     assert_eq!(failed.image, image);
-    assert!(
-        app.world()
-            .get::<BatchMainState>(entity)
-            .unwrap()
-            .pending
-            .is_none()
-    );
+    assert!(queued(app.world(), entity).is_none());
 
     // Bevy 0.19 registers new asset IDs, not data replaced under an already
     // registered ID. Recover a malformed asset by selecting a fresh handle.
@@ -1598,10 +1598,10 @@ fn advance(app: &mut App, seconds: f32) {
 /// Consumes pending payloads the way render-world extraction would, so a
 /// later partial repaint is not upgraded to a full one.
 fn drain_pending(app: &mut App) {
-    let mut states = app.world_mut().query::<&mut BatchMainState>();
-    for mut state in states.iter_mut(app.world_mut()) {
-        state.pending = None;
-        state.submitted.store(state.generation, Ordering::Release);
+    let mut states = app.world_mut().query::<Entity>();
+    let entities: Vec<Entity> = states.iter(app.world()).collect();
+    for entity in entities {
+        take_queued(app.world_mut(), entity);
     }
 }
 
@@ -1684,9 +1684,10 @@ fn delayed_scenes_coalesce_completely_and_removed_renderers_release_state() {
         .remove::<TerminalRenderer>();
     collect_batch_scenes(app.world_mut(), &mut pending);
     assert!(pending.scenes.is_empty());
-    assert!(
-        pending.live_textures.is_empty(),
-        "removed owner cannot keep bind groups alive"
+    assert_eq!(
+        pending.released_atlases.len(),
+        1,
+        "a removed owner's atlas is freed"
     );
     app.update();
     assert!(app.world().get::<BatchMainState>(entity).is_none());
@@ -1950,13 +1951,7 @@ fn stats_reset_when_font_starts_loading() {
                 .changed_rows,
             0
         );
-        assert!(
-            app.world()
-                .get::<BatchMainState>(entity)
-                .unwrap()
-                .pending
-                .is_none()
-        );
+        assert!(queued(app.world(), entity).is_none());
     }
 }
 
@@ -2026,7 +2021,7 @@ fn glyph_atlas_stays_small_until_actual_glyphs_are_drawn() {
     app.update();
     let state = app.world().get::<BatchMainState>(entity).unwrap();
     assert_eq!(state.glyph_atlas.id, atlas, "the atlas keeps its identity");
-    let scene = state.pending.as_ref().expect("a scene with the new glyph");
+    let scene = queued(app.world(), entity).expect("a scene with the new glyph");
     assert_eq!(scene.atlas, atlas);
     assert_eq!(scene.atlas_uploads.len(), 1, "one glyph's pixels travel");
     // The atlas texture lives in the render world; the main world grows only
@@ -2281,4 +2276,47 @@ fn renderer_components_follow_the_renderer_without_an_update() {
     // Despawning a terminal releases its components with the entity.
     app.world_mut().despawn(entity);
     app.update();
+}
+
+/// A scene the render world took but did not draw is withdrawn when its
+/// terminal switches surfaces; the replacing scene still carries the atlas
+/// entries the withdrawn one brought, since the glyphs stay cached.
+#[test]
+fn withdrawn_scenes_hand_their_atlas_entries_to_the_next_scene() {
+    let mut app = text_app();
+    let first = TerminalSurface::new((4, 1));
+    write_text(&first, "AB");
+    let entity = app.world_mut().spawn(TerminalRenderer::new(first)).id();
+    for _ in 0..4 {
+        app.update();
+    }
+    let output = app
+        .world()
+        .get::<BatchMainState>(entity)
+        .unwrap()
+        .output
+        .id();
+    let mut pending = PendingBatchScenes::default();
+    collect_batch_scenes(app.world_mut(), &mut pending);
+    let carried = pending.scenes[&output].atlas_uploads.len();
+    assert!(carried >= 2, "the first scene brings A and B");
+
+    // The same text on another surface: the glyphs are cached, so the new
+    // scene brings no entries of its own.
+    let second = TerminalSurface::new((4, 1));
+    write_text(&second, "AB");
+    app.world_mut()
+        .entity_mut(entity)
+        .insert(TerminalRenderer::new(second));
+    app.update();
+    assert!(
+        queued(app.world(), entity)
+            .unwrap()
+            .atlas_uploads
+            .is_empty()
+    );
+    collect_batch_scenes(app.world_mut(), &mut pending);
+    let scene = &pending.scenes[&output];
+    assert!(scene.clear && !scene.instances.is_empty());
+    assert_eq!(scene.atlas_uploads.len(), carried);
 }

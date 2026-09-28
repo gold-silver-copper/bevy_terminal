@@ -228,9 +228,8 @@ fn queued_atlas_uploads_never_exceed_one_atlas() {
             restarts += 1;
         }
         previous = cursor;
-        let queued: u64 = state
-            .pending
-            .iter()
+        let queued: u64 = queued(app.world(), *entity)
+            .into_iter()
             .flat_map(|scene| &scene.atlas_uploads)
             .chain(&state.glyph_atlas.uploads)
             .map(|upload| u64::from(upload.size.x) * u64::from(upload.size.y))
@@ -268,10 +267,7 @@ fn idle_terminals_build_no_scene_and_change_no_component() {
         .collect();
     // The drawn scenes are taken, as extraction would.
     for (entity, _) in &surfaces {
-        app.world_mut()
-            .get_mut::<BatchMainState>(*entity)
-            .unwrap()
-            .pending = None;
+        take_queued(app.world_mut(), *entity);
     }
     // The first idle update zeroes the statistics of the drawing one.
     app.update();
@@ -282,7 +278,7 @@ fn idle_terminals_build_no_scene_and_change_no_component() {
     for ((entity, _), generation) in surfaces.iter().zip(generations) {
         let state = app.world().get::<BatchMainState>(*entity).unwrap();
         assert_eq!(state.generation, generation, "no scene was built");
-        assert!(state.pending.is_none());
+        assert!(queued(app.world(), *entity).is_none());
     }
     assert_eq!(app.world().resource::<Changes>().0, 0);
 }

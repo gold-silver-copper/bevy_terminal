@@ -88,12 +88,9 @@ fn step(
     out: &mut Vec<u8>,
 ) -> bool {
     app.update();
-    let mut state = app.world_mut().get_mut::<BatchMainState>(entity).unwrap();
-    let Some(scene) = state.pending.take() else {
+    let Some(scene) = take_queued(app.world_mut(), entity) else {
         return false;
     };
-    let generation = state.generation;
-    state.submitted.store(generation, Ordering::Release);
     out.extend_from_slice(&(scene.instances.len() as u32).to_le_bytes());
     for instance in &scene.instances {
         let values = [

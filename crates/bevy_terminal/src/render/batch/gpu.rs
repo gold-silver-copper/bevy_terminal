@@ -1,10 +1,10 @@
 //! Extraction, resource lifetimes, and GPU submission.
 use super::{
-    BatchMainState, BatchScene, GLYPH_ATLAS_SIZE, GLYPH_FORMAT, PendingBatchScenes, QuadInstance,
-    TARGET_FORMAT, TerminalRenderer, TerminalTexture,
+    BatchScene, GLYPH_ATLAS_SIZE, GLYPH_FORMAT, PendingBatchScenes, QuadInstance, SceneQueue,
+    TARGET_FORMAT,
 };
 use bevy::{
-    platform::collections::{HashMap, HashSet},
+    platform::collections::HashMap,
     prelude::*,
     render::{
         MainWorld,
@@ -18,9 +18,9 @@ use bevy::{
             RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, Sampler,
             SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource,
             ShaderStages, StoreOp, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture,
-            TextureAspect, TextureDescriptor, TextureDimension, TextureId, TextureSampleType,
-            TextureUsages, TextureViewDescriptor, TextureViewDimension, VertexAttribute,
-            VertexFormat, VertexStepMode,
+            TextureAspect, TextureDescriptor, TextureDimension, TextureSampleType, TextureUsages,
+            TextureViewDescriptor, TextureViewDimension, VertexAttribute, VertexFormat,
+            VertexStepMode,
         },
         renderer::{RenderDevice, RenderQueue},
         texture::GpuImage,
@@ -35,41 +35,32 @@ pub(super) fn extract_batch_scenes(
     collect_batch_scenes(&mut main_world, &mut pending);
 }
 
+/// Takes the main world's queued scenes and releases, without looking at
+/// any terminal.
 pub(super) fn collect_batch_scenes(main_world: &mut World, pending: &mut PendingBatchScenes) {
-    pending.live_textures.clear();
-    pending.live_atlases.clear();
-    let mut terminals = main_world
-        .query_filtered::<(&mut BatchMainState, &TerminalTexture), With<TerminalRenderer>>();
-    let mut alive = HashSet::<AssetId<Image>>::default();
-    for (mut state, output) in terminals.iter_mut(main_world) {
-        pending.live_atlases.insert(state.glyph_atlas.id);
-        if output.measured().is_none() {
-            state.discard_pending();
-            continue;
-        }
-        alive.insert(state.output.id());
-        if let Some(mut scene) = state.pending.take() {
-            // An unacknowledged submission is replaced by a full scene in the
-            // main world, so superseding it cannot lose intermediate rows;
-            // its atlas entries are carried over.
-            if let Some(superseded) = pending.scenes.remove(&scene.destination) {
-                scene.absorb(superseded);
-            }
-            pending.scenes.insert(scene.destination, scene);
+    let Some(mut queue) = main_world.get_resource_mut::<SceneQueue>() else {
+        return;
+    };
+    queue.extracting = true;
+    for (output, atlas) in queue.released.drain(..) {
+        pending.scenes.remove(&output);
+        pending.released_atlases.push(atlas);
+    }
+    // Withdrawn before newer scenes arrive, which then absorb them.
+    for output in queue.withdrawn.drain() {
+        if let Some(scene) = pending.scenes.get_mut(&output) {
+            scene.withdraw();
         }
     }
-    pending
-        .scenes
-        .retain(|destination, _| alive.contains(destination));
-    // Unified atlases stay cached for idle terminals. Fallback source atlases
-    // belong to Bevy and may outlive every terminal; retain their bind groups
-    // only while a pending scene uses them.
-    pending.live_textures.extend(
-        pending
-            .scenes
-            .values()
-            .flat_map(|scene| scene.batches.iter().map(|batch| batch.texture)),
-    );
+    for (destination, mut scene) in queue.scenes.drain() {
+        // An unacknowledged submission is replaced by a full scene in the
+        // main world, so superseding it cannot lose intermediate rows;
+        // its atlas entries are carried over.
+        if let Some(superseded) = pending.scenes.remove(&destination) {
+            scene.absorb(superseded);
+        }
+        pending.scenes.insert(destination, scene);
+    }
 }
 
 pub(super) fn batch_scenes_can_render_early(pending: Res<PendingBatchScenes>) -> bool {
@@ -89,7 +80,6 @@ pub(super) struct BatchGpuState {
     pub(super) texture_layout: Option<BindGroupLayout>,
     pub(super) pipeline: Option<RenderPipeline>,
     pub(super) replace_pipeline: Option<RenderPipeline>,
-    pub(super) texture_bind_groups: HashMap<AssetId<Image>, (TextureId, BindGroup)>,
     /// Terminals' glyph atlases, created on their first entry.
     pub(super) atlases: HashMap<AssetId<Image>, GpuAtlas>,
     pub(super) atlas_sampler: Option<Sampler>,
@@ -432,11 +422,9 @@ pub(super) fn render_batch_scenes(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
 ) {
-    gpu.texture_bind_groups.retain(|texture, _| {
-        pending.live_textures.contains(texture) && gpu_images.get(*texture).is_some()
-    });
-    gpu.atlases
-        .retain(|atlas, _| pending.live_atlases.contains(atlas));
+    for atlas in pending.released_atlases.drain(..) {
+        gpu.atlases.remove(&atlas);
+    }
     let scenes = std::mem::take(&mut pending.scenes);
     let mut renderable = Vec::with_capacity(scenes.len());
     for scene in scenes.into_values() {
@@ -468,6 +456,9 @@ pub(super) fn render_batch_scenes(
     }
 
     gpu.ensure_pipeline(&device);
+    // Glyphs that did not fit a terminal's atlas are drawn from Bevy's font
+    // atlases, rarely; their bind groups live for this draw only.
+    let mut source_bind_groups = HashMap::<AssetId<Image>, BindGroup>::default();
     for scene in &renderable {
         upload_atlas(&mut gpu, &device, &queue, scene);
         for batch in scene
@@ -479,13 +470,8 @@ pub(super) fn render_batch_scenes(
             let image = gpu_images
                 .get(texture)
                 .expect("glyph readiness was checked before bind-group creation");
-            let texture_id = image.texture.id();
-            if gpu
-                .texture_bind_groups
-                .get(&texture)
-                .is_none_or(|(cached_id, _)| *cached_id != texture_id)
-            {
-                let bind_group = device.create_bind_group(
+            source_bind_groups.entry(texture).or_insert_with(|| {
+                device.create_bind_group(
                     "bevy_terminal glyph atlas",
                     gpu.texture_layout
                         .as_ref()
@@ -500,10 +486,8 @@ pub(super) fn render_batch_scenes(
                             resource: BindingResource::Sampler(&image.sampler),
                         },
                     ],
-                );
-                gpu.texture_bind_groups
-                    .insert(texture, (texture_id, bind_group));
-            }
+                )
+            });
         }
     }
 
@@ -606,9 +590,7 @@ pub(super) fn render_batch_scenes(
                             .map(|atlas| &atlas.bind_group)
                             .or(gpu.empty_atlas.as_ref())
                     } else {
-                        gpu.texture_bind_groups
-                            .get(&batch.texture)
-                            .map(|(_, bind_group)| bind_group)
+                        source_bind_groups.get(&batch.texture)
                     };
                     pass.set_bind_group(0, bind_group.expect("atlas bind group was prepared"), &[]);
                     pass.draw(

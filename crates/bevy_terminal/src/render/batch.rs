@@ -70,6 +70,7 @@ pub struct TerminalPlugin;
 impl Plugin for TerminalPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FontCatalog>()
+            .init_resource::<SceneQueue>()
             .add_observer(initialize_terminal)
             .add_observer(release_terminal)
             .add_systems(
@@ -97,8 +98,17 @@ impl Plugin for TerminalPlugin {
 }
 
 /// Drops the renderer's components when a terminal stops rendering (its
-/// [`TerminalRenderer`] is removed or the entity despawned).
-fn release_terminal(remove: On<Remove, TerminalRenderer>, mut commands: Commands) {
+/// [`TerminalRenderer`] is removed or the entity despawned), and has the
+/// render world drop its scene and free its atlas.
+fn release_terminal(
+    remove: On<Remove, TerminalRenderer>,
+    states: Query<&BatchMainState>,
+    mut queue: ResMut<SceneQueue>,
+    mut commands: Commands,
+) {
+    if let Ok(state) = states.get(remove.entity) {
+        queue.release(state.output.id(), state.glyph_atlas.id);
+    }
     commands
         .entity(remove.entity)
         .try_remove::<(BatchMainState, TerminalTexture, TerminalStats)>();
@@ -263,7 +273,6 @@ struct BatchMainState {
     palette: Palette,
     surface: Option<TerminalSurface>,
     last_snapshot: Option<TerminalSnapshot>,
-    pending: Option<BatchScene>,
     generation: u64,
     submitted: Arc<AtomicU64>,
     shapes: ShapeCaches,
@@ -278,21 +287,14 @@ struct BatchMainState {
 }
 
 impl BatchMainState {
-    /// Drops the scene waiting for extraction, keeping the atlas entries it
-    /// carried for the next one.
-    fn discard_pending(&mut self) {
-        if let Some(scene) = self.pending.take()
-            && !self.glyph_atlas.fresh
-        {
-            let mut uploads = scene.atlas_uploads;
-            uploads.append(&mut self.glyph_atlas.uploads);
-            self.glyph_atlas.uploads = uploads;
-            self.glyph_atlas.fresh = scene.atlas_fresh;
-        }
+    /// Withdraws the terminal's scenes that have not drawn, keeping the atlas
+    /// entries they carried.
+    fn discard_pending(&mut self, queue: &mut SceneQueue) {
+        queue.discard(self.output.id(), &mut self.glyph_atlas);
     }
 
-    fn invalidate(&mut self) {
-        self.discard_pending();
+    fn invalidate(&mut self, queue: &mut SceneQueue) {
+        self.discard_pending(queue);
         self.last_snapshot = None;
         self.metrics = None;
     }
@@ -311,7 +313,6 @@ impl BatchMainState {
             palette: Palette::default(),
             surface: None,
             last_snapshot: None,
-            pending: None,
             generation: 0,
             submitted: Arc::default(),
             shapes: ShapeCaches::default(),
@@ -384,12 +385,89 @@ impl BlinkPhases {
     }
 }
 
+/// Scenes the main world has built and the render world has not taken yet,
+/// at most one per terminal output, and what the render world must
+/// withdraw or free. Nothing is scanned per frame: sync submits scenes,
+/// suspension withdraws them, removal releases a terminal's resources and
+/// extraction drains the queue.
+#[derive(Resource, Default)]
+struct SceneQueue {
+    scenes: HashMap<AssetId<Image>, BatchScene>,
+    /// Outputs whose extracted scenes must no longer draw.
+    withdrawn: HashSet<AssetId<Image>>,
+    /// Outputs and atlases of removed terminals.
+    released: Vec<(AssetId<Image>, AssetId<Image>)>,
+    /// Whether a render world takes scenes. Until one does, it holds no
+    /// scene or atlas to withdraw or free.
+    extracting: bool,
+}
+
+impl SceneQueue {
+    /// Queues `scene`, which carries the atlas entries of the one it
+    /// supersedes.
+    fn submit(&mut self, mut scene: BatchScene) {
+        if let Some(superseded) = self.scenes.remove(&scene.destination) {
+            scene.absorb(superseded);
+        }
+        self.scenes.insert(scene.destination, scene);
+    }
+
+    /// Drops `output`'s queued scene, handing the atlas entries it carried
+    /// back to `atlas` for the next scene, and has the render world withdraw
+    /// any scene of it that has not drawn.
+    fn discard(&mut self, output: AssetId<Image>, atlas: &mut UnifiedGlyphAtlas) {
+        if let Some(scene) = self.scenes.remove(&output)
+            && !atlas.fresh
+        {
+            let mut uploads = scene.atlas_uploads;
+            uploads.append(&mut atlas.uploads);
+            atlas.uploads = uploads;
+            atlas.fresh = scene.atlas_fresh;
+        }
+        if self.extracting {
+            self.withdrawn.insert(output);
+        }
+    }
+
+    /// Drops a removed terminal's scene and has the render world free its
+    /// scene and atlas.
+    fn release(&mut self, output: AssetId<Image>, atlas: AssetId<Image>) {
+        self.scenes.remove(&output);
+        if self.extracting {
+            self.released.push((output, atlas));
+        }
+    }
+
+    #[cfg(test)]
+    fn scene(&self, output: AssetId<Image>) -> Option<&BatchScene> {
+        self.scenes.get(&output)
+    }
+}
+
+/// The terminal's scene waiting for extraction.
+#[cfg(test)]
+fn queued(world: &World, entity: Entity) -> Option<&BatchScene> {
+    let output = world.get::<BatchMainState>(entity)?.output.id();
+    world.resource::<SceneQueue>().scene(output)
+}
+
+/// Takes the terminal's queued scene and acknowledges it, as extraction
+/// and the GPU would.
+#[cfg(test)]
+fn take_queued(world: &mut World, entity: Entity) -> Option<BatchScene> {
+    let output = world.get::<BatchMainState>(entity)?.output.id();
+    let scene = world.resource_mut::<SceneQueue>().scenes.remove(&output)?;
+    let state = world.get::<BatchMainState>(entity)?;
+    state.submitted.store(state.generation, Ordering::Release);
+    Some(scene)
+}
+
+/// Scenes the render world has taken and not drawn yet, per output.
 #[derive(Resource, Default)]
 struct PendingBatchScenes {
     scenes: HashMap<AssetId<Image>, BatchScene>,
-    live_textures: HashSet<AssetId<Image>>,
-    /// Atlases of live terminals, whose textures the render world retains.
-    live_atlases: HashSet<AssetId<Image>>,
+    /// Atlases of removed terminals, freed before the next draw.
+    released_atlases: Vec<AssetId<Image>>,
 }
 
 impl BatchScene {
@@ -407,6 +485,16 @@ impl BatchScene {
         uploads.append(&mut self.atlas_uploads);
         self.atlas_uploads = uploads;
         self.atlas_fresh = superseded.atlas_fresh;
+    }
+
+    /// Keeps the atlas entries of a scene that must not draw: nothing is
+    /// drawn, cleared or acknowledged, and a later scene absorbs it.
+    fn withdraw(&mut self) {
+        self.instances.clear();
+        self.batches.clear();
+        self.clear = false;
+        self.submission = None;
+        self.requires_prepared_assets = false;
     }
 }
 
@@ -455,6 +543,7 @@ fn sync_batch_terminals(
     asset_server: Option<Res<AssetServer>>,
     device: Option<Res<RenderDevice>>,
     mut catalog: ResMut<FontCatalog>,
+    mut queue: ResMut<SceneQueue>,
 ) {
     if terminals.is_empty() {
         catalog.initialized = false;
@@ -472,6 +561,7 @@ fn sync_batch_terminals(
                 &mut state,
                 &mut output,
                 TerminalStatus::MissingTextResources,
+                &mut queue,
             );
         }
         return;
@@ -496,7 +586,12 @@ fn sync_batch_terminals(
     for (entity, terminal, config, mut state, mut output, mut stats) in &mut terminals {
         stats.set_if_neq(TerminalStats::default());
         if !config.sizing.is_valid() {
-            suspend_terminal(&mut state, &mut output, TerminalStatus::InvalidSizing);
+            suspend_terminal(
+                &mut state,
+                &mut output,
+                TerminalStatus::InvalidSizing,
+                &mut queue,
+            );
             continue;
         }
         // Inspect effective values only when the component was touched. Invalid
@@ -568,7 +663,7 @@ fn sync_batch_terminals(
             } else {
                 TerminalStatus::Loading
             };
-            suspend_terminal(&mut state, &mut output, status);
+            suspend_terminal(&mut state, &mut output, status, &mut queue);
             continue;
         }
         // Plain values only: the texture's handles are not cloned each frame.
@@ -579,6 +674,7 @@ fn sync_batch_terminals(
             terminal,
             SyncInput {
                 config,
+                measured_surface: &output.geometry.surface,
                 config_changed,
                 shaping_changed,
                 fonts_changed,
@@ -587,10 +683,10 @@ fn sync_batch_terminals(
                 texture_limit: texture_limit(device.as_deref()),
             },
             &mut state,
-            &output.geometry.surface,
             &mut measurement,
             &mut next_stats,
             &mut context,
+            &mut queue,
         );
         match result {
             Ok(surface_changed) => {
@@ -616,7 +712,7 @@ fn sync_batch_terminals(
                     warn!(?entity, "bevy_terminal: {failure}");
                     state.last_failure = Some(failure);
                 }
-                suspend_terminal(&mut state, &mut output, status);
+                suspend_terminal(&mut state, &mut output, status, &mut queue);
                 // Failed partial construction cannot publish provisional geometry.
                 stats.set_if_neq(next_stats);
                 continue;
@@ -648,8 +744,9 @@ fn suspend_terminal(
     state: &mut BatchMainState,
     output: &mut Mut<'_, TerminalTexture>,
     status: TerminalStatus,
+    queue: &mut SceneQueue,
 ) {
-    state.invalidate();
+    state.invalidate(queue);
     if output.status != status {
         output.status = status;
     }
@@ -659,6 +756,8 @@ fn suspend_terminal(
 /// causes preserve cached shaping for paint-only changes.
 struct SyncInput<'a> {
     config: &'a TerminalRenderConfig,
+    /// The surface the published geometry refers to.
+    measured_surface: &'a WeakSurface,
     config_changed: bool,
     shaping_changed: bool,
     fonts_changed: bool,
@@ -669,19 +768,20 @@ struct SyncInput<'a> {
 
 /// Brings one terminal's scene up to date. Measured values are written to
 /// `measurement`; the result says whether the geometry must now refer to
-/// the renderer's surface instead of `measured_surface`. Nothing is
+/// the renderer's surface instead of the measured one. Nothing is
 /// published on failure, so partial construction never leaks geometry.
 fn sync_batch_terminal(
     terminal: &TerminalRenderer,
     input: SyncInput<'_>,
     state: &mut BatchMainState,
-    measured_surface: &WeakSurface,
     measurement: &mut Measurement,
     stats: &mut TerminalStats,
     cx: &mut TextContext<'_>,
+    queue: &mut SceneQueue,
 ) -> Result<bool, TerminalStatus> {
     let SyncInput {
         config,
+        measured_surface,
         config_changed,
         shaping_changed,
         fonts_changed,
@@ -697,7 +797,7 @@ fn sync_batch_terminal(
     {
         state.surface = Some(surface.clone());
         state.last_snapshot = None;
-        state.discard_pending();
+        state.discard_pending(queue);
         state.row_states = RowStates::default();
     }
     if state.glyph_atlas.lost.swap(false, Ordering::AcqRel) {
@@ -938,10 +1038,7 @@ fn sync_batch_terminal(
     stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
     state.generation = state.generation.wrapping_add(1);
     scene.submission = Some((state.submitted.clone(), state.generation));
-    if let Some(superseded) = state.pending.take() {
-        scene.absorb(superseded);
-    }
-    state.pending = Some(scene);
+    queue.submit(scene);
     state.last_snapshot = Some(snapshot);
     state.blink = blink;
     state.raster_scale = raster_scale;

@@ -263,16 +263,9 @@ impl Replay {
     /// Runs one update and replays its scene (acknowledging it as the GPU would).
     pub(super) fn step(&mut self) {
         self.app.update();
-        let mut state = self
-            .app
-            .world_mut()
-            .get_mut::<BatchMainState>(self.entity)
-            .unwrap();
-        let Some(scene) = state.pending.take() else {
+        let Some(scene) = take_queued(self.app.world_mut(), self.entity) else {
             return;
         };
-        let generation = state.generation;
-        state.submitted.store(generation, Ordering::Release);
         if scene.destination_size != self.canvas.size {
             assert!(scene.clear, "a resized texture starts with a full scene");
             self.canvas = Canvas::new(scene.destination_size);
@@ -524,12 +517,7 @@ fn overflowing_coverage_is_corrected_against_each_background_it_covers() {
     replay.write(1, " Z\u{302}\u{303}\u{304}\u{306}\u{307} ", own);
     replay.write(2, "   ", above);
     replay.app.update();
-    let state = replay
-        .app
-        .world()
-        .get::<BatchMainState>(replay.entity)
-        .unwrap();
-    let scene = state.pending.as_ref().expect("a scene");
+    let scene = queued(replay.app.world(), replay.entity).expect("a scene");
     let luminance = |style: TerminalStyle| {
         super::scene::luminance(
             crate::render::TerminalTheme::default().background(style.background),
@@ -678,12 +666,13 @@ fn unextracted_scenes_drop_entries_from_before_an_atlas_clear() {
     // overflow rebuild does, and the next scene carries every entry.
     replay.app.update();
     {
+        let queued = queued(replay.app.world(), replay.entity);
+        assert!(!queued.unwrap().atlas_uploads.is_empty());
         let mut state = replay
             .app
             .world_mut()
             .get_mut::<BatchMainState>(replay.entity)
             .unwrap();
-        assert!(!state.pending.as_ref().unwrap().atlas_uploads.is_empty());
         state.shapes.clear();
         state.glyph_atlas.clear();
     }
@@ -691,12 +680,7 @@ fn unextracted_scenes_drop_entries_from_before_an_atlas_clear() {
     for _ in 0..4 {
         replay.app.update();
     }
-    let state = replay
-        .app
-        .world()
-        .get::<BatchMainState>(replay.entity)
-        .unwrap();
-    let scene = state.pending.as_ref().expect("a pending scene");
+    let scene = queued(replay.app.world(), replay.entity).expect("a pending scene");
     assert!(scene.atlas_fresh);
     // Entries from before the clear would overlap the new ones.
     let uploads = &scene.atlas_uploads;
