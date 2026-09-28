@@ -9,6 +9,14 @@ comparison suite with library-specific lifecycle and cache workloads:
 - Thirty-two idle terminals with sixteen registered font assets.
 - Repeated grid, font, and raster-scale changes.
 - A Unicode working set exceeding the shape-cache entry limit, followed by changing ASCII frames.
+- Frames that each show 240 never-seen wide glyphs (`glyph_churn`), and the CPU image bytes
+  eight terminals retain after drawing a line of text.
+- Two 2880-glyph working sets, together larger than the shape cache, shown in turn
+  (`alternating_working_sets`).
+- A 120×40 terminal whose every cell changes each update, with ASCII or with
+  coloured, styled block elements (`dense_*_fastest_update`: the fastest of 50
+  updates, reported in the `ns` column, which other load on the machine cannot
+  inflate).
 
 Run from the repository root:
 
