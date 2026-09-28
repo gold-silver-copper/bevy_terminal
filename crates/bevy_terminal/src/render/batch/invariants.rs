@@ -218,11 +218,11 @@ fn queued_atlas_uploads_never_exceed_one_atlas() {
 fn idle_terminals_build_no_scene_and_change_no_component() {
     #[derive(Resource, Default)]
     struct Changes(usize);
+    type Published = Or<(Changed<TerminalTexture>, Changed<TerminalStats>)>;
     let (mut app, surfaces) = app(4, 8.0);
     app.init_resource::<Changes>().add_systems(
         Update,
-        (|changed: Query<(), Or<(Changed<TerminalTexture>, Changed<TerminalStats>)>>,
-          mut count: ResMut<Changes>| {
+        (|changed: Query<(), Published>, mut count: ResMut<Changes>| {
             count.0 += changed.iter().count();
         })
         .after(super::super::TerminalSystems::Sync),
