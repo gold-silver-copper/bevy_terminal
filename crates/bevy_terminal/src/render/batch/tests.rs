@@ -2326,3 +2326,52 @@ fn shaping_failures_format_only_when_logged() {
         }
     );
 }
+
+/// A scene built for a grid the surface no longer has (a producer resized
+/// it after `TerminalSystems::Sync`) is withdrawn at extraction and does not
+/// draw; the next sync repaints the new grid.
+#[test]
+fn scenes_for_a_resized_surface_are_withdrawn_at_extraction() {
+    let mut app = text_app();
+    let surface = TerminalSurface::new((4, 2));
+    let entity = app
+        .world_mut()
+        .spawn(TerminalRenderer::new(surface.clone()))
+        .id();
+    for _ in 0..4 {
+        app.update();
+    }
+    let output = app
+        .world()
+        .get::<BatchMainState>(entity)
+        .unwrap()
+        .output
+        .id();
+    let mut pending = PendingBatchScenes::default();
+    collect_batch_scenes(app.world_mut(), &mut pending);
+    pending.scenes.clear();
+
+    write_text(&surface, "AB");
+    app.update();
+    // Resized after the sync that built the scene, before extraction.
+    surface.update(|update| {
+        update.resize((6, 3));
+    });
+    collect_batch_scenes(app.world_mut(), &mut pending);
+    let stale = &pending.scenes[&output];
+    assert!(stale.instances.is_empty() && !stale.clear && stale.submission.is_none());
+
+    app.update();
+    collect_batch_scenes(app.world_mut(), &mut pending);
+    let current = &pending.scenes[&output];
+    assert!(current.clear && !current.instances.is_empty());
+    assert_eq!(
+        current.destination_size,
+        app.world()
+            .get::<TerminalTexture>(entity)
+            .unwrap()
+            .measured()
+            .unwrap()
+            .size()
+    );
+}

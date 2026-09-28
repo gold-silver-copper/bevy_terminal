@@ -464,6 +464,9 @@ struct BatchScene {
     batches: Vec<DrawBatch>,
     clear: bool,
     clear_color: Color,
+    /// The surface and resize generation the scene was built for; a scene
+    /// whose surface has been resized since must not draw.
+    source: Option<(WeakSurface, u64)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -588,6 +591,13 @@ impl BatchScene {
         uploads.append(&mut self.atlas_uploads);
         self.atlas_uploads = uploads;
         self.atlas_fresh = superseded.atlas_fresh;
+    }
+
+    /// Whether the surface still has the grid the scene was built for.
+    fn is_current(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_none_or(|(surface, generation)| surface.is_current(*generation))
     }
 
     /// Keeps the atlas entries of a scene that must not draw: nothing is
@@ -1150,6 +1160,7 @@ fn sync_batch_terminal(
     }
     stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
     scene.submission = Some(submissions.next());
+    scene.source = Some((surface.downgrade(), snapshot.resize_generation));
     queue.submit(scene);
     retained.snapshot = Some(snapshot);
     retained.blink = blink;

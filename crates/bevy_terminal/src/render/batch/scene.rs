@@ -519,6 +519,7 @@ pub(super) fn build_scene(
         atlas_uploads,
         atlas_fresh,
         atlas_lost: glyph_atlas.lost.clone(),
+        source: None,
         destination_size: size.as_uvec2(),
         instances,
         batches,

@@ -72,6 +72,15 @@ pub(super) fn collect_batch_scenes(main_world: &mut World, pending: &mut Pending
         }
         pending.scenes.insert(destination, scene);
     }
+    // A scene not yet drawn whose surface has been resized since it was built
+    // (by a producer after `TerminalSystems::Sync`) is withdrawn; the next
+    // sync repaints the new grid. Only waiting scenes are checked, not idle
+    // terminals.
+    for scene in pending.scenes.values_mut() {
+        if !scene.is_current() {
+            scene.withdraw();
+        }
+    }
 }
 
 /// The terminal pipelines (alpha-blended and replacing) and their bind
