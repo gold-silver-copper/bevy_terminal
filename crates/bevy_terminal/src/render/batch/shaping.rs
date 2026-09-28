@@ -3,8 +3,8 @@ use super::constraint::{Align, Constraint, GlyphSize, Size};
 use super::metrics::{GlyphBox, InkSpan, inked_columns};
 use super::sprite::{self, Sprite};
 use super::{
-    GLYPH_ATLAS_SIZE, GLYPH_FORMAT, RasterMetrics, ResolvedStyle, TerminalRenderConfig,
-    TerminalStats, TextContext, text_font,
+    Face, GLYPH_ATLAS_SIZE, GLYPH_FORMAT, RasterMetrics, TerminalRenderConfig, TerminalStats,
+    TextContext, text_font,
 };
 use bevy::{
     platform::collections::HashMap,
@@ -36,13 +36,13 @@ pub(super) struct ShapedRun {
 /// layout's glyphs are positioned inside a line box `raster.cell_size.y` tall.
 pub(super) fn shape_run(
     text: &str,
-    style: &ResolvedStyle,
+    face: Face,
     config: &TerminalRenderConfig,
     raster: RasterMetrics,
     viewport: Vec2,
     cx: &mut TextContext<'_>,
 ) -> Option<ShapedRun> {
-    let font = text_font(&config.font, raster.font_size, style);
+    let font = text_font(&config.font, raster.font_size, face);
     let mut computed = ComputedTextBlock::default();
     let mut layout = TextLayoutInfo::default();
     let shape_result = cx.text_pipeline.update_buffer(
@@ -514,7 +514,7 @@ pub(super) struct ShapeCaches {
     pub(super) entries: Vec<Vec<CachedGlyph>>,
     retained_bytes: usize,
     narrow: [StyleShapes; 4],
-    wide: HashMap<(u16, usize), HashMap<String, usize>>,
+    wide: HashMap<(u16, Face), HashMap<String, usize>>,
     /// The previous working set: when the cache fills, it is retired rather
     /// than dropped, and runs still in use are promoted back on their next
     /// lookup, so a working set larger than one generation does not start
@@ -558,38 +558,23 @@ pub(super) fn ascii_key(text: &str) -> Option<u8> {
 }
 
 impl ShapeCaches {
-    fn style_index(style: &ResolvedStyle) -> usize {
-        usize::from(style.bold) + 2 * usize::from(style.italic)
-    }
-
     /// The index of the cached run, promoting it from the retired
     /// generation when only that holds it.
-    pub(super) fn lookup(
-        &mut self,
-        style: &ResolvedStyle,
-        text: &str,
-        columns: u16,
-    ) -> Option<usize> {
-        if let Some(index) = self.lookup_current(style, text, columns) {
+    pub(super) fn lookup(&mut self, face: Face, text: &str, columns: u16) -> Option<usize> {
+        if let Some(index) = self.lookup_current(face, text, columns) {
             return Some(index);
         }
         let retired = self.retired.as_mut()?;
-        let index = retired.lookup_current(style, text, columns)?;
+        let index = retired.lookup_current(face, text, columns)?;
         let glyphs = retired.entries[index].clone();
-        self.insert_entry(style, text, columns, glyphs)
+        self.insert_entry(face, text, columns, glyphs)
     }
 
-    pub(super) fn lookup_current(
-        &self,
-        style: &ResolvedStyle,
-        text: &str,
-        columns: u16,
-    ) -> Option<usize> {
-        let index = Self::style_index(style);
+    pub(super) fn lookup_current(&self, face: Face, text: &str, columns: u16) -> Option<usize> {
         let shapes = if columns == 1 {
-            &self.narrow[index]
+            &self.narrow[face.index()]
         } else {
-            return self.wide.get(&(columns, index))?.get(text).copied();
+            return self.wide.get(&(columns, face))?.get(text).copied();
         };
         match ascii_key(text) {
             Some(byte) => {
@@ -602,7 +587,7 @@ impl ShapeCaches {
 
     pub(super) fn insert(
         &mut self,
-        style: &ResolvedStyle,
+        face: Face,
         text: &str,
         columns: u16,
         glyphs: Vec<CachedGlyph>,
@@ -611,7 +596,7 @@ impl ShapeCaches {
             return Cow::Owned(glyphs);
         }
         let index = self
-            .insert_entry(style, text, columns, glyphs)
+            .insert_entry(face, text, columns, glyphs)
             .expect("a run within the byte limit is cached");
         Cow::Borrowed(&self.entries[index])
     }
@@ -622,7 +607,7 @@ impl ShapeCaches {
 
     fn insert_entry(
         &mut self,
-        style: &ResolvedStyle,
+        face: Face,
         text: &str,
         columns: u16,
         glyphs: Vec<CachedGlyph>,
@@ -643,15 +628,14 @@ impl ShapeCaches {
         self.retained_bytes += bytes;
         let index = self.entries.len();
         self.entries.push(glyphs);
-        let style_index = Self::style_index(style);
         if columns != 1 {
             self.wide
-                .entry((columns, style_index))
+                .entry((columns, face))
                 .or_default()
                 .insert(text.to_owned(), index);
             return Some(index);
         }
-        let shapes = &mut self.narrow[style_index];
+        let shapes = &mut self.narrow[face.index()];
         match ascii_key(text) {
             Some(byte) => shapes.ascii[usize::from(byte)] = index as u32,
             None => {
@@ -728,7 +712,7 @@ struct Stretch {
 #[allow(clippy::too_many_arguments)]
 fn fit_run(
     text: &str,
-    style: &ResolvedStyle,
+    face: Face,
     config: &TerminalRenderConfig,
     raster: RasterMetrics,
     viewport: Vec2,
@@ -785,7 +769,7 @@ fn fit_run(
                 break;
             }
             request.font_size = next;
-            let Some(rescaled) = shape_run(text, style, config, request, viewport, cx) else {
+            let Some(rescaled) = shape_run(text, face, config, request, viewport, cx) else {
                 return Err(run);
             };
             let Some(rescaled_box) = measure(&rescaled, cx.images) else {
@@ -839,7 +823,7 @@ fn fit_run(
 pub(super) fn cached_shape<'a>(
     text: &str,
     columns: u16,
-    style: &ResolvedStyle,
+    face: Face,
     config: &TerminalRenderConfig,
     raster: RasterMetrics,
     viewport: Vec2,
@@ -848,7 +832,7 @@ pub(super) fn cached_shape<'a>(
     glyph_atlas: &mut UnifiedGlyphAtlas,
     stats: &mut TerminalStats,
 ) -> Cow<'a, [CachedGlyph]> {
-    if let Some(index) = shapes.lookup(style, text, columns) {
+    if let Some(index) = shapes.lookup(face, text, columns) {
         return Cow::Borrowed(&shapes.entries[index]);
     }
     stats.shape_misses = stats.shape_misses.saturating_add(1);
@@ -865,7 +849,7 @@ pub(super) fn cached_shape<'a>(
             box_thickness: raster.box_thickness,
         };
         let Some(drawn) = sprite::draw(codepoint, cell.x, cell.y, metrics) else {
-            return shapes.insert(style, text, columns, Vec::new());
+            return shapes.insert(face, text, columns, Vec::new());
         };
         let Some(uv) = glyph_atlas.cache_sprite(codepoint, cell, &drawn) else {
             // No room: not cached, so the rebuild after an atlas overflow
@@ -885,9 +869,9 @@ pub(super) fn cached_shape<'a>(
             true,
             ink,
         );
-        return shapes.insert(style, text, columns, vec![glyph]);
+        return shapes.insert(face, text, columns, vec![glyph]);
     }
-    let Some(layout) = shape_run(text, style, config, raster, viewport, cx) else {
+    let Some(layout) = shape_run(text, face, config, raster, viewport, cx) else {
         return Cow::Borrowed(&[]);
     };
     // Each independently shaped cell otherwise centers its own fallback face
@@ -899,7 +883,7 @@ pub(super) fn cached_shape<'a>(
     let centered = Vec2::new(raster.face_dx, 0.0);
     let (layout, translate, stretch) = match constraint_for(text, &layout) {
         Some(constraint) => match fit_run(
-            text, style, config, raster, viewport, cx, layout, translate, constraint, columns,
+            text, face, config, raster, viewport, cx, layout, translate, constraint, columns,
         ) {
             Ok(fitted) => (fitted.run, fitted.translate, fitted.stretch),
             Err(layout) => {
@@ -987,7 +971,7 @@ pub(super) fn cached_shape<'a>(
             .get_or_insert_with(|| format!("glyph atlas unavailable for {:?}", config.font));
         return Cow::Borrowed(&[]);
     };
-    shapes.insert(style, text, columns, cached)
+    shapes.insert(face, text, columns, cached)
 }
 
 #[cfg(test)]
@@ -1024,19 +1008,19 @@ mod tests {
 
     #[test]
     fn cache_retires_full_working_sets_and_leaves_oversized_runs_uncached() {
-        let style = ResolvedStyle::plain();
+        let style = Face::Regular;
         let mut shapes = ShapeCaches::default();
         let fill = |shapes: &mut ShapeCaches, prefix: &str| {
             for index in 0..MAX_SHAPE_ENTRIES {
                 assert!(matches!(
-                    shapes.insert(&style, &format!("{prefix}-{index}"), 1, Vec::new()),
+                    shapes.insert(style, &format!("{prefix}-{index}"), 1, Vec::new()),
                     Cow::Borrowed(_)
                 ));
             }
         };
         fill(&mut shapes, "first");
         assert!(matches!(
-            shapes.insert(&style, "overflow", 1, Vec::new()),
+            shapes.insert(style, "overflow", 1, Vec::new()),
             Cow::Borrowed(_)
         ));
         assert_eq!(
@@ -1044,22 +1028,22 @@ mod tests {
             1,
             "a full cache starts a new generation"
         );
-        assert_eq!(shapes.lookup(&style, "overflow", 1), Some(0));
+        assert_eq!(shapes.lookup(style, "overflow", 1), Some(0));
         // The retired generation still answers, and its run is promoted.
-        assert_eq!(shapes.lookup(&style, "first-0", 1), Some(1));
-        assert_eq!(shapes.lookup(&style, "first-0", 1), Some(1));
+        assert_eq!(shapes.lookup(style, "first-0", 1), Some(1));
+        assert_eq!(shapes.lookup(style, "first-0", 1), Some(1));
         assert_eq!(shapes.entries.len(), 2);
         // A second retirement drops the oldest generation.
         fill(&mut shapes, "second");
         assert!(
-            shapes.lookup(&style, "first-0", 1).is_some(),
+            shapes.lookup(style, "first-0", 1).is_some(),
             "promoted runs survive"
         );
-        assert!(shapes.lookup(&style, "first-1", 1).is_none());
+        assert!(shapes.lookup(style, "first-1", 1).is_none());
 
         let oversized = "x".repeat(MAX_SHAPE_BYTES + 1);
         let before = shapes.entries.len();
-        let excess = shapes.insert(&style, &oversized, 1, Vec::new());
+        let excess = shapes.insert(style, &oversized, 1, Vec::new());
         assert!(matches!(excess, Cow::Owned(_)), "the run still renders");
         drop(excess);
         assert_eq!(
@@ -1068,6 +1052,6 @@ mod tests {
             "an oversized run preserves the working set"
         );
         shapes.clear();
-        assert!(shapes.lookup(&style, "second-0", 1).is_none());
+        assert!(shapes.lookup(style, "second-0", 1).is_none());
     }
 }

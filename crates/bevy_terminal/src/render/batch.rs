@@ -39,12 +39,12 @@ use bevy::{
 
 use super::terminal::Measurement;
 use super::{
-    Palette, PixelGeometry, ResolvedStyle, TerminalGeometry, TerminalRenderConfig,
+    Face, Palette, PixelGeometry, ResolvedStyle, TerminalGeometry, TerminalRenderConfig,
     TerminalRenderer, TerminalStats, TerminalStatus, TerminalTexture, cell_span,
     cursor_should_be_visible, text_font,
 };
 use crate::{
-    scene::{GridSize, TerminalSnapshot},
+    scene::{GridSize, StyleFlags, TerminalSnapshot},
     surface::{TerminalSurface, WeakSurface},
 };
 
@@ -459,7 +459,8 @@ impl BlinkPhases {
     }
 
     fn hides(self, style: &ResolvedStyle) -> bool {
-        (style.rapid_blink && self.rapid_hidden) || (style.slow_blink && self.slow_hidden)
+        (self.rapid_hidden && style.any(StyleFlags::RAPID_BLINK))
+            || (self.slow_hidden && style.any(StyleFlags::SLOW_BLINK))
     }
 }
 

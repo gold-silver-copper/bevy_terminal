@@ -8,7 +8,7 @@ use super::{
     ResolvedStyle, TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext, cell_span,
     cursor_should_be_visible, terminal_pixel_size,
 };
-use crate::scene::TerminalCell;
+use crate::scene::{StyleFlags, TerminalCell};
 use bevy::prelude::*;
 
 #[derive(Default)]
@@ -283,7 +283,7 @@ pub(super) fn build_scene(
         let blinks = painter
             .styles
             .iter()
-            .any(|style| style.slow_blink || style.rapid_blink);
+            .any(|style| style.any(StyleFlags::SLOW_BLINK | StyleFlags::RAPID_BLINK));
         rows.set(row, row_reach, blinks);
         for reached in row_reach.rows(row, height) {
             repaint[usize::from(reached)] = true;
@@ -633,7 +633,7 @@ impl RowPainter<'_, '_> {
             let width = cell_span(cells, column);
             let style = &self.styles[column];
             let symbol = cell.symbol();
-            if style.hidden || self.blink.hides(style) {
+            if style.any(StyleFlags::HIDDEN) || self.blink.hides(style) {
                 column += width;
                 continue;
             }
@@ -679,7 +679,7 @@ impl RowPainter<'_, '_> {
                 let shaped = cached_shape(
                     symbol,
                     columns as u16,
-                    style,
+                    style.face(),
                     self.config,
                     raster,
                     size,
@@ -738,7 +738,7 @@ impl RowPainter<'_, '_> {
                 let decoration_x = column as f32 * raster.cell_size.x;
                 let decoration_width = width as f32 * raster.cell_size.x;
                 let decoration_thickness = raster.scale.round().max(1.0);
-                if style.underlined {
+                if style.any(StyleFlags::UNDERLINED) {
                     decorations.push(solid_quad(
                         PixelGeometry {
                             x: decoration_x,
@@ -750,7 +750,7 @@ impl RowPainter<'_, '_> {
                         size,
                     ));
                 }
-                if style.crossed_out {
+                if style.any(StyleFlags::CROSSED_OUT) {
                     decorations.push(solid_quad(
                         PixelGeometry {
                             x: decoration_x,

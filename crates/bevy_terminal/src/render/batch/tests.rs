@@ -182,7 +182,7 @@ fn failed_measurement_and_shapes_retry_after_font_registration() {
         let run = cached_shape(
             "A",
             1,
-            &ResolvedStyle::plain(),
+            Face::Regular,
             &config,
             raster,
             Vec2::splat(100.0),
@@ -216,7 +216,7 @@ fn failed_measurement_and_shapes_retry_after_font_registration() {
     let run = cached_shape(
         "A",
         1,
-        &ResolvedStyle::plain(),
+        Face::Regular,
         &config,
         raster,
         Vec2::splat(100.0),
@@ -2055,7 +2055,7 @@ fn cached_ink(app: &App, entity: Entity, text: &str, columns: u16) -> Rect {
     let state = app.world().get::<BatchMainState>(entity).unwrap();
     let index = state
         .shapes
-        .lookup_current(&ResolvedStyle::plain(), text, columns)
+        .lookup_current(Face::Regular, text, columns)
         .unwrap_or_else(|| panic!("{text:?} over {columns} cells is cached"));
     let data = &state.glyph_atlas.shadow;
     let mut ink: Option<Rect> = None;
@@ -2151,7 +2151,7 @@ fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
             .get::<BatchMainState>(entity)
             .unwrap()
             .shapes
-            .lookup_current(&ResolvedStyle::plain(), "∑", 2)
+            .lookup_current(Face::Regular, "∑", 2)
             .is_none()
     );
 
@@ -2200,7 +2200,7 @@ fn sprites_without_atlas_room_are_not_cached_empty() {
     let run = cached_shape(
         "\u{2592}",
         1,
-        &ResolvedStyle::plain(),
+        Face::Regular,
         &config,
         raster,
         Vec2::splat(100.0),
@@ -2214,7 +2214,7 @@ fn sprites_without_atlas_room_are_not_cached_empty() {
     assert!(atlas.overflowed, "the overflow triggers a rebuild");
     assert!(
         shapes
-            .lookup_current(&ResolvedStyle::plain(), "\u{2592}", 1)
+            .lookup_current(Face::Regular, "\u{2592}", 1)
             .is_none()
     );
 }
