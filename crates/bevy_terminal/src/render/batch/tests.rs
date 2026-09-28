@@ -2234,3 +2234,51 @@ fn sprites_without_atlas_room_are_not_cached_empty() {
             .is_none()
     );
 }
+
+/// The renderer's components follow `TerminalRenderer` as soon as commands
+/// apply, without waiting for an update: they appear on spawn, go when the
+/// renderer is removed, and come back (with a new image) when it returns.
+#[test]
+fn renderer_components_follow_the_renderer_without_an_update() {
+    let mut app = text_app();
+    let surface = TerminalSurface::new((4, 2));
+    let entity = app
+        .world_mut()
+        .spawn(TerminalRenderer::new(surface.clone()))
+        .id();
+    let has_all = |app: &App| {
+        let entity = app.world().entity(entity);
+        [
+            entity.contains::<TerminalTexture>(),
+            entity.contains::<TerminalStats>(),
+            entity.contains::<BatchMainState>(),
+        ]
+    };
+    assert_eq!(has_all(&app), [true; 3]);
+    let first = app
+        .world()
+        .get::<TerminalTexture>(entity)
+        .unwrap()
+        .image
+        .clone();
+    assert_eq!(
+        app.world().get::<TerminalTexture>(entity).unwrap().status,
+        TerminalStatus::Loading
+    );
+    for _ in 0..3 {
+        app.update();
+    }
+    app.world_mut()
+        .entity_mut(entity)
+        .remove::<TerminalRenderer>();
+    assert_eq!(has_all(&app), [false; 3]);
+    app.world_mut()
+        .entity_mut(entity)
+        .insert(TerminalRenderer::new(surface));
+    assert_eq!(has_all(&app), [true; 3]);
+    let second = &app.world().get::<TerminalTexture>(entity).unwrap().image;
+    assert_ne!(&first, second);
+    // Despawning a terminal releases its components with the entity.
+    app.world_mut().despawn(entity);
+    app.update();
+}

@@ -65,8 +65,9 @@ pub enum TerminalStatus {
 /// The image is `Rgba8UnormSrgb` (display-ready, straight alpha) and its
 /// handle is stable for the terminal's lifetime.
 ///
-/// Attached to every [`TerminalRenderer`] entity by [`super::TerminalPlugin`] on the first
-/// update after it is spawned. [`Self::measured`] exposes geometry once the selected
+/// Attached to every [`TerminalRenderer`] entity by [`super::TerminalPlugin`] as soon as
+/// the renderer is added (when the spawning commands apply), and removed with it.
+/// [`Self::measured`] exposes geometry once the selected
 /// fonts and cell metrics have been measured. The image handle
 /// stays the same for the lifetime of the terminal: resizes reallocate the
 /// image in place.

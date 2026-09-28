@@ -69,14 +69,13 @@ pub struct TerminalPlugin;
 
 impl Plugin for TerminalPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<FontCatalog>().add_systems(
-            Update,
-            (
-                release_removed_terminals.before(initialize_terminals),
-                initialize_terminals.before(super::TerminalSystems::Sync),
+        app.init_resource::<FontCatalog>()
+            .add_observer(initialize_terminal)
+            .add_observer(release_terminal)
+            .add_systems(
+                Update,
                 sync_batch_terminals.in_set(super::TerminalSystems::Sync),
-            ),
-        );
+            );
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<PendingBatchScenes>()
@@ -97,15 +96,12 @@ impl Plugin for TerminalPlugin {
     }
 }
 
-fn release_removed_terminals(
-    mut commands: Commands,
-    removed: Query<Entity, (With<BatchMainState>, Without<TerminalRenderer>)>,
-) {
-    for entity in &removed {
-        commands
-            .entity(entity)
-            .remove::<(BatchMainState, TerminalTexture, TerminalStats)>();
-    }
+/// Drops the renderer's components when a terminal stops rendering (its
+/// [`TerminalRenderer`] is removed or the entity despawned).
+fn release_terminal(remove: On<Remove, TerminalRenderer>, mut commands: Commands) {
+    commands
+        .entity(remove.entity)
+        .try_remove::<(BatchMainState, TerminalTexture, TerminalStats)>();
 }
 
 /// Everything the sync system touches on a terminal entity.
@@ -155,14 +151,18 @@ impl TextResources<'_> {
     }
 }
 
-fn initialize_terminals(
-    mut commands: Commands,
-    added: Query<(Entity, &TerminalRenderer, &TerminalRenderConfig), Without<BatchMainState>>,
+/// Gives a terminal its texture, statistics and renderer state as soon as
+/// its [`TerminalRenderer`] is added.
+fn initialize_terminal(
+    add: On<Add, TerminalRenderer>,
+    terminals: Query<(&TerminalRenderer, &TerminalRenderConfig)>,
     mut images: ResMut<Assets<Image>>,
     device: Option<Res<RenderDevice>>,
+    mut commands: Commands,
 ) {
     let limit = texture_limit(device.as_deref());
-    for (entity, terminal, config) in &added {
+    let entity = add.entity;
+    if let Ok((terminal, config)) = terminals.get(entity) {
         let raster_scale = resolve_raster_scale(config.raster.scale);
         let metrics = if config.sizing.is_valid() {
             resolve_metrics(config, None)
