@@ -30,9 +30,8 @@ pub(super) struct SceneScratch {
     pub(super) repaint: Vec<bool>,
     /// Rows whose backgrounds, glyphs and decorations have been laid out.
     pub(super) painted: Vec<bool>,
-    /// Per painted row, its background runs as `[left, right)` pixels and
-    /// the background's luminance.
-    pub(super) row_backgrounds: Vec<Vec<(f32, f32, f32)>>,
+    /// Per painted row, its background runs.
+    pub(super) row_backgrounds: Vec<Vec<BackgroundRun>>,
     /// Glyphs of the last full scene before clipping, recorded for the probe.
     #[cfg(test)]
     pub(super) probe: Option<Vec<super::probe::ProbeGlyph>>,
@@ -79,6 +78,16 @@ pub(super) fn merge_background_rect(
     }
     rects.push((geometry, color));
     current_runs.push(rects.len() - 1);
+}
+
+/// A run of a row's cells whose backgrounds share one luminance, as
+/// `[left, right)` texture pixels.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct BackgroundRun {
+    left: f32,
+    right: f32,
+    /// Linear luminance, against which glyphs over the run are corrected.
+    luminance: f32,
 }
 
 /// How many rows above and below its own a row's glyph ink reaches.
@@ -394,8 +403,12 @@ pub(super) fn build_scene(
             // Runs are sorted and disjoint: start at the first one the piece
             // reaches and stop past its right edge.
             let runs = &row_backgrounds[usize::from(row)];
-            let first = runs.partition_point(|&(_, right, _)| right <= piece.min.x);
-            if let Some(&(left, right, background)) = runs.get(first)
+            let first = runs.partition_point(|run| run.right <= piece.min.x);
+            if let Some(&BackgroundRun {
+                left,
+                right,
+                luminance: background,
+            }) = runs.get(first)
                 && left <= piece.min.x
                 && right >= piece.max.x
             {
@@ -406,7 +419,12 @@ pub(super) fn build_scene(
                 );
                 continue;
             }
-            for &(left, right, background) in &runs[first..] {
+            for &BackgroundRun {
+                left,
+                right,
+                luminance: background,
+            } in &runs[first..]
+            {
                 if left >= piece.max.x {
                     break;
                 }
@@ -563,7 +581,7 @@ impl RowPainter<'_, '_> {
         rects: &mut Vec<(Rect, LinearRgba)>,
         prev_runs: &[usize],
         current_runs: &mut Vec<usize>,
-        luminances: &mut Vec<(f32, f32, f32)>,
+        luminances: &mut Vec<BackgroundRun>,
     ) {
         let raster = self.raster;
         let theme_background = self.palette.background.linear;
@@ -595,8 +613,14 @@ impl RowPainter<'_, '_> {
             let right = end as f32 * raster.cell_size.x;
             let run_luminance = luminance(color);
             match luminances.last_mut() {
-                Some(last) if last.2 == run_luminance && last.1 == left => last.1 = right,
-                _ => luminances.push((left, right, run_luminance)),
+                Some(last) if last.luminance == run_luminance && last.right == left => {
+                    last.right = right;
+                }
+                _ => luminances.push(BackgroundRun {
+                    left,
+                    right,
+                    luminance: run_luminance,
+                }),
             }
             if !(self.full && color == theme_background) {
                 let geometry = pixel_rect(
