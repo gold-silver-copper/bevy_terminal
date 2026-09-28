@@ -35,8 +35,8 @@ use bevy::{
 use bevy_image_export::ImageExportPlugin;
 use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::prelude::{
-    BlinkConfig, CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
-    TerminalSystems, TerminalTexture, TerminalTheme,
+    BlinkConfig, CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalRenderConfig,
+    TerminalSizing, TerminalSystems, TerminalTexture, TerminalTheme,
 };
 use ratatui::{
     layout::Position,
