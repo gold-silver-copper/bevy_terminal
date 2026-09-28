@@ -58,42 +58,54 @@ fn block_rect(
     [x as i32, y as i32, (x + w) as i32, (y + h) as i32]
 }
 
-/// The opaque rectangles `[x0, y0, x1, y1]` (cell pixels) of a block
-/// element other than the shades: eighths, halves and quadrants. `None` for
-/// every other codepoint.
-pub(crate) fn block_rects(codepoint: u32, metrics: Metrics) -> Option<Vec<[i32; 4]>> {
+/// The quadrants (top-left, top-right, bottom-left, bottom-right) each of
+/// U+2596–259F fills.
+const QUADRANTS: [[bool; 4]; 10] = [
+    [false, false, true, false],
+    [false, false, false, true],
+    [true, false, false, false],
+    [true, false, true, true],
+    [true, false, false, true],
+    [true, true, true, false],
+    [true, true, false, true],
+    [false, true, false, false],
+    [false, true, true, false],
+    [false, true, true, true],
+];
+
+/// The rectangle of quadrant `index` (top-left, top-right, bottom-left,
+/// bottom-right). Complementary rounding makes quadrants overlap at odd
+/// cell sizes.
+fn quadrant(metrics: Metrics, index: usize) -> [i32; 4] {
+    let (z, h, f) = (Fraction::ZERO, Fraction::HALF, Fraction::ONE);
+    let (x0, x1, y0, y1) = [(z, h, z, h), (h, f, z, h), (z, h, h, f), (h, f, h, f)][index];
+    let (w, ht) = (metrics.cell_width, metrics.cell_height);
+    [x0.min(w), y0.min(ht), x1.max(w), y1.max(ht)]
+}
+
+/// The single opaque rectangle `[x0, y0, x1, y1]` (cell pixels) of a block
+/// element drawn as one: eighths, halves, the full block and single
+/// quadrants. `None` for every other codepoint, including combined
+/// quadrants, whose rectangles overlap at odd sizes.
+pub(crate) fn solid_block(codepoint: u32, metrics: Metrics) -> Option<[i32; 4]> {
     let eighth = |n: u32| f64::from(n) / 8.0;
-    let rect = |alignment, width, height| vec![block_rect(metrics, alignment, width, height)];
+    let rect = |alignment, width, height| block_rect(metrics, alignment, width, height);
     Some(match codepoint {
         0x2580 => rect(UPPER, 1.0, 0.5),
         0x2581..=0x2587 => rect(LOWER, 1.0, eighth(codepoint - 0x2580)),
-        0x2588 => vec![[0, 0, metrics.cell_width as i32, metrics.cell_height as i32]],
+        0x2588 => [0, 0, metrics.cell_width as i32, metrics.cell_height as i32],
         0x2589..=0x258f => rect(LEFT, eighth(0x2590 - codepoint), 1.0),
         0x2590 => rect(RIGHT, 0.5, 1.0),
         0x2594 => rect(UPPER, 1.0, eighth(1)),
         0x2595 => rect(RIGHT, eighth(1), 1.0),
         0x2596..=0x259f => {
-            // Top-left, top-right, bottom-left and bottom-right quadrants.
-            let quadrants = match codepoint {
-                0x2596 => [false, false, true, false],
-                0x2597 => [false, false, false, true],
-                0x2598 => [true, false, false, false],
-                0x2599 => [true, false, true, true],
-                0x259a => [true, false, false, true],
-                0x259b => [true, true, true, false],
-                0x259c => [true, true, false, true],
-                0x259d => [false, true, false, false],
-                0x259e => [false, true, true, false],
-                _ => [false, true, true, true],
-            };
-            let (z, h, f) = (Fraction::ZERO, Fraction::HALF, Fraction::ONE);
-            let (w, ht) = (metrics.cell_width, metrics.cell_height);
-            [(z, h, z, h), (h, f, z, h), (z, h, h, f), (h, f, h, f)]
-                .into_iter()
-                .zip(quadrants)
-                .filter(|(_, on)| *on)
-                .map(|((x0, x1, y0, y1), _)| [x0.min(w), y0.min(ht), x1.max(w), y1.max(ht)])
-                .collect()
+            let on = QUADRANTS[(codepoint - 0x2596) as usize];
+            let mut filled = (0..4).filter(|&index| on[index]);
+            let index = filled.next()?;
+            if filled.next().is_some() {
+                return None;
+            }
+            quadrant(metrics, index)
         }
         _ => return None,
     })
@@ -105,10 +117,16 @@ pub(super) fn block_element(codepoint: u32, canvas: &mut Canvas, metrics: Metric
         0x2591 => full(metrics, canvas, Shade::Light),
         0x2592 => full(metrics, canvas, Shade::Medium),
         0x2593 => full(metrics, canvas, Shade::Dark),
-        _ => {
-            for [x0, y0, x1, y1] in block_rects(codepoint, metrics).expect("block element") {
+        0x2596..=0x259f => {
+            let on = QUADRANTS[(codepoint - 0x2596) as usize];
+            for index in (0..4).filter(|&index| on[index]) {
+                let [x0, y0, x1, y1] = quadrant(metrics, index);
                 canvas.box_(x0, y0, x1, y1, Shade::On);
             }
+        }
+        _ => {
+            let [x0, y0, x1, y1] = solid_block(codepoint, metrics).expect("block element");
+            canvas.box_(x0, y0, x1, y1, Shade::On);
         }
     }
 }

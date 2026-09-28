@@ -603,35 +603,32 @@ impl RowPainter<'_, '_> {
                 cell_height: raster.cell_size.y as u32,
                 box_thickness: raster.box_thickness,
             };
-            if let Some(rects) = sprite_codepoint(symbol)
-                .and_then(|codepoint| sprite::block_rects(codepoint, sprite_metrics))
-                .filter(|rects| rects.len() == 1)
+            let sprite = sprite_codepoint(symbol);
+            if let Some([x0, y0, x1, y1]) =
+                sprite.and_then(|codepoint| sprite::solid_block(codepoint, sprite_metrics))
             {
                 // Opaque single-rectangle block elements are Ghostty's sprite
                 // rectangles, drawn as solid quads in the glyphs' paint order
                 // (combined quadrants overlap at odd sizes, so they are drawn
                 // from the atlas instead).
-                let foreground = style.foreground;
-                for [x0, y0, x1, y1] in rects {
-                    placed.push(PlacedGlyph {
-                        row,
-                        texture: self.glyph_atlas.id,
-                        geometry: PixelGeometry {
-                            x: cell_x + x0 as f32,
-                            y: cell_y + y0 as f32,
-                            width: (x1 - x0) as f32,
-                            height: (y1 - y0) as f32,
-                        },
-                        uv: Vec4::ZERO,
-                        color: foreground,
-                        alpha_mask: true,
-                        solid: true,
-                    });
-                }
+                placed.push(PlacedGlyph {
+                    row,
+                    texture: self.glyph_atlas.id,
+                    geometry: PixelGeometry {
+                        x: cell_x + x0 as f32,
+                        y: cell_y + y0 as f32,
+                        width: (x1 - x0) as f32,
+                        height: (y1 - y0) as f32,
+                    },
+                    uv: Vec4::ZERO,
+                    color: style.foreground,
+                    alpha_mask: true,
+                    solid: true,
+                });
             } else if symbol != " " && !symbol.is_empty() {
                 // Sprites span their cells, like Ghostty's `gridWidth`; other
                 // runs may use Ghostty's `constraintWidth`.
-                let sprite = sprite_codepoint(symbol).is_some();
+                let sprite = sprite.is_some();
                 let columns = if sprite {
                     width
                 } else {
