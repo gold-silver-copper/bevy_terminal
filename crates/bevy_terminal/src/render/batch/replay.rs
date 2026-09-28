@@ -288,12 +288,12 @@ impl Replay {
         let (mut text, mut images, mut states) = system.get_mut(self.app.world_mut()).unwrap();
         let (mut state, config) = states.get_mut(self.entity).unwrap();
         let config = config.clone();
-        let snapshot = state.last_snapshot.clone().expect("retained snapshot");
+        let snapshot = state.snapshot().cloned().expect("retained snapshot");
         let rows: Vec<u16> = (0..snapshot.size().height).collect();
         let destination = state.output.id();
-        let blink = state.blink;
+        let blink = state.retained.as_ref().unwrap().blink;
+        let raster = state.raster();
         let BatchMainState {
-            raster_config,
             palette,
             shapes,
             glyph_atlas,
@@ -307,7 +307,7 @@ impl Replay {
             &snapshot,
             &config,
             palette,
-            *raster_config,
+            raster,
             &rows,
             true,
             destination,
@@ -391,7 +391,7 @@ fn overflowing_ink_reaches_neighbours_and_partial_repaints_match_full_scenes() {
         .world()
         .get::<BatchMainState>(replay.entity)
         .unwrap()
-        .row_states
+        .rows()
         .reach(3);
     assert!(
         reach.up >= 1 && reach.down >= 1,
@@ -433,7 +433,7 @@ fn overflowing_ink_reaches_neighbours_and_partial_repaints_match_full_scenes() {
         .world()
         .get::<BatchMainState>(replay.entity)
         .unwrap()
-        .row_states
+        .rows()
         .reach(3);
     assert!(
         reach.up >= 2,
@@ -503,7 +503,7 @@ fn rows_without_overflow_repaint_only_themselves() {
         .unwrap();
     assert!(
         state
-            .row_states
+            .rows()
             .reaches()
             .all(|reach| reach == super::scene::RowReach::default())
     );
@@ -632,7 +632,7 @@ fn wide_and_translucent_block_elements_cover_their_cells_once() {
         .world()
         .get::<BatchMainState>(replay.entity)
         .unwrap()
-        .raster_config
+        .raster()
         .cell_size
         .as_uvec2();
     let pixel = |x: u32, y: u32| replay.canvas.pixels[(y * replay.canvas.size.x + x) as usize];

@@ -206,7 +206,7 @@ fn initialize_terminal(
                     },
                 },
             },
-            BatchMainState::new(output.clone(), raster_scale, raster_config),
+            BatchMainState::new(output.clone()),
             TerminalStats::default(),
         ));
     }
@@ -257,33 +257,99 @@ fn resolve_raster_scale(requested: f32) -> f32 {
 #[derive(Component)]
 struct BatchMainState {
     output: Handle<Image>,
-    /// Font asset ids in use, to scope re-measurement to this terminal's own fonts.
-    font_ids: [Option<AssetId<Font>>; 4],
-    /// Whether every handle font above is registered with the font context.
-    fonts_ready: bool,
+    fonts: FontUse,
     last_failure: Option<String>,
-    raster_scale: f32,
-    raster_config: RasterMetrics,
-    /// Advance of the regular font at the probe size; `None` until measured.
-    measured_advance: Option<f32>,
-    /// Logical font size in use.
-    metrics: Option<LogicalMetrics>,
     last_config: Option<TerminalRenderConfig>,
     /// The configured theme, resolved once per configuration change.
     palette: Palette,
-    surface: Option<TerminalSurface>,
-    last_snapshot: Option<TerminalSnapshot>,
-    generation: u64,
-    submitted: Arc<AtomicU64>,
+    measure: FontMeasurement,
+    /// The surface being rendered and what the last scene drew from it;
+    /// `None` until the first sync.
+    retained: Option<Retained>,
+    submissions: Submissions,
     shapes: ShapeCaches,
     glyph_atlas: UnifiedGlyphAtlas,
     scratch: SceneScratch,
     /// The rows the next scene repaints, reused between scenes.
     repaint_rows: Vec<u16>,
-    /// How far each row's drawn ink reaches into its neighbours, and which
-    /// rows blink.
-    row_states: RowStates,
+}
+
+/// The fonts a terminal uses.
+#[derive(Default)]
+struct FontUse {
+    /// Font asset ids in use, to scope re-measurement to this terminal's own
+    /// fonts.
+    ids: [Option<AssetId<Font>>; 4],
+    /// Whether every handle font above is registered with the font context.
+    ready: bool,
+}
+
+/// What measuring a terminal's fonts produced.
+#[derive(Default)]
+struct FontMeasurement {
+    /// Advance of the regular font at the probe size; `None` until measured.
+    advance: Option<f32>,
+    /// The metrics in use, which change together; `None` until measured and
+    /// after invalidation.
+    in_use: Option<MetricsInUse>,
+}
+
+#[derive(Clone, Copy)]
+struct MetricsInUse {
+    /// Logical font and cell size.
+    logical: LogicalMetrics,
+    /// The physical raster metrics refined from `logical` at `scale`.
+    raster: RasterMetrics,
+    scale: f32,
+}
+
+/// The surface a terminal renders and what its last scene drew from it.
+struct Retained {
+    surface: TerminalSurface,
+    /// The content drawn; `None` when the next scene must repaint everything.
+    snapshot: Option<TerminalSnapshot>,
+    /// How far each drawn row's ink reaches, and which rows blink.
+    rows: RowStates,
+    /// The blink phases drawn.
     blink: BlinkPhases,
+}
+
+impl Retained {
+    fn new(surface: TerminalSurface) -> Self {
+        Self {
+            surface,
+            snapshot: None,
+            rows: RowStates::default(),
+            blink: BlinkPhases::default(),
+        }
+    }
+}
+
+/// Scene numbering shared with the render world, which stores a scene's
+/// generation in `acknowledged` once it has drawn it.
+#[derive(Default)]
+struct Submissions {
+    generation: u64,
+    acknowledged: Arc<AtomicU64>,
+}
+
+impl Submissions {
+    /// Numbers the next scene.
+    fn next(&mut self) -> (Arc<AtomicU64>, u64) {
+        self.generation = self.generation.wrapping_add(1);
+        (self.acknowledged.clone(), self.generation)
+    }
+
+    /// Whether the render world has drawn every submitted scene.
+    fn all_drawn(&self) -> bool {
+        self.acknowledged.load(Ordering::Acquire) == self.generation
+    }
+
+    /// Acknowledges every submitted scene, as drawing them would.
+    #[cfg(test)]
+    fn acknowledge(&self) {
+        self.acknowledged.store(self.generation, Ordering::Release);
+    }
 }
 
 impl BatchMainState {
@@ -295,33 +361,45 @@ impl BatchMainState {
 
     fn invalidate(&mut self, queue: &mut SceneQueue) {
         self.discard_pending(queue);
-        self.last_snapshot = None;
-        self.metrics = None;
+        if let Some(retained) = &mut self.retained {
+            retained.snapshot = None;
+        }
+        self.measure.in_use = None;
     }
 
-    fn new(output: Handle<Image>, raster_scale: f32, raster_config: RasterMetrics) -> Self {
+    fn new(output: Handle<Image>) -> Self {
         Self {
             output,
-            font_ids: [None; 4],
-            fonts_ready: false,
+            fonts: FontUse::default(),
             last_failure: None,
-            raster_scale,
-            raster_config,
-            measured_advance: None,
-            metrics: None,
             last_config: None,
             palette: Palette::default(),
-            surface: None,
-            last_snapshot: None,
-            generation: 0,
-            submitted: Arc::default(),
+            measure: FontMeasurement::default(),
+            retained: None,
+            submissions: Submissions::default(),
             shapes: ShapeCaches::default(),
             glyph_atlas: UnifiedGlyphAtlas::default(),
             scratch: SceneScratch::default(),
             repaint_rows: Vec::new(),
-            row_states: RowStates::default(),
-            blink: BlinkPhases::default(),
         }
+    }
+
+    /// The content the last scene drew.
+    #[cfg(test)]
+    fn snapshot(&self) -> Option<&TerminalSnapshot> {
+        self.retained.as_ref()?.snapshot.as_ref()
+    }
+
+    /// The raster metrics in use.
+    #[cfg(test)]
+    fn raster(&self) -> RasterMetrics {
+        self.measure.in_use.expect("measured metrics").raster
+    }
+
+    /// The retained rows' ink reach and blinking.
+    #[cfg(test)]
+    fn rows(&self) -> &RowStates {
+        &self.retained.as_ref().expect("a retained surface").rows
     }
 }
 
@@ -458,7 +536,7 @@ fn take_queued(world: &mut World, entity: Entity) -> Option<BatchScene> {
     let output = world.get::<BatchMainState>(entity)?.output.id();
     let scene = world.resource_mut::<SceneQueue>().scenes.remove(&output)?;
     let state = world.get::<BatchMainState>(entity)?;
-    state.submitted.store(state.generation, Ordering::Release);
+    state.submissions.acknowledge();
     Some(scene)
 }
 
@@ -635,15 +713,17 @@ fn sync_batch_terminals(
             .any(|face| !matches!(face, FontSource::Handle(_)));
         let fonts_changed = (named_faces
             && (catalog_changed || changed_fonts.iter().any(|id| registered_fonts.contains(id))))
-            || state.font_ids != face_ids
-            || state.fonts_ready != fonts_ready
+            || state.fonts.ids != face_ids
+            || state.fonts.ready != fonts_ready
             || (!changed_fonts.is_empty()
                 && face_ids
                     .iter()
                     .flatten()
                     .any(|id| changed_fonts.contains(id)));
-        state.font_ids = face_ids;
-        state.fonts_ready = fonts_ready;
+        state.fonts = FontUse {
+            ids: face_ids,
+            ready: fonts_ready,
+        };
         if !fonts_ready {
             let failed = face_ids.iter().flatten().any(|id| {
                 let invalid = text
@@ -791,28 +871,36 @@ fn sync_batch_terminal(
     } = input;
     let surface = terminal.surface();
     if state
-        .surface
+        .retained
         .as_ref()
-        .is_none_or(|previous| !previous.shares_state_with(surface))
+        .is_none_or(|retained| !retained.surface.shares_state_with(surface))
     {
-        state.surface = Some(surface.clone());
-        state.last_snapshot = None;
+        state.retained = Some(Retained::new(surface.clone()));
         state.discard_pending(queue);
-        state.row_states = RowStates::default();
     }
-    if state.glyph_atlas.lost.swap(false, Ordering::AcqRel) {
+    let BatchMainState {
+        output,
+        palette,
+        measure,
+        retained,
+        submissions,
+        shapes,
+        glyph_atlas,
+        scratch,
+        repaint_rows,
+        ..
+    } = state;
+    let retained = retained.as_mut().expect("the surface was just retained");
+    if glyph_atlas.lost.swap(false, Ordering::AcqRel) {
         // The render world recreated the atlas texture (a device reset):
         // rebuild every entry and repaint everything.
-        state.shapes.clear();
-        state.glyph_atlas.clear();
-        state.last_snapshot = None;
+        shapes.clear();
+        glyph_atlas.clear();
+        retained.snapshot = None;
     }
-    let scale_changed = state.raster_scale != raster_scale;
     let needs_measured_advance = needs_measured_advance(config);
-    if needs_measured_advance
-        && (state.measured_advance.is_none() || shaping_changed || fonts_changed)
-    {
-        state.measured_advance = match measure_advance(
+    if needs_measured_advance && (measure.advance.is_none() || shaping_changed || fonts_changed) {
+        measure.advance = match measure_advance(
             &config.font,
             cx.fonts,
             cx.text_pipeline,
@@ -831,50 +919,51 @@ fn sync_batch_terminal(
     }
     // An unmeasured cell is not geometry. Keep the provisional component and
     // do not publish a scene or measured geometry until the selected face shapes.
-    if needs_measured_advance && state.measured_advance.is_none() {
+    if needs_measured_advance && measure.advance.is_none() {
         return Err(TerminalStatus::ShapingFailed);
     }
-    let metrics = resolve_metrics(config, state.measured_advance);
+    let metrics = resolve_metrics(config, measure.advance);
     let requested = physical_config(metrics, raster_scale);
     if terminal_pixel_size(surface.size(), &requested).max_element() > texture_limit
         || requested.font_size > texture_limit as f32
     {
         return Err(TerminalStatus::TextureTooLarge);
     }
-    let font_size_changed = state.metrics != Some(metrics);
-    state.metrics = Some(metrics);
-    let text_assets_changed =
-        shaping_changed || fonts_changed || scale_changed || font_size_changed;
+    let text_assets_changed = shaping_changed
+        || fonts_changed
+        || measure
+            .in_use
+            .is_none_or(|in_use| in_use.logical != metrics || in_use.scale != raster_scale);
     if text_assets_changed {
-        state.raster_config = refine_metrics(
-            config,
-            state.measured_advance,
-            physical_config(metrics, raster_scale),
-            cx,
-        );
+        measure.in_use = None;
+        let raster = refine_metrics(config, measure.advance, requested, cx);
         if cx.failure.is_some() {
             return Err(TerminalStatus::ShapingFailed);
         }
-        measurement.physical_font_size = state.raster_config.font_size;
-        measurement.physical_cell_size = state.raster_config.cell_size;
+        measure.in_use = Some(MetricsInUse {
+            logical: metrics,
+            raster,
+            scale: raster_scale,
+        });
+        measurement.physical_font_size = raster.font_size;
+        measurement.physical_cell_size = raster.cell_size;
+        shapes.clear();
+        glyph_atlas.clear();
     }
-    if text_assets_changed {
-        state.shapes.clear();
-        state.glyph_atlas.clear();
-    }
+    let raster = measure.in_use.expect("metrics were measured above").raster;
     let blink = BlinkPhases::at(elapsed, config);
     // A phase flip only matters where it changes pixels: text phases when the
     // snapshot holds blinking cells, the cursor phase when the cursor shows.
-    let text_blink_changed = state.row_states.any_blinking()
-        && (blink.slow_hidden != state.blink.slow_hidden
-            || blink.rapid_hidden != state.blink.rapid_hidden);
-    let cursor_blink_changed = blink.cursor_hidden != state.blink.cursor_hidden
-        && state
-            .last_snapshot
+    let text_blink_changed = retained.rows.any_blinking()
+        && (blink.slow_hidden != retained.blink.slow_hidden
+            || blink.rapid_hidden != retained.blink.rapid_hidden);
+    let cursor_blink_changed = blink.cursor_hidden != retained.blink.cursor_hidden
+        && retained
+            .snapshot
             .as_ref()
             .is_some_and(cursor_should_be_visible);
     let blink_changed = text_blink_changed || cursor_blink_changed;
-    if state.last_snapshot.as_ref().is_some_and(|snapshot| {
+    if retained.snapshot.as_ref().is_some_and(|snapshot| {
         snapshot.revision() == surface.revision()
             && !config_changed
             && !text_assets_changed
@@ -882,14 +971,14 @@ fn sync_batch_terminal(
     }) {
         // Keep the recorded phases current so an irrelevant flip is not
         // mistaken for a change once blinking content appears later.
-        state.blink = blink;
+        retained.blink = blink;
         return Ok(false);
     }
 
     #[cfg(feature = "timings")]
     let snapshot_start = Instant::now();
-    let mut rows = std::mem::take(&mut state.repaint_rows);
-    let (snapshot, mut full) = if let Some(mut snapshot) = state.last_snapshot.take() {
+    let mut rows = std::mem::take(repaint_rows);
+    let (snapshot, mut full) = if let Some(mut snapshot) = retained.snapshot.take() {
         let old_cursor = snapshot.cursor_position();
         let update = surface.update_snapshot(&mut snapshot, &mut rows);
         stats.snapshot_cells = u32::try_from(update.changed_cells).unwrap_or(u32::MAX);
@@ -929,17 +1018,17 @@ fn sync_batch_terminal(
             .min(u128::from(u64::MAX)) as u64;
     }
     if rows.is_empty() && !full && !blink_changed {
-        state.last_snapshot = Some(snapshot);
-        state.repaint_rows = rows;
+        retained.snapshot = Some(snapshot);
+        *repaint_rows = rows;
         return Ok(false);
     }
     // Extraction can be delayed while a newly created output or glyph atlas reaches the render
     // world. If a newer payload is already waiting in the main world, make its replacement a
     // complete image of the newest snapshot so rows changed by an intermediate payload cannot be
     // lost when that payload is superseded.
-    full |= state.submitted.load(Ordering::Acquire) != state.generation;
+    full |= !submissions.all_drawn();
 
-    let new_size = terminal_pixel_size(snapshot.size(), &state.raster_config);
+    let new_size = terminal_pixel_size(snapshot.size(), &raster);
     if new_size.max_element() > texture_limit {
         return Err(TerminalStatus::TextureTooLarge);
     }
@@ -952,7 +1041,7 @@ fn sync_batch_terminal(
         // recreates the GPU texture for the modified asset.
         if cx
             .images
-            .insert(state.output.id(), make_target_image(new_size))
+            .insert(output.id(), make_target_image(new_size))
             .is_err()
         {
             warn!("bevy_terminal: could not reallocate a terminal texture in place");
@@ -967,21 +1056,12 @@ fn sync_batch_terminal(
     }
     #[cfg(feature = "timings")]
     let scene_start = Instant::now();
-    let destination = state.output.id();
-    let BatchMainState {
-        raster_config,
-        palette,
-        shapes,
-        glyph_atlas,
-        scratch,
-        row_states,
-        ..
-    } = &mut *state;
+    let destination = output.id();
     let mut scene = build_scene(
         &snapshot,
         config,
         palette,
-        *raster_config,
+        raster,
         &rows,
         full,
         destination,
@@ -989,7 +1069,7 @@ fn sync_batch_terminal(
         shapes,
         glyph_atlas,
         scratch,
-        row_states,
+        &mut retained.rows,
         stats,
         blink,
     );
@@ -1005,7 +1085,7 @@ fn sync_batch_terminal(
             &snapshot,
             config,
             palette,
-            *raster_config,
+            raster,
             &rows,
             true,
             destination,
@@ -1013,12 +1093,12 @@ fn sync_batch_terminal(
             shapes,
             glyph_atlas,
             scratch,
-            row_states,
+            &mut retained.rows,
             stats,
             blink,
         );
     }
-    state.repaint_rows = rows;
+    *repaint_rows = rows;
     if cx.failure.is_some() {
         return Err(TerminalStatus::ShapingFailed);
     }
@@ -1036,12 +1116,10 @@ fn sync_batch_terminal(
         stats.scene_ns = scene_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
     }
     stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
-    state.generation = state.generation.wrapping_add(1);
-    scene.submission = Some((state.submitted.clone(), state.generation));
+    scene.submission = Some(submissions.next());
     queue.submit(scene);
-    state.last_snapshot = Some(snapshot);
-    state.blink = blink;
-    state.raster_scale = raster_scale;
+    retained.snapshot = Some(snapshot);
+    retained.blink = blink;
     Ok(surface_changed)
 }
 

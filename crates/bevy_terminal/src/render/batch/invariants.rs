@@ -262,6 +262,7 @@ fn idle_terminals_build_no_scene_and_change_no_component() {
             app.world()
                 .get::<BatchMainState>(*entity)
                 .unwrap()
+                .submissions
                 .generation
         })
         .collect();
@@ -277,7 +278,10 @@ fn idle_terminals_build_no_scene_and_change_no_component() {
     }
     for ((entity, _), generation) in surfaces.iter().zip(generations) {
         let state = app.world().get::<BatchMainState>(*entity).unwrap();
-        assert_eq!(state.generation, generation, "no scene was built");
+        assert_eq!(
+            state.submissions.generation, generation,
+            "no scene was built"
+        );
         assert!(queued(app.world(), *entity).is_none());
     }
     assert_eq!(app.world().resource::<Changes>().0, 0);

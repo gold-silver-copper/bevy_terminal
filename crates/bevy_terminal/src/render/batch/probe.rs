@@ -375,7 +375,7 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
     let state = app.world().get::<BatchMainState>(entity).unwrap();
     let glyphs = state.scratch.probe.clone().unwrap_or_default();
     assert!(!glyphs.is_empty(), "{}: no full scene recorded", case.label);
-    let cell = state.raster_config.cell_size;
+    let cell = state.raster().cell_size;
     let images = app.world().resource::<Assets<Image>>();
     let mut entries: Vec<ProbeEntry> = Vec::new();
     for glyph in &glyphs {

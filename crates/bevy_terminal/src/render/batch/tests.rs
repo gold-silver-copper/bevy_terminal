@@ -268,8 +268,8 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         .entity_mut(entity)
         .take::<BatchMainState>()
         .unwrap();
-    assert!(state.metrics.is_some());
-    assert!(state.last_snapshot.is_some());
+    assert!(state.measure.in_use.is_some());
+    assert!(state.snapshot().is_some());
     let output_id = state.output.id();
     let mut queue = std::mem::take(&mut *app.world_mut().resource_mut::<SceneQueue>());
     assert!(queue.scene(output_id).is_some());
@@ -304,8 +304,8 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
     state.invalidate(&mut queue);
     output.status = result.unwrap_err();
     assert_eq!(output.status, TerminalStatus::ShapingFailed);
-    assert!(state.metrics.is_none());
-    assert!(state.last_snapshot.is_none());
+    assert!(state.measure.in_use.is_none());
+    assert!(state.snapshot().is_none());
     assert!(queue.scene(output_id).is_none());
 
     // A successful retry must rebuild even if the effective geometry equals
@@ -331,7 +331,7 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
     )
     .unwrap();
     assert!(output.measured().is_some());
-    assert!(state.metrics.is_some());
+    assert!(state.measure.in_use.is_some());
     assert!(queue.scene(output_id).unwrap().clear);
     assert!(stats.shape_misses > 0);
 }
@@ -410,7 +410,7 @@ fn replacing_surface_with_equal_revision_refreshes_retained_content() {
         .insert(TerminalRenderer::new(second));
     app.update();
     let state = app.world().get::<BatchMainState>(entity).unwrap();
-    assert_eq!(state.last_snapshot.as_ref().unwrap().row_text(0), "BBBB");
+    assert_eq!(state.snapshot().unwrap().row_text(0), "BBBB");
     assert!(queued(app.world(), entity).unwrap().clear);
     assert_eq!(
         app.world().get::<TerminalTexture>(entity).unwrap().image,
@@ -463,7 +463,7 @@ fn shared_content_has_independent_renderers_and_measurements() {
         assert_eq!(output.cell_size(), Vec2::new(width, 24.0));
         assert_eq!(output.size(), UVec2::new(width as u32 * 4, 48));
         let state = app.world().get::<BatchMainState>(entity).unwrap();
-        let snapshot = state.last_snapshot.as_ref().unwrap();
+        let snapshot = state.snapshot().unwrap();
         assert_eq!(snapshot.row_text(0), "AAAA");
         assert_eq!(snapshot.row_text(1), "B   ");
         assert_eq!(
@@ -829,11 +829,8 @@ fn font_driven_cells_wait_for_a_loading_handle_before_ready() {
             .is_none()
     );
     let state = app.world().get::<BatchMainState>(entity).unwrap();
-    assert!(state.measured_advance.is_none());
-    assert!(
-        state.last_snapshot.is_none(),
-        "no 1x1 scene may be published"
-    );
+    assert!(state.measure.advance.is_none());
+    assert!(state.snapshot().is_none(), "no 1x1 scene may be published");
 
     app.world_mut()
         .resource_mut::<Assets<Font>>()
@@ -1659,8 +1656,7 @@ fn delayed_scenes_coalesce_completely_and_removed_renderers_release_state() {
         .world()
         .get::<BatchMainState>(entity)
         .unwrap()
-        .last_snapshot
-        .as_ref()
+        .snapshot()
         .unwrap();
     assert_eq!(snapshot.row_text(0), "A   ");
     assert_eq!(snapshot.row_text(1), "B   ");
@@ -1900,6 +1896,7 @@ fn invalid_scale_settles_without_idle_redraws() {
             .world()
             .get::<BatchMainState>(entity)
             .unwrap()
+            .submissions
             .generation;
         for _ in 0..3 {
             // Even touching the raw component without changing its effective
@@ -1913,6 +1910,7 @@ fn invalid_scale_settles_without_idle_redraws() {
                 app.world()
                     .get::<BatchMainState>(entity)
                     .unwrap()
+                    .submissions
                     .generation,
                 generation
             );
@@ -2123,11 +2121,7 @@ fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
     for _ in 0..6 {
         app.update();
     }
-    let raster = app
-        .world()
-        .get::<BatchMainState>(entity)
-        .unwrap()
-        .raster_config;
+    let raster = app.world().get::<BatchMainState>(entity).unwrap().raster();
     let cell = raster.cell_size;
     assert!(raster.font_size > 20.0, "{raster:?}");
     let inside = |ink: Rect, columns: f32| {
