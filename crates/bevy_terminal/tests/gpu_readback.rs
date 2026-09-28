@@ -366,3 +366,141 @@ fn line_height_scales_the_font_driven_cell() {
         }
     }
 }
+
+/// A change applied to the world between frames.
+type Step = Box<dyn FnMut(&mut World) + Send + Sync>;
+
+/// Renders `surface` headlessly, running each of `steps` on the world twelve
+/// frames apart, and reads the texture back twelve frames after the last.
+fn render_after_steps(
+    surface: TerminalSurface,
+    config: impl FnOnce(&mut Assets<Font>) -> TerminalRenderConfig + Send + Sync + 'static,
+    steps: Vec<Step>,
+) -> (Vec<u8>, UVec2) {
+    let mut config = Some(config);
+    let captured = Captured(Arc::new(Mutex::new(None)));
+    let sink = captured.clone();
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: bevy::window::ExitCondition::DontExit,
+                close_when_requested: false,
+                ..default()
+            })
+            .set(RenderPlugin {
+                render_creation: RenderCreation::Automatic(Box::default()),
+                synchronous_pipeline_compilation: true,
+                ..default()
+            })
+            .disable::<WinitPlugin>(),
+    )
+    .add_plugins((
+        ScheduleRunnerPlugin::run_loop(std::time::Duration::from_millis(1)),
+        TerminalPlugin,
+    ))
+    .insert_resource(captured)
+    .add_systems(
+        Startup,
+        move |mut commands: Commands, mut fonts: ResMut<Assets<Font>>| {
+            let config = config.take().expect("startup runs once")(&mut fonts);
+            commands.spawn((TerminalRenderer::new(surface.clone()), config));
+        },
+    );
+    let mut steps = steps;
+    let mut frame = 0u32;
+    app.add_systems(
+        Update,
+        (move |world: &mut World| {
+            frame += 1;
+            let step = (frame / 12) as usize;
+            if frame.is_multiple_of(12) && step <= steps.len() + 1 {
+                if let Some(action) = steps.get_mut(step - 1) {
+                    action(world);
+                } else {
+                    let image = world
+                        .query::<&TerminalTexture>()
+                        .single(world)
+                        .expect("one terminal")
+                        .image
+                        .clone();
+                    world.spawn(Readback::texture(image)).observe(
+                        |done: On<ReadbackComplete>,
+                         sink: Res<Captured>,
+                         textures: Query<&TerminalTexture>,
+                         mut exit: MessageWriter<AppExit>| {
+                            let size = textures
+                                .single()
+                                .ok()
+                                .and_then(TerminalTexture::measured)
+                                .map(|geometry| geometry.size())
+                                .unwrap_or_default();
+                            *sink.0.lock().unwrap() = Some((done.data.clone(), size));
+                            exit.write(AppExit::Success);
+                        },
+                    );
+                }
+            }
+        })
+        .after(TerminalSystems::Sync),
+    );
+    app.run();
+    let captured = sink.0.lock().unwrap().take();
+    captured.expect("a readback completed")
+}
+
+/// Atlas entries travel to the render world as sub-rectangle uploads. After a
+/// font switch reuses the atlas for new glyphs, a partial repaint adding one
+/// more glyph must show it exactly as a terminal that never held the old
+/// glyphs does.
+#[test]
+#[ignore = "requires a GPU"]
+fn atlas_entries_survive_font_switches_and_partial_repaints() {
+    let dejavu = include_bytes!("../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
+    let jetbrains = include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf");
+    let write = |surface: &TerminalSurface, row: u16, text: &str| {
+        surface.update(|u| {
+            for (x, c) in text.chars().enumerate() {
+                u.set_cell((x as u16, row), &TerminalCell::new(&c.to_string()));
+            }
+        });
+    };
+    let surface = TerminalSurface::new((6, 2));
+    write(&surface, 0, "WMQ@#&");
+    let switched = surface.clone();
+    let replaced = surface.clone();
+    let (data, size) = render_after_steps(
+        surface,
+        |fonts| font_driven_config(fonts.add(Font::from_bytes(dejavu.to_vec())), 24.0),
+        vec![
+            Box::new(move |world: &mut World| {
+                let handle = world
+                    .resource_mut::<Assets<Font>>()
+                    .add(Font::from_bytes(jetbrains.to_vec()));
+                let mut config = world
+                    .query::<&mut TerminalRenderConfig>()
+                    .single_mut(world)
+                    .unwrap();
+                config.font = FontFaces::regular(FontSource::Handle(handle));
+                let _ = &switched;
+            }),
+            Box::new(move |_: &mut World| write(&replaced, 1, "gjq&%$")),
+        ],
+    );
+    let fresh = TerminalSurface::new((6, 2));
+    write(&fresh, 0, "WMQ@#&");
+    write(&fresh, 1, "gjq&%$");
+    let (expected, expected_size) = render_headless_with(fresh, |fonts| {
+        font_driven_config(fonts.add(Font::from_bytes(jetbrains.to_vec())), 24.0)
+    });
+    assert_eq!(size, expected_size);
+    let differing = (0..size.y)
+        .flat_map(|y| (0..size.x).map(move |x| (x, y)))
+        .filter(|&(x, y)| texel(&data, size, x, y) != texel(&expected, size, x, y))
+        .count();
+    assert_eq!(
+        differing, 0,
+        "{differing} pixels differ from a fresh terminal"
+    );
+}

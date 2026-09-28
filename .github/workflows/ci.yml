@@ -130,6 +130,7 @@ jobs:
           cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --from-font 23.0 --output "$RUNNER_TEMP/glyph-fidelity/natural"
           cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --from-font 23.0 --line-height 0.85 --output "$RUNNER_TEMP/glyph-fidelity/compact"
           cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --fixed-cell 9x18 --font-size 18 --output "$RUNNER_TEMP/glyph-fidelity/fixed"
+          cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --fixed-cell 14x24 --font-size 16 --output "$RUNNER_TEMP/glyph-fidelity/roomy"
 
       - name: Required fallback, color, and lifecycle coverage
         timeout-minutes: 10

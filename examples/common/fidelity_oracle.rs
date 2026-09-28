@@ -1,12 +1,20 @@
 //! Independent, unclipped text reference for the GPU fidelity harness.
 //!
-//! This uses Bevy's font rasterizer, but none of the terminal renderer's
-//! measurement probes, fitting, geometry, atlas copy, or clipping functions.
-//! The expected placement of a run restates the renderer's contract from
-//! Ghostty's rules: ordinary text keeps its rasterized shape and bearings
-//! (pushed inside a span it fits, overflowing one it does not); symbols are
-//! scaled down uniformly, only as far as needed to fit the cells they may
-//! occupy, about their center, then pushed inside; ink is confined to its row.
+//! This uses Bevy's font rasterizer and raw font tables, but none of the
+//! terminal renderer's measurement probes, fitting, geometry, atlas copy, or
+//! clipping functions. The expected placement of a run restates the
+//! renderer's contract from Ghostty's rules (`renderer/generic.zig`,
+//! `font/SharedGrid.zig`, `font/Glyph.zig`):
+//!
+//! - ordinary text keeps its rasterized shape and bearings on the shared
+//!   baseline, centered in cells wider than the face's advance, and overflows
+//!   neighbouring cells and rows;
+//! - symbols are scaled down uniformly (`fit`), only as far as needed to fit
+//!   the face box of the cells they may occupy, about their center, then
+//!   moved inside it (left and bottom edges win);
+//! - colour glyphs are scaled up or down to cover that face box with 2.5%
+//!   side padding, centered (`cover`);
+//! - only the texture's edges (or a grid graphic's cells) clip ink.
 
 use bevy::{
     ecs::system::SystemParam,
@@ -35,13 +43,26 @@ pub struct Reference {
     pub origin: IVec2,
     pub size: UVec2,
     pub rgba: Vec<Vec4>,
+    /// The run's glyphs, each drawn (and blended) on its own.
+    pub layers: Vec<Layer>,
     pub color_glyphs: usize,
     pub glyph_count: usize,
     pub baseline: f32,
     pub ascent: f32,
     pub descent: f32,
+    pub advance: f32,
     pub faces: Vec<(u64, u32)>,
     pub supported: bool,
+}
+
+/// One glyph bitmap of a run in premultiplied linear RGBA, relative to the
+/// line origin; `mask` glyphs are coverage drawn in the text colour.
+#[derive(Clone, Debug)]
+pub struct Layer {
+    pub origin: IVec2,
+    pub size: UVec2,
+    pub rgba: Vec<Vec4>,
+    pub mask: bool,
 }
 
 impl Rasterizer<'_> {
@@ -158,6 +179,7 @@ impl Rasterizer<'_> {
             origin: IVec2::ZERO,
             size: UVec2::ZERO,
             rgba: Vec::new(),
+            layers: Vec::new(),
             color_glyphs: layout
                 .glyphs
                 .iter()
@@ -167,6 +189,7 @@ impl Rasterizer<'_> {
             baseline: metrics.baseline,
             ascent: metrics.ascent,
             descent: metrics.descent,
+            advance: metrics.advance,
             supported: line.runs().all(|run| {
                 run.clusters()
                     .all(|cluster| cluster.glyphs().all(|glyph| glyph.id != 0))
@@ -216,6 +239,12 @@ impl Rasterizer<'_> {
             let data = image.data.as_ref().ok_or("unreadable glyph atlas")?;
             let rect = glyph.atlas_info.rect;
             let size = rect.size().as_uvec2();
+            let mut layer = Layer {
+                origin,
+                size,
+                rgba: Vec::with_capacity((size.x * size.y) as usize),
+                mask: glyph.atlas_info.is_alpha_mask,
+            };
             for y in 0..size.y {
                 for x in 0..size.x {
                     let source = ((rect.min.y as u32 + y) * image.width() + rect.min.x as u32 + x)
@@ -237,8 +266,10 @@ impl Rasterizer<'_> {
                     let dest =
                         &mut reference.rgba[(target.y * reference.size.x + target.x) as usize];
                     *dest = sample + *dest * (1.0 - sample.w);
+                    layer.rgba.push(sample);
                 }
             }
+            reference.layers.push(layer);
         }
         Ok(reference)
     }
@@ -267,23 +298,54 @@ pub fn is_symbol(symbol: &str) -> bool {
     })
 }
 
-/// Box drawing: strokes whose sub-pixel overshoot must not shift them.
-pub fn is_box_drawing(symbol: &str) -> bool {
-    let mut chars = symbol.chars();
-    matches!(chars.next(), Some('\u{2500}'..='\u{257f}')) && chars.next().is_none()
-}
-
-/// Grid graphics the renderer clips to their cells (box drawing, shades,
-/// legacy computing, Powerline).
-pub fn is_graphics(symbol: &str) -> bool {
+/// Codepoints Ghostty draws procedurally at cell size instead of taking
+/// them from the font (`font/sprite/Face.zig`): box drawing, block elements,
+/// Braille, four geometric triangles, the Powerline and branch subsets and
+/// Symbols for Legacy Computing. Restated here so the harness does not depend
+/// on the renderer's classification; the sprites themselves are checked
+/// against Ghostty's reference atlases and by the tile panels.
+pub fn is_sprite(symbol: &str) -> bool {
     let mut chars = symbol.chars();
     let (Some(c), None) = (chars.next(), chars.next()) else {
         return false;
     };
     matches!(
         u32::from(c),
-        0x2500..=0x257f | 0x2591..=0x2593 | 0x1fb00..=0x1fbff | 0x1cc00..=0x1cebf | 0xe0b0..=0xe0d7
+        0x2500..=0x259f
+            | 0x25e2..=0x25e5
+            | 0x25f8..=0x25fa
+            | 0x25ff
+            | 0x2800..=0x28ff
+            | 0xe0b0..=0xe0bf
+            | 0xe0d2
+            | 0xe0d4
+            | 0xf5d0..=0xf60d
+            | 0x1fb00..=0x1fbaf
+            | 0x1fbbd..=0x1fbbf
+            | 0x1fbce..=0x1fbef
+            | 0x1cc1b..=0x1cc1e
+            | 0x1cc21..=0x1cc3f
+            | 0x1cd00..=0x1cde5
+            | 0x1ce00
+            | 0x1ce01
+            | 0x1ce0b
+            | 0x1ce0c
+            | 0x1ce16..=0x1ce19
+            | 0x1ce51..=0x1ceaf
     )
+}
+
+/// Sprites whose diagonal strokes deliberately overshoot their cell (half a
+/// pixel along the diagonal, so diagonals tile; the butt caps' corners reach
+/// a little further); their neighbours' two outermost pixels are not judged
+/// against a raster that lacks them.
+pub fn sprite_overshoots(symbol: &str) -> bool {
+    symbol.chars().next().is_some_and(|c| {
+        matches!(
+            u32::from(c),
+            0x2571..=0x2573 | 0xe0b9 | 0xe0bb | 0xe0bd | 0xe0bf | 0x1fba0..=0x1fbae | 0x1fbd0..=0x1fbdf
+        )
+    })
 }
 
 /// Cells the anchor at `column` occupies: its declared span, cut at the row's
@@ -323,16 +385,33 @@ pub fn visual_columns(cells: &[TerminalCell], column: usize) -> u32 {
     }
 }
 
+/// The primary face's box in physical cell pixels, from raw font metrics:
+/// its advance, its line height (ascent + descent + line gap) around the
+/// shared baseline, and the whole-pixel shift centering text in wider cells.
+#[derive(Clone, Copy, Debug)]
+pub struct Face {
+    pub width: f32,
+    pub height: f32,
+    /// Top of the face box below the cell's top edge.
+    pub top: f32,
+    pub dx: f32,
+}
+
 /// Expected placement of one cell's run, from raw rasters and Ghostty's rules.
 pub struct Placement {
     /// The run's raster at the size it is expected to be drawn at.
     pub reference: Reference,
     /// Whole-pixel translation from the run's line origin to the cell origin.
     pub shift: IVec2,
-    /// Whether the symbol was rescaled to fit.
+    /// Whether the run was rescaled by its constraint.
     pub scaled: bool,
-    /// Ink size of the unconstrained raster, for judging a rescale.
-    pub unconstrained: IVec2,
+    /// Size of the box the constraint measures, unconstrained.
+    pub unconstrained: Vec2,
+    /// Size of that box after Ghostty's constraint, before whole-pixel font
+    /// sizes; `None` for unconstrained runs.
+    pub target: Option<Vec2>,
+    /// Size of that box as rasterized.
+    pub measured: Vec2,
 }
 
 impl Placement {
@@ -344,13 +423,84 @@ impl Placement {
     }
 }
 
+/// Ghostty's `fit` and emoji `cover` rules on a box `size` at `min` (cell
+/// pixels, y down) over `columns` cells, restated from `font/Glyph.zig`: the
+/// target size scales against `columns` face widths and the face height, the
+/// position against the span from the first cell's left edge to the last
+/// face's right edge. Returns the target box's top-left corner and size.
+pub fn ghostty_box(
+    min: Vec2,
+    size: Vec2,
+    face: Face,
+    cell_width: f32,
+    columns: u32,
+    cover: bool,
+) -> (Vec2, Vec2) {
+    let pad = if cover { 0.025 * face.width } else { 0.0 };
+    let width = columns as f32 * face.width - 2.0 * pad;
+    let factor = (width / size.x).min(face.height / size.y);
+    let factor = if cover { factor } else { factor.min(1.0) };
+    let scaled = size * factor;
+    let center = min + size / 2.0;
+    let span = face.width + (columns - 1) as f32 * cell_width;
+    let (left, right) = (pad, span - scaled.x - pad);
+    let (top, bottom) = (face.top, face.top + face.height - scaled.y);
+    let x = if cover {
+        left.max((left + right) / 2.0)
+    } else {
+        (center.x - scaled.x / 2.0).min(right).max(left)
+    };
+    // The bottom edge wins when the box is too tall; too tall to fit at all
+    // centers it.
+    let y = if cover || bottom < top {
+        (top + bottom) / 2.0
+    } else {
+        (center.y - scaled.y / 2.0).max(top).min(bottom)
+    };
+    (Vec2::new(x + face.dx, y), scaled)
+}
+
 impl Rasterizer<'_> {
+    /// The configured regular face's box for a terminal drawn at `font_size`
+    /// in `cell` pixels on the shared `baseline`.
+    pub fn face(
+        &mut self,
+        config: &TerminalRenderConfig,
+        font_size: f32,
+        cell: UVec2,
+        baseline: i32,
+    ) -> Result<Face, String> {
+        use skrifa::MetadataProvider as _;
+        let zero = self.shape(&TerminalCell::new("0"), config, font_size, cell.y as f32)?;
+        let bevy::text::FontSource::Handle(handle) = &config.font.regular else {
+            return Err("the oracle's face box requires a font asset".into());
+        };
+        let font = self.fonts.get(handle.id()).ok_or("font asset missing")?;
+        let file = skrifa::FontRef::from_index(font.data.data(), 0).map_err(|e| e.to_string())?;
+        let metrics = file.metrics(
+            skrifa::instance::Size::new(font_size),
+            skrifa::instance::LocationRef::default(),
+        );
+        let line_gap = metrics.leading.max(0.0);
+        let dx = if zero.advance < cell.x as f32 {
+            ((cell.x as f32 - zero.advance) / 2.0).round()
+        } else {
+            0.0
+        };
+        Ok(Face {
+            width: zero.advance,
+            height: zero.ascent + zero.descent + line_gap,
+            top: baseline as f32 - zero.ascent - line_gap / 2.0,
+            dx,
+        })
+    }
+
     /// Places `cell` drawn over `columns` cells of `cell_size` physical
-    /// pixels, on the terminal's shared `baseline`. Ordinary text keeps its
-    /// shape and bearings, pushed inside the span when it overhangs one it
-    /// fits. A symbol is scaled down uniformly, in whole-pixel font sizes,
-    /// only as far as its ink needs to fit the cells, about its center, and
-    /// then pushed inside them (leading edges win).
+    /// pixels, on the terminal's shared `baseline`, under the rules in the
+    /// module documentation. Rescaled runs are rasterized at whole-pixel font
+    /// sizes (measured again when hinting leaves a fitted run a pixel too
+    /// large) and centered on Ghostty's target box.
+    #[allow(clippy::too_many_arguments)]
     pub fn place(
         &mut self,
         cell: &TerminalCell,
@@ -359,60 +509,86 @@ impl Rasterizer<'_> {
         cell_size: UVec2,
         columns: u32,
         baseline: i32,
+        face: Face,
     ) -> Result<Placement, String> {
         let mut reference = self.shape(cell, config, font_size, cell_size.y as f32)?;
         let dy = baseline - reference.baseline.round() as i32;
-        let bounds = IVec2::new((cell_size.x * columns) as i32, cell_size.y as i32);
-        let ink = |reference: &Reference| reference.ink_bounds().ok_or("empty raster");
-        let (min, max) = ink(&reference)?;
-        let unconstrained = max - min;
-        if !is_symbol(cell.symbol()) {
-            let dx = if is_box_drawing(cell.symbol()) {
-                reference.fitting_shift_of(reference.stroke_extents(), bounds.x as u32)
+        let color = reference.color_glyphs > 0;
+        // Colour glyphs are measured by their whole bitmaps, outlines by ink.
+        let measure = |reference: &Reference| -> Result<(Vec2, Vec2), String> {
+            if color {
+                Ok((reference.origin.as_vec2(), reference.size.as_vec2()))
             } else {
-                reference.fitting_shift(bounds.x as u32)
+                let (min, max) = reference.ink_bounds().ok_or("empty raster")?;
+                Ok((min.as_vec2(), (max - min).as_vec2()))
             }
-            .unwrap_or(0);
+        };
+        let (min, size) = measure(&reference)?;
+        if !color && !is_symbol(cell.symbol()) {
+            let dx = face.dx as i32;
             return Ok(Placement {
                 reference,
                 shift: IVec2::new(dx, dy),
                 scaled: false,
-                unconstrained,
+                unconstrained: size,
+                target: None,
+                measured: size,
             });
         }
-        let target = min + max + IVec2::new(0, 2 * dy);
-        let mut shift = IVec2::new(0, dy);
-        let mut size = font_size;
-        for round in 0..3 {
-            let (min, max) = ink(&reference)?;
-            let factor = (bounds.as_vec2() / (max - min).as_vec2()).min_element();
-            if factor >= 1.0 || round == 2 || size <= 1.0 {
-                break;
+        let columns = columns.min(2);
+        let (target_min, target_size) = ghostty_box(
+            min + Vec2::new(0.0, dy as f32),
+            size,
+            face,
+            cell_size.x as f32,
+            columns,
+            color,
+        );
+        let mut font = font_size;
+        let mut scale = (target_size / size).y;
+        let mut drawn = (min, size);
+        if (scale - 1.0).abs() > 1e-3 {
+            for _ in 0..3 {
+                let next = (font * scale).floor().clamp(1.0, font_size * 8.0);
+                if next == font {
+                    break;
+                }
+                font = next;
+                reference = self.shape(cell, config, font, cell_size.y as f32)?;
+                drawn = measure(&reference)?;
+                if color || (drawn.1 - target_size).max_element() <= 0.5 {
+                    break;
+                }
+                scale = (target_size / drawn.1).min_element().min(1.0 - 1e-3);
             }
-            let next = (size * factor).floor();
-            let next = if next < size { next } else { size - 1.0 }.max(1.0);
-            let rescaled = self.shape(cell, config, next, cell_size.y as f32)?;
-            let Some((rmin, rmax)) = rescaled
-                .ink_bounds()
-                .filter(|(rmin, rmax)| (rmax - rmin).cmplt(max - min).any())
-            else {
-                break;
-            };
-            size = next;
-            reference = rescaled;
-            shift = ((target - (rmin + rmax)).as_vec2() * 0.5 + 0.5)
-                .floor()
-                .as_ivec2();
         }
-        let (min, max) = ink(&reference)?;
-        shift -= (max + shift - bounds).max(IVec2::ZERO);
-        shift += (-(min + shift)).max(IVec2::ZERO);
+        // Center the rasterized box on the target box, in whole pixels
+        // (ties toward +infinity).
+        let corner = target_min + (target_size - drawn.1) / 2.0;
+        let shift = (corner - drawn.0 + Vec2::splat(0.5)).floor().as_ivec2();
         Ok(Placement {
             reference,
             shift,
-            scaled: size < font_size,
-            unconstrained,
+            scaled: font != font_size,
+            unconstrained: size,
+            target: Some(target_size),
+            measured: drawn.1,
         })
+    }
+}
+
+/// Whole-pixel shift keeping ink `left..right` (texture pixels) inside a
+/// texture `width` pixels wide: the renderer's substitute for Ghostty's
+/// window padding. Ink wider than the texture keeps its place.
+pub fn edge_shift(left: i32, right: i32, width: i32) -> i32 {
+    if right - left > width {
+        0
+    } else if left < 0 {
+        -left
+    } else if right > width {
+        width - right
+    } else {
+        0
     }
 }
 
@@ -450,6 +626,26 @@ pub fn pixel_difference(expected: &[u8; 3], actual: &[u8; 3]) -> u8 {
         .unwrap_or(0)
 }
 
+/// Ghostty's `linear-corrected` coverage (`shaders.metal`, `cell_text_fragment`):
+/// the coverage `a` of text of luminance `fg` over a background of luminance
+/// `bg` is remapped so that blending in linear light gives the luminance a
+/// blend of the sRGB-encoded luminances would give. Luminances within 0.001
+/// of each other are left alone.
+pub fn corrected_coverage(a: f32, fg: f32, bg: f32) -> f32 {
+    if (fg - bg).abs() <= 0.001 {
+        return a;
+    }
+    let encode = |v: f32| Srgba::from(LinearRgba::rgb(v, v, v)).red;
+    let decode = |v: f32| LinearRgba::from(Srgba::rgb(v, v, v)).red;
+    let blend = decode(encode(fg) * a + encode(bg) * (1.0 - a));
+    ((blend - bg) / (fg - bg)).clamp(0.0, 1.0)
+}
+
+/// Relative luminance of a linear colour.
+pub fn luminance(color: Vec3) -> f32 {
+    color.dot(Vec3::new(0.2126, 0.7152, 0.0722))
+}
+
 /// One glyph texel blended over a stored sRGB pixel the way the renderer's
 /// quads blend: straight alpha in linear light, then 8-bit sRGB storage.
 fn blend(ink: Vec4, background: [u8; 3]) -> [u8; 3] {
@@ -471,84 +667,55 @@ fn blend(ink: Vec4, background: [u8; 3]) -> [u8; 3] {
 }
 
 impl Reference {
-    /// Draws this run at `shift` onto `canvas` (a row band of `size`), one
-    /// quad after the others already drawn: texels outside the canvas (past
-    /// the row or the texture edge) are dropped, texels over earlier runs
-    /// blend over them.
+    /// Draws this run at `shift` onto `canvas` (of `size`), one quad after
+    /// the others already drawn: texels outside the canvas are dropped, texels
+    /// over earlier runs blend over them.
     pub fn composite(&self, canvas: &mut [[u8; 3]], size: UVec2, shift: IVec2) {
-        self.composite_within(canvas, &mut [], size, shift, 0..size.x as i32);
+        self.composite_within(canvas, &mut [], &[], size, shift);
     }
 
-    /// [`Reference::composite`] with the ink also clipped to the pixel columns
-    /// `columns` (the cells of a grid graphic). `layers`, when as large as the
-    /// canvas, counts the blends each pixel went through.
+    /// [`Reference::composite`] in white text, glyph by glyph. `layers`, when
+    /// as large as the canvas, counts the blends each pixel went through.
+    /// `backgrounds`, when as large as the canvas, holds the luminance of
+    /// the cell background under each pixel, and coverage glyphs are blended
+    /// with Ghostty's linear correction against it.
     pub fn composite_within(
         &self,
         canvas: &mut [[u8; 3]],
         layers: &mut [u8],
+        backgrounds: &[f32],
         size: UVec2,
         shift: IVec2,
-        columns: std::ops::Range<i32>,
     ) {
         assert_eq!(canvas.len(), (size.x * size.y) as usize);
-        for y in 0..self.size.y {
-            for x in 0..self.size.x {
-                let ink = self.rgba[(y * self.size.x + x) as usize];
-                let p = self.origin + UVec2::new(x, y).as_ivec2() + shift;
-                if ink.w == 0.0
-                    || !columns.contains(&p.x)
-                    || p.x < 0
-                    || p.y < 0
-                    || p.x >= size.x as i32
-                    || p.y >= size.y as i32
-                {
-                    continue;
-                }
-                let index = (p.y as u32 * size.x + p.x as u32) as usize;
-                canvas[index] = blend(ink, canvas[index]);
-                if let Some(layer) = layers.get_mut(index) {
-                    *layer = layer.saturating_add(1);
+        for layer in &self.layers {
+            for y in 0..layer.size.y {
+                for x in 0..layer.size.x {
+                    let ink = layer.rgba[(y * layer.size.x + x) as usize];
+                    let p = layer.origin + UVec2::new(x, y).as_ivec2() + shift;
+                    if ink.w == 0.0
+                        || p.x < 0
+                        || p.y < 0
+                        || p.x >= size.x as i32
+                        || p.y >= size.y as i32
+                    {
+                        continue;
+                    }
+                    let index = (p.y as u32 * size.x + p.x as u32) as usize;
+                    let ink = match backgrounds.get(index) {
+                        Some(background) if layer.mask => {
+                            let white = Vec3::ONE;
+                            Vec4::splat(corrected_coverage(ink.w, luminance(white), *background))
+                        }
+                        _ => ink,
+                    };
+                    canvas[index] = blend(ink, canvas[index]);
+                    if let Some(layer) = layers.get_mut(index) {
+                        *layer = layer.saturating_add(1);
+                    }
                 }
             }
         }
-    }
-
-    /// Preserve bearings when they fit; otherwise the minimum translation
-    /// that encloses all source ink. Oversized runs have no such translation.
-    pub fn fitting_shift(&self, width: u32) -> Option<i32> {
-        self.fitting_shift_of(self.ink_bounds()?, width)
-    }
-
-    fn fitting_shift_of(&self, (min, max): (IVec2, IVec2), width: u32) -> Option<i32> {
-        if max.x - min.x > width as i32 {
-            return None;
-        }
-        Some(0.clamp(-min.x, width as i32 - max.x))
-    }
-
-    /// Ink bounds of a box-drawing stroke without a single faint outermost
-    /// column on either side: strokes are drawn a little past their advance
-    /// so neighbours overlap, and that rasterized overshoot must not move the
-    /// stroke off the grid.
-    pub fn stroke_extents(&self) -> (IVec2, IVec2) {
-        let (min, max) = self.ink_bounds().expect("inked stroke");
-        let coverage = |x: i32| -> f32 {
-            (0..self.size.y)
-                .map(|y| self.rgba[(y * self.size.x + (x - self.origin.x) as u32) as usize].w)
-                .sum()
-        };
-        let peak = (min.x..max.x).map(coverage).fold(0.0_f32, f32::max);
-        let left = if coverage(min.x) < peak {
-            min.x + 1
-        } else {
-            min.x
-        };
-        let right = if coverage(max.x - 1) < peak {
-            max.x - 1
-        } else {
-            max.x
-        };
-        (IVec2::new(left, min.y), IVec2::new(right, max.y))
     }
 
     pub fn ink_bounds(&self) -> Option<(IVec2, IVec2)> {
@@ -619,15 +786,23 @@ mod tests {
     use super::*;
 
     fn reference(origin: IVec2, size: UVec2, alpha: &[f32]) -> Reference {
+        let rgba: Vec<Vec4> = alpha.iter().map(|a| Vec4::splat(*a)).collect();
         Reference {
             origin,
             size,
-            rgba: alpha.iter().map(|a| Vec4::splat(*a)).collect(),
+            layers: vec![Layer {
+                origin,
+                size,
+                rgba: rgba.clone(),
+                mask: true,
+            }],
+            rgba,
             color_glyphs: 0,
             glyph_count: 1,
             baseline: 2.0,
             ascent: 2.0,
             descent: 1.0,
+            advance: 1.0,
             faces: Vec::new(),
             supported: true,
         }
@@ -729,11 +904,29 @@ mod tests {
         assert_eq!(visual_columns(&row("→"), 0), 1);
         assert_eq!(visual_columns(&row("→→ "), 1), 1);
         assert_eq!(visual_columns(&row("\u{e0b0}→ "), 1), 2);
+        assert!(is_sprite("─") && is_sprite("█") && is_sprite("⣿") && is_sprite("\u{e0b0}"));
+        assert!(!is_sprite("◆") && !is_sprite("\u{e0c0}") && !is_sprite("─\u{301}"));
         assert_eq!(visual_columns(&row("∑ "), 0), 1);
         assert_eq!(
             visual_columns(&[TerminalCell::wide("🙂", 2), TerminalCell::new(" ")], 0),
             2
         );
+    }
+
+    #[test]
+    fn coverage_glyphs_blend_with_ghosttys_linear_correction() {
+        // White at half coverage over black: a gamma-space blend's luminance
+        // (half the sRGB range), not linear light's 188.
+        let corrected = corrected_coverage(0.5, 1.0, 0.0);
+        assert!((corrected - 0.2140).abs() < 1e-3, "{corrected}");
+        let glyph = reference(IVec2::ZERO, UVec2::ONE, &[0.5]);
+        let mut canvas = vec![[0, 0, 0]];
+        glyph.composite_within(&mut canvas, &mut [], &[0.0], UVec2::ONE, IVec2::ZERO);
+        assert_eq!(canvas, vec![[127; 3]]);
+        // Equal luminances and full or empty coverage are unchanged.
+        assert_eq!(corrected_coverage(0.5, 0.3, 0.3005), 0.5);
+        assert!((corrected_coverage(1.0, 1.0, 0.2) - 1.0).abs() < 1e-6);
+        assert!(corrected_coverage(0.0, 1.0, 0.2).abs() < 1e-6);
     }
 
     #[test]

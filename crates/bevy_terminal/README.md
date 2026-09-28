@@ -108,21 +108,50 @@ in whole pixels. Text and box-drawing alignment are measured separately; faint
 text-edge pixels are preserved whenever the run fits its cell span.
 Styled and fallback runs share the configured text baseline. Fallback glyphs
 do not change cell measurements when the displayed content changes.
-Font-driven sizing accepts a line-height multiplier; values below one can clip
-outer ink intentionally. Fixed geometry keeps the specified cells.
+Font-driven sizing accepts a line-height multiplier; values below one tighten
+rows, and taller ink overflows into the neighbouring rows. Fixed geometry keeps
+the specified cells.
 
-Glyph constraints follow Ghostty. Ordinary text is drawn as rasterized: a run
-that overhangs a span it fits is pushed inside, a wider run (a fallback face
-with a larger advance, Iosevka's two-cell `∑`) overflows its neighbours, later
-cells drawn on top. Symbols (arrows, dingbats, miscellaneous symbols, enclosed
-alphanumerics, pictographs, emoticons, transport, private use) are scaled down
-uniformly, only as far as needed to fit their cells, and pushed inside them; a
-symbol before a blank cell may spread into it unless it follows another
-symbol. Rescaled symbols use whole-pixel font sizes. Ink is confined to its
-row, which is the unit of repaint; emoji are not enlarged to fill their cells.
-Grid graphics (box drawing, shades, legacy computing, Powerline) keep the
-per-cell clip. Ordinary text wider than its cells (Iosevka's `∑ ∞ ◆`) is
-visibly different from earlier releases, which cropped it.
+Glyph placement follows Ghostty (ported from `renderer/generic.zig`,
+`font/SharedGrid.zig` and `font/Glyph.zig`; Ghostty is MIT licensed):
+
+- **Ordinary text** is drawn as rasterized, with its bearings, on the primary
+  face's baseline. It is centered in cells wider than the face's advance.
+  Overhangs and wider runs (a fallback face with a larger advance, Iosevka's
+  two-cell `∑`) overflow into neighbouring cells, later cells drawn on top.
+  Only at the texture's outer edges, where Ghostty has window padding, is ink
+  pushed back inside.
+- **Symbols** (arrows, dingbats, miscellaneous symbols, enclosed alphanumerics,
+  pictographs, emoticons, transport, private use) are scaled down uniformly,
+  only as far as needed to fit the primary face's box over the cells they may
+  use. A symbol before a blank cell may spread into it unless it follows
+  another symbol.
+- **Colour (emoji-presentation) glyphs**, whatever their codepoint, are scaled
+  up or down to cover that box with 2.5% side padding, centered.
+- **Nerd Fonts icons** use Ghostty's per-codepoint table (generated from
+  Ghostty's `nerd_font_attributes.zig`): fit, cover or stretch at icon height,
+  centered in the first cell, with padding and scale groups.
+
+Rescaled glyphs are rasterized again at whole-pixel font sizes; stretched
+glyphs are resampled to their box.
+
+Text is blended like Ghostty's default `alpha-blending = linear-corrected`
+(outside macOS): in linear light, with each glyph's coverage corrected against
+the luminance of the cell background under it, so text keeps the weight of a
+gamma-space blend without its dark fringes. Colour glyphs blend unchanged.
+
+Ink is not confined to its row: accents, stacked marks and tall scripts
+overflow into the neighbouring rows, and only the texture's edges clip them.
+Partial repaints also redraw the rows that changed ink reaches.
+
+Grid graphics are drawn procedurally at the exact cell size, ported from
+Ghostty's sprite font, so they tile without seams whatever the font's outlines
+look like (or whether it has them at all): box drawing (U+2500–257F), block
+elements and shades (U+2580–259F), Braille (U+2800–28FF), `◢◣◤◥◸◹◺◿`, the
+geometric Powerline glyphs (U+E0B0–E0BF, E0D2, E0D4), branch drawing
+(U+F5D0–F60D) and Symbols for Legacy Computing (U+1FB00–1FBEF and its
+supplement). Their lines use the font's underline thickness, as in Ghostty. A
+wide cell holding one is drawn as a single cell spanning its columns.
 
 The crate is MIT licensed; the test fonts under `assets/fonts` are bundled
 under their own licenses (OFL 1.1) and are used only by tests.

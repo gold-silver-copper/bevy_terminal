@@ -18,11 +18,16 @@
 //! font families under `assets/fonts/`, so glyph coverage and metrics can be
 //! compared per font; the current family is shown in the first line and the
 //! window title.
+//!
+//! When the window is too small for the whole scene, scroll with `↑`/`↓` or
+//! `j`/`k` (one line), `PageUp`/`PageDown` (one page), `Home`/`End`, or the
+//! mouse wheel.
 
 #[allow(dead_code)]
 mod common;
 
 use bevy::{
+    input::mouse::MouseWheel,
     prelude::*,
     render::RenderPlugin,
     window::{PrimaryWindow, WindowResolution},
@@ -156,6 +161,17 @@ struct FontCycle {
     families: Vec<LoadedFamily>,
     current: usize,
     terminal: RatatuiTerminal,
+    /// First scene line shown at the top of the grid.
+    scroll: u16,
+    /// Grid rows of the last draw, the distance a page scroll moves.
+    page: u16,
+}
+
+impl FontCycle {
+    fn redraw(&mut self) {
+        let name = self.families[self.current].name;
+        self.page = draw_render_test(&mut self.terminal, name, &mut self.scroll);
+    }
 }
 
 /// Loads every vendored family that is present on disk; missing files are skipped.
@@ -195,8 +211,7 @@ fn main() {
         .position(|argument| argument == "--font")
         .and_then(|index| args.get(index + 1).cloned())
         .or_else(|| std::env::var("RENDER_TEST_FONT").ok());
-    let (mut terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS).with_renderer();
-    draw_render_test(&mut terminal, FAMILIES[0].0);
+    let (terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS).with_renderer();
     let theme = TerminalTheme {
         background: if transparent {
             bevy::color::Color::srgba(0.05, 0.05, 0.1, 0.6)
@@ -264,15 +279,18 @@ fn main() {
         .min(families.len().saturating_sub(1));
     let mut config = config;
     families[initial].apply(&mut config);
-    draw_render_test(&mut terminal, families[initial].name);
     let output_dir = format!("target/render-test/{}", FAMILIES[initial].1);
+    let mut cycle = FontCycle {
+        families,
+        current: initial,
+        terminal,
+        scroll: 0,
+        page: ROWS,
+    };
+    cycle.redraw();
     app.add_plugins(TerminalPlugin)
         .add_plugins((common::app::presentation, common::app::window_scale))
-        .insert_resource(FontCycle {
-            families,
-            current: initial,
-            terminal,
-        });
+        .insert_resource(cycle);
     if export {
         common::export::export_terminals_on_ready(&mut app, output_dir);
         app.add_plugins(export_plugin)
@@ -299,7 +317,7 @@ fn main() {
         })
         .add_systems(
             Update,
-            (cycle_fonts, fit_to_window).before(TerminalSystems::Sync),
+            (cycle_fonts, scroll, fit_to_window).before(TerminalSystems::Sync),
         )
         .run();
     }
@@ -312,13 +330,45 @@ fn fit_to_window(
     textures: Query<&TerminalTexture>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
-    let FontCycle {
-        families,
-        current,
-        terminal,
-    } = &mut *cycle;
-    if common::app::fit_grid_to_window(terminal, &textures, &windows, MARGIN) {
-        draw_render_test(terminal, families[*current].name);
+    if common::app::fit_grid_to_window(&mut cycle.terminal, &textures, &windows, MARGIN) {
+        cycle.redraw();
+    }
+}
+
+/// Arrow keys and `j`/`k` scroll a line, `PageUp`/`PageDown` a page,
+/// `Home`/`End` to either end; the mouse wheel scrolls too.
+fn scroll(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut wheel: MessageReader<MouseWheel>,
+    mut cycle: ResMut<FontCycle>,
+) {
+    let page = i32::from(cycle.page.max(1));
+    let mut lines: i32 = wheel
+        .read()
+        .map(|message| (-message.y.round() as i32).clamp(-8, 8))
+        .sum();
+    for (key, step) in [
+        (KeyCode::ArrowDown, 1),
+        (KeyCode::KeyJ, 1),
+        (KeyCode::ArrowUp, -1),
+        (KeyCode::KeyK, -1),
+        (KeyCode::PageDown, page),
+        (KeyCode::PageUp, -page),
+        (KeyCode::End, i32::from(u16::MAX)),
+        (KeyCode::Home, -i32::from(u16::MAX)),
+    ] {
+        if keys.just_pressed(key) {
+            lines += step;
+        }
+    }
+    if lines == 0 {
+        return;
+    }
+    let scroll = (i32::from(cycle.scroll) + lines).clamp(0, i32::from(u16::MAX)) as u16;
+    if scroll != cycle.scroll {
+        // `redraw` clamps past the last line back to it.
+        cycle.scroll = scroll;
+        cycle.redraw();
     }
 }
 
@@ -349,8 +399,7 @@ fn cycle_fonts(
     for mut window in &mut windows {
         window.title = format!("bevy_terminal_ratatui · render test · {}", family.name);
     }
-    let FontCycle { terminal, .. } = &mut *cycle;
-    draw_render_test(terminal, family.name);
+    cycle.redraw();
 }
 
 fn heading(text: &str) -> Line<'static> {
@@ -375,14 +424,17 @@ fn modifier_combination(bits: u16) -> Modifier {
         .fold(Modifier::empty(), |set, (_, (modifier, _))| set | *modifier)
 }
 
-fn draw_render_test(terminal: &mut RatatuiTerminal, font_name: &str) {
+/// Draws the scene from line `scroll` on, clamping `scroll` so the last line
+/// stays at the bottom, and returns the number of grid rows.
+fn draw_render_test(terminal: &mut RatatuiTerminal, font_name: &str, scroll: &mut u16) -> u16 {
+    let mut page = 0;
     terminal
         .draw(|frame| {
             let mut lines: Vec<Line> = Vec::new();
 
             // 1. Font faces and named modifiers.
             lines.push(heading(&format!(
-                " 1. Faces and modifiers  (regular / bold / italic / bold+italic must be four distinct faces)   font: {font_name}   Space/Tab = next font, Shift+Tab = previous "
+                " 1. Faces and modifiers  (regular / bold / italic / bold+italic must be four distinct faces)   font: {font_name}   Space/Tab = next font, Shift+Tab = previous, ↑↓ jk PgUp PgDn Home End = scroll "
             )));
             let mut faces = vec![label("faces:    ")];
             for (text, modifier) in [
@@ -624,9 +676,21 @@ fn draw_render_test(terminal: &mut RatatuiTerminal, font_name: &str) {
                 Span::styled("░▒▓█".repeat(8), Style::new().fg(Color::White).bg(Color::Black)),
             ]));
 
-            frame.render_widget(Paragraph::new(lines), frame.area());
-            frame.set_cursor_position(Position::new(14, cursor_row_of_cursor_line()));
+            let area = frame.area();
+            page = area.height;
+            let max_scroll = u16::try_from(lines.len())
+                .unwrap_or(u16::MAX)
+                .saturating_sub(area.height);
+            *scroll = (*scroll).min(max_scroll);
+            frame.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+            // The cursor stays on its line, and is hidden once scrolled out of view.
+            if let Some(row) = cursor_row_of_cursor_line().checked_sub(*scroll)
+                && row < area.height
+            {
+                frame.set_cursor_position(Position::new(14, row));
+            }
         });
+    page
 }
 
 /// Row index of the "cursor here >" line, derived from the fixed layout above.

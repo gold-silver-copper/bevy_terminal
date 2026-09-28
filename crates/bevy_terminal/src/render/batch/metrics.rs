@@ -1,4 +1,5 @@
 //! Font measurement and effective raster geometry.
+use super::constraint::Metrics as FaceMetrics;
 use super::shaping::shape_run;
 use super::{ResolvedStyle, TerminalRenderConfig, TextContext};
 use crate::render::{FontFaces, TerminalSizing};
@@ -140,67 +141,13 @@ impl GlyphBox {
     }
 }
 
-/// Cell height (whole physical pixels) that shows the primary font's line
-/// box: the configured height, grown to the full block glyph's box when that
-/// is taller. Font-driven cells start from the font's own line box (ascent +
-/// descent + leading, read from its metrics tables), so a font whose block
-/// glyph is shorter than its line box (DejaVu Sans Mono, Menlo) still gets a
-/// row tall enough for its ascenders and descenders.
-pub(crate) fn fitted_cell_height(cell_height: f32, block: Option<GlyphBox>) -> f32 {
-    block
-        .map(|block| block.height().ceil())
-        .filter(|height| *height > cell_height)
-        .unwrap_or(cell_height)
-}
-
-/// Uniform vertical shift (whole physical pixels) applied to every glyph of a
-/// terminal, chosen from measured boxes in priority order:
-///
-/// 1. a full block that is at least cell-high keeps covering the cell (tiles of
-///    blocks stay seamless);
-/// 2. the `core` ink box (ASCII ascenders, descenders and brackets) stays
-///    inside the cell;
-/// 3. the `accents` ink box (accented capitals) stays inside the cell.
-///
-/// Within the freedom left by higher priorities the core box is centered. A
-/// box that cannot fit at all is skipped, so an accent designed to overshoot
-/// the line box clips at the top rather than pushing descenders out.
-pub(crate) fn vertical_offset(
-    cell_height: f32,
-    block: Option<GlyphBox>,
-    core: Option<GlyphBox>,
-    accents: Option<GlyphBox>,
-) -> f32 {
-    let mut low = f32::NEG_INFINITY;
-    let mut high = f32::INFINITY;
-    let mut narrow = |range_low: f32, range_high: f32| {
-        if range_low <= high && range_high >= low {
-            low = low.max(range_low);
-            high = high.min(range_high);
-        }
-    };
-    if let Some(block) = block
-        && block.height() >= cell_height
-    {
-        narrow(cell_height - block.bottom, -block.top);
-    }
-    for ink in [core, accents].into_iter().flatten() {
-        if ink.height() <= cell_height {
-            narrow(-ink.top, cell_height - ink.bottom);
-        }
-    }
-    let target = core
-        .or(accents)
-        .map_or(0.0, |ink| (cell_height - ink.height()) / 2.0 - ink.top);
-    if low.is_finite() && high.is_finite() {
-        snap(target.clamp(low, high))
-    } else if low.is_finite() {
-        snap(target.max(low))
-    } else if high.is_finite() {
-        snap(target.min(high))
-    } else {
-        snap(target)
-    }
+/// Uniform vertical shift (whole physical pixels) of every text glyph:
+/// centers `text_box`, the configured faces' typographic enclosure around
+/// their shared baseline, in the cell, as Ghostty centers the face.
+pub(crate) fn centered_offset(cell_height: f32, text_box: Option<GlyphBox>) -> f32 {
+    text_box.map_or(0.0, |ink| {
+        snap((cell_height - ink.height()) / 2.0 - ink.top)
+    })
 }
 
 /// Rounds to the nearest whole pixel, halves toward +∞ — unlike
@@ -227,18 +174,34 @@ pub(super) struct RasterMetrics {
     /// Uniform vertical shift of ordinary text, enclosing the configured
     /// faces' typographic ascent/descent in whole physical pixels.
     pub(super) glyph_offset: f32,
-    /// Box-drawing glyphs retain their grid alignment independently of text.
-    pub(super) box_offset: f32,
+    /// Stroke width of procedural grid graphics: Ghostty's `box_thickness`,
+    /// the font's underline thickness rounded up.
+    pub(super) box_thickness: u32,
+    /// Ghostty's grid metrics of the primary face, for glyph constraints.
+    pub(super) face: FaceMetrics,
+    /// Whole-pixel shift centering text in a cell wider than the face's
+    /// advance, as Ghostty centers it (explicit `Fixed` cells).
+    pub(super) face_dx: f32,
 }
 
 pub(super) fn physical_config(logical: LogicalMetrics, raster_scale: f32) -> RasterMetrics {
+    let cell_size = (logical.cell_size * raster_scale).round().max(Vec2::ONE);
+    let font_size = (logical.font_size * raster_scale).max(1.0);
     RasterMetrics {
         scale: raster_scale,
-        cell_size: (logical.cell_size * raster_scale).round().max(Vec2::ONE),
-        font_size: (logical.font_size * raster_scale).max(1.0),
+        cell_size,
+        font_size,
         baseline: 0.0,
         glyph_offset: 0.0,
-        box_offset: 0.0,
+        box_thickness: (raster_scale.round() as u32).max(1),
+        face: FaceMetrics::new(
+            (f64::from(cell_size.x), f64::from(cell_size.y)),
+            f64::from(cell_size.x),
+            f64::from(cell_size.y),
+            0.0,
+            0.75 * f64::from(font_size),
+        ),
+        face_dx: 0.0,
     }
 }
 
@@ -255,9 +218,24 @@ pub(super) fn font_size_for_cell(
         })
 }
 
-/// The regular face's line box (ascent + descent + leading) in physical
-/// pixels at `font_size`, read from the font's metrics tables the way
-/// terminal emulators size their rows (`OS/2` typographic metrics when the
+/// Vertical metrics of the regular face in physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct FaceLineMetrics {
+    /// Ascent + descent + line gap: the face's line box.
+    pub(super) height: f32,
+    /// The typographic line gap (leading).
+    pub(super) line_gap: f32,
+    /// The height of capital letters, estimated as 75% of the ascent (as
+    /// Ghostty does) when the font does not record it.
+    pub(super) cap_height: f32,
+    /// The underline thickness, estimated as 15% of the x-height (itself 75%
+    /// of the cap height when unrecorded) as Ghostty does.
+    pub(super) underline_thickness: f32,
+}
+
+/// The regular face's line box (ascent + descent + leading) and cap height
+/// in physical pixels at `font_size`, read from the font's metrics tables the
+/// way terminal emulators size their rows (`OS/2` typographic metrics when the
 /// font asks for them, `hhea` otherwise). `None` when the face cannot be
 /// resolved or loaded, in which case the block-glyph measurement stands alone.
 pub(super) fn font_line_box(
@@ -265,7 +243,7 @@ pub(super) fn font_line_box(
     font_size: f32,
     fonts: &Assets<Font>,
     font_cx: &mut FontCx,
-) -> Option<f32> {
+) -> Option<FaceLineMetrics> {
     use skrifa::MetadataProvider as _;
     // A font asset is registered in the collection under its alias; every
     // other source resolves through Bevy's generic-family mapping.
@@ -300,30 +278,41 @@ pub(super) fn font_line_box(
         skrifa::instance::Size::new(font_size),
         skrifa::instance::LocationRef::default(),
     );
-    let height = metrics.ascent + metrics.descent.abs() + metrics.leading.max(0.0);
+    let line_gap = metrics.leading.max(0.0);
+    let height = metrics.ascent + metrics.descent.abs() + line_gap;
     debug!(
         "bevy_terminal: line box of {family:?} at {font_size:.2}px: ascent {} descent {} leading {} upem {} -> {height:.2}px",
         metrics.ascent, metrics.descent, metrics.leading, metrics.units_per_em
     );
-    (height.is_finite() && height > 0.0).then_some(height)
+    let cap_height = metrics
+        .cap_height
+        .filter(|cap| *cap > 0.0)
+        .unwrap_or(0.75 * metrics.ascent);
+    let x_height = metrics
+        .x_height
+        .filter(|x| *x > 0.0)
+        .unwrap_or(0.75 * cap_height);
+    let underline_thickness = metrics
+        .underline
+        .map(|underline| underline.thickness)
+        .filter(|thickness| *thickness > 0.0)
+        .unwrap_or(0.15 * x_height);
+    (height.is_finite() && height > 0.0).then_some(FaceLineMetrics {
+        height,
+        line_gap,
+        cap_height,
+        underline_thickness,
+    })
 }
 
-/// ASCII glyphs whose ink must stay inside a cell: descenders, ascenders and
-/// tall brackets. Measured for every configured face.
-pub(super) const CORE_PROBE: &str = "gjpqy|[]{}()_";
-/// Accented capitals: kept inside the cell when the core box leaves room.
-pub(super) const ACCENT_PROBE: &str = "\u{c5}\u{c9}\u{1eaa}";
-/// The font's full-block outline supplies the legacy box-drawing alignment.
-/// It is separate from both typographic metrics and procedural block rendering.
-pub(super) const BLOCK_PROBE: &str = "\u{2588}";
 /// Upper bound on cell-height refinement rounds.
 pub(super) const FIT_ROUNDS: usize = 3;
 
 /// Refines the physical metrics after the logical fit: sizes the font from the
 /// rounded physical cell width (so a fractional raster scale cannot open seams
-/// between advances), and encloses the configured faces' typographic metrics
-/// in whole pixels. Ordinary text uses that enclosure for its vertical shift;
-/// box-drawing retains its separately measured grid alignment.
+/// between advances), encloses the configured faces' typographic metrics in
+/// whole pixels to center text vertically, and derives Ghostty's face box and
+/// box-drawing thickness.
 pub(super) fn refine_metrics(
     config: &TerminalRenderConfig,
     measured_advance: Option<f32>,
@@ -339,20 +328,22 @@ pub(super) fn refine_metrics(
     let line_height = config.sizing.line_height();
     // The font's own line box (ascent + descent + leading), scaled by the
     // configured line height, is the floor for a font-driven cell, the way
-    // terminal emulators size rows: a block glyph shorter than the line box
-    // (Menlo, DejaVu Sans Mono) must not collapse the row onto the
-    // neighbouring rows' ascenders and descenders. A multiplier below one
-    // asks for exactly that tighter row, so the block glyph does not grow it
-    // back (block elements are geometry and tile regardless).
+    // terminal emulators size rows. A multiplier below one asks for a tighter
+    // row, so the text box does not grow it back.
     let may_grow = matches!(config.sizing, super::super::TerminalSizing::FitCellWidth(_))
         || (font_driven && line_height >= 1.0);
+    let face_line = font_line_box(config, raster.font_size, cx.fonts, cx.font_cx);
     if (may_grow || font_driven)
-        && let Some(line_box) = font_line_box(config, raster.font_size, cx.fonts, cx.font_cx)
+        && let Some(face_line) = face_line
     {
-        raster.cell_size.y = raster.cell_size.y.max((line_box * line_height).ceil());
+        raster.cell_size.y = raster
+            .cell_size
+            .y
+            .max((face_line.height * line_height).ceil());
     }
-    let mut block = None;
     let mut text_box: Option<GlyphBox> = None;
+    // The regular face's exact ascent, descent and advance.
+    let mut regular = None;
     for _ in 0..FIT_ROUNDS {
         text_box = None;
         for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -362,6 +353,7 @@ pub(super) fn refine_metrics(
             if let Some(run) = shape_run("0", &style, config, raster, Vec2::splat(4096.0), cx) {
                 if !bold && !italic {
                     raster.baseline = run.baseline;
+                    regular = Some((run.ascent, run.descent, run.advance));
                 }
                 let shift = raster.baseline - run.baseline;
                 let line_box = GlyphBox {
@@ -371,19 +363,8 @@ pub(super) fn refine_metrics(
                 text_box = Some(text_box.map_or(line_box, |box_| box_.union(line_box)));
             }
         }
-        // The block's fully opaque rows are what tiles seamlessly; its anti-aliased
-        // edge rows are excluded (falling back to the bitmap minus one row per side).
-        block = shape_boxes(BLOCK_PROBE, &ResolvedStyle::plain(), config, raster, cx).map(
-            |(bitmap, opaque)| {
-                opaque.unwrap_or(GlyphBox {
-                    top: bitmap.top + 1.0,
-                    bottom: (bitmap.bottom - 1.0).max(bitmap.top + 1.0),
-                })
-            },
-        );
-        let height = fitted_cell_height(raster.cell_size.y, block)
-            .max(text_box.map_or(0.0, |box_| box_.height()));
-        if !may_grow || height == raster.cell_size.y {
+        let height = text_box.map_or(0.0, |box_| box_.height());
+        if !may_grow || height <= raster.cell_size.y {
             break;
         }
         // The line box is centered in the cell-high line, so re-measure at the new height.
@@ -395,83 +376,40 @@ pub(super) fn refine_metrics(
             requested_height, raster.cell_size.y
         );
     }
-    let mut boxes = [None, None];
-    for (probe, slot) in [CORE_PROBE, ACCENT_PROBE].into_iter().zip(&mut boxes) {
-        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
-            if (bold && config.font.bold.is_none() && !config.font.synthesize)
-                || (italic && config.font.italic.is_none() && !config.font.synthesize)
-            {
-                continue;
-            }
-            let mut style = ResolvedStyle::plain();
-            style.bold = bold;
-            style.italic = italic;
-            let Some(measured) = shape_box(probe, &style, config, raster, cx) else {
-                continue;
-            };
-            *slot = Some(slot.map_or(measured, |union: GlyphBox| union.union(measured)));
-        }
+    raster.glyph_offset = centered_offset(raster.cell_size.y, text_box);
+    raster.box_thickness = face_line.map_or(raster.box_thickness, |line| {
+        (line.underline_thickness.ceil() as u32).max(1)
+    });
+    if let Some((ascent, descent, advance)) = regular {
+        // Ghostty's face box: the regular face's line box (ascent, descent and
+        // line gap, split evenly above and below) around the shared baseline.
+        let line_gap = face_line.map_or(0.0, |line| line.line_gap);
+        let cap_height = face_line.map_or(0.75 * ascent, |line| line.cap_height);
+        let face_height = ascent + descent + line_gap;
+        let face_top = raster.baseline + raster.glyph_offset - ascent - line_gap / 2.0;
+        raster.face = FaceMetrics::new(
+            (f64::from(raster.cell_size.x), f64::from(raster.cell_size.y)),
+            f64::from(advance),
+            f64::from(face_height),
+            f64::from(raster.cell_size.y - face_top - face_height),
+            f64::from(cap_height),
+        );
+        raster.face_dx = if advance < raster.cell_size.x {
+            ((raster.cell_size.x - advance) / 2.0).round()
+        } else {
+            0.0
+        };
     }
-    let [core, accents] = boxes;
-    raster.box_offset = vertical_offset(raster.cell_size.y, block, core, accents);
-    raster.glyph_offset = vertical_offset(raster.cell_size.y, None, text_box, None);
     debug!(
-        "bevy_terminal: cell {}x{}px font {:.2}px block {:?} core {:?} accents {:?} offset {}",
+        "bevy_terminal: cell {}x{}px font {:.2}px text box {:?} offset {} box thickness {}",
         raster.cell_size.x,
         raster.cell_size.y,
         raster.font_size,
-        block,
-        core,
-        accents,
-        raster.glyph_offset
+        text_box,
+        raster.glyph_offset,
+        raster.box_thickness
     );
     raster
-}
-
-/// Shapes `text` exactly as [`cached_shape`] does and returns the vertical
-/// extent of its glyph bitmaps relative to the line box top.
-pub(super) fn shape_box(
-    text: &str,
-    style: &ResolvedStyle,
-    config: &TerminalRenderConfig,
-    raster: RasterMetrics,
-    cx: &mut TextContext<'_>,
-) -> Option<GlyphBox> {
-    shape_boxes(text, style, config, raster, cx).map(|(bitmap, _)| bitmap)
-}
-
-/// Like [`shape_box`], but also returns the rows of the run's bitmaps that are
-/// fully opaque across their width (the coverage a block glyph guarantees; its
-/// first and last bitmap rows are usually anti-aliased edges), when the atlas
-/// data is readable.
-pub(super) fn shape_boxes(
-    text: &str,
-    style: &ResolvedStyle,
-    config: &TerminalRenderConfig,
-    raster: RasterMetrics,
-    cx: &mut TextContext<'_>,
-) -> Option<(GlyphBox, Option<GlyphBox>)> {
-    let layout = shape_run(text, style, config, raster, Vec2::splat(4096.0), cx)?;
-    let mut bitmap: Option<GlyphBox> = None;
-    let mut opaque: Option<GlyphBox> = None;
-    for glyph in &layout.glyphs {
-        let rect = glyph.atlas_info.rect;
-        let height = rect.size().y;
-        let top = snap(glyph.position.y - height * 0.5);
-        let glyph_box = GlyphBox {
-            top,
-            bottom: top + height,
-        };
-        bitmap = Some(bitmap.map_or(glyph_box, |b| b.union(glyph_box)));
-        if let Some(rows) = opaque_rows(cx.images, glyph.atlas_info.texture, rect) {
-            let rows = GlyphBox {
-                top: top + rows.0 as f32,
-                bottom: top + rows.1 as f32,
-            };
-            opaque = Some(opaque.map_or(rows, |b| b.union(rows)));
-        }
-    }
-    bitmap.map(|bitmap| (bitmap, opaque))
 }
 
 /// Sum of alpha over each column of an atlas glyph (all `u32::MAX` when the
@@ -497,31 +435,4 @@ pub(super) fn column_coverage(image: &Image, rect: Rect) -> Vec<u32> {
                 .sum()
         })
         .collect()
-}
-
-/// The half-open row range `[first, last)` of an atlas glyph whose alpha is
-/// fully opaque across the glyph's width; `None` if the atlas has no CPU data
-/// or no such row.
-pub(super) fn opaque_rows(
-    images: &Assets<Image>,
-    texture: AssetId<Image>,
-    rect: Rect,
-) -> Option<(u32, u32)> {
-    let image = images.get(texture)?;
-    let data = image.data.as_ref()?;
-    let width = image.texture_descriptor.size.width as usize;
-    let (x0, x1) = (rect.min.x as usize, rect.max.x as usize);
-    let (y0, y1) = (rect.min.y as usize, rect.max.y as usize);
-    if x1 <= x0 || y1 <= y0 {
-        return None;
-    }
-    let row_opaque = |y: usize| {
-        (x0..x1).all(|x| {
-            data.get((y * width + x) * 4 + 3)
-                .is_some_and(|alpha| *alpha >= 250)
-        })
-    };
-    let first = (y0..y1).find(|y| row_opaque(*y))?;
-    let last = (first..y1).take_while(|y| row_opaque(*y)).last()?;
-    Some(((first - y0) as u32, (last + 1 - y0) as u32))
 }

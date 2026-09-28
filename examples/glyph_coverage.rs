@@ -482,6 +482,7 @@ fn check(
             raw,
         );
         let baseline = oracle.baseline(&config, font_size, cell.y as f32).unwrap();
+        let face = oracle.face(&config, font_size, cell, baseline).unwrap();
         let snapshot = renderer.surface().snapshot();
         for (index, cells) in case.samples.iter().enumerate() {
             let y = index as u16 + 1;
@@ -510,26 +511,41 @@ fn check(
                 ));
             }
         }
-        for y in 0..snapshot.size().height {
-            // Every cell of the row must show the row the oracle composes:
-            // ordinary text as rasterized, symbols fitted to the cells they may
-            // occupy, wider runs overflowing blank neighbours, nothing stale.
+        // Every cell must show the texture the oracle composes: ordinary text
+        // as rasterized, symbols fitted to the cells they may occupy, ink
+        // overflowing neighbouring cells and rows in row-major order, nothing
+        // stale.
+        let background_at = |x: u16, y: u16| -> [u8; 3] {
             let cells = snapshot.row(y);
-            let row_size = UVec2::new(size.x, cell.y);
-            let background = |x: u16| -> [u8; 3] {
-                let mut anchor = usize::from(x);
-                while anchor > 0 && cells[anchor].is_continuation() {
-                    anchor -= 1;
-                }
-                let TerminalColor::Rgb(r, g, b) = cells[anchor].style.background else {
-                    panic!("explicit test background")
-                };
-                [r, g, b]
+            let mut anchor = usize::from(x);
+            while anchor > 0 && cells[anchor].is_continuation() {
+                anchor -= 1;
+            }
+            let TerminalColor::Rgb(r, g, b) = cells[anchor].style.background else {
+                panic!("explicit test background")
             };
-            let mut expected: Vec<[u8; 3]> = (0..row_size.y)
-                .flat_map(|_| (0..row_size.x).map(|x| background((x / cell.x) as u16)))
-                .collect();
-            let mut layers = vec![0u8; expected.len()];
+            [r, g, b]
+        };
+        let canvas_size = UVec2::new(size.x, cell.y * u32::from(snapshot.size().height));
+        let mut expected: Vec<[u8; 3]> = (0..canvas_size.y)
+            .flat_map(|py| {
+                (0..canvas_size.x)
+                    .map(move |px| background_at((px / cell.x) as u16, (py / cell.y) as u16))
+            })
+            .collect();
+        let mut layers = vec![0u8; expected.len()];
+        // Luminance of the cell background under each pixel, for the
+        // renderer's linear-corrected blending.
+        let backgrounds: Vec<f32> = expected
+            .iter()
+            .map(|rgb| {
+                let color = LinearRgba::from(Srgba::rgb_u8(rgb[0], rgb[1], rgb[2]));
+                fidelity_oracle::luminance(Vec3::new(color.red, color.green, color.blue))
+            })
+            .collect();
+        let mut composed = Vec::new();
+        for y in 0..snapshot.size().height {
+            let cells = snapshot.row(y);
             let mut skipped = vec![false; cells.len()];
             let mut placements = Vec::new();
             for (x, source) in cells.iter().enumerate() {
@@ -537,7 +553,7 @@ fn check(
                     continue;
                 }
                 let span = fidelity_oracle::span(cells, x) as usize;
-                if source.symbol() == "█" {
+                if fidelity_oracle::is_sprite(source.symbol()) {
                     let x0 = x as u32 * cell.x;
                     let solid = (0..cell.y)
                         .flat_map(|dy| {
@@ -548,7 +564,7 @@ fn check(
                             })
                         })
                         .all(|p| p == [255; 3]);
-                    if !solid {
+                    if source.symbol() == "█" && !solid {
                         failures.push("procedural block did not fill fixed cell".into());
                     }
                     rows.push_str(&format!("{}\t{}\t{y}\tblock\tprocedural-fill\t-\t{baseline}\t{cell:?}\t{font_size}\t-\n",case.name,case.scale));
@@ -557,9 +573,16 @@ fn check(
                 }
                 let columns = fidelity_oracle::visual_columns(cells, x);
                 let placement = match oracle
-                    .place(source, &config, font_size, cell, columns, baseline)
+                    .place(source, &config, font_size, cell, columns, baseline, face)
                 {
-                    Ok(placement) => placement,
+                    Ok(mut placement) => {
+                        if let Some((min, max)) = placement.ink() {
+                            let x0 = (x as u32 * cell.x) as i32;
+                            placement.shift.x +=
+                                fidelity_oracle::edge_shift(x0 + min.x, x0 + max.x, size.x as i32);
+                        }
+                        placement
+                    }
                     Err(error) => {
                         failures.push(format!(
                             "{} {:?}: required raster unavailable: {error}",
@@ -571,25 +594,23 @@ fn check(
                         continue;
                     }
                 };
-                let x0 = (x as u32 * cell.x) as i32;
-                let origin = IVec2::new(x0, 0);
-                if fidelity_oracle::is_graphics(source.symbol()) {
-                    placement.reference.composite_within(
-                        &mut expected,
-                        &mut layers,
-                        row_size,
-                        origin + placement.shift,
-                        x0..x0 + (cell.x * columns) as i32,
-                    );
-                } else {
-                    placement.reference.composite(
-                        &mut expected,
-                        row_size,
-                        origin + placement.shift,
-                    );
-                }
+                let origin = IVec2::new((x as u32 * cell.x) as i32, (u32::from(y) * cell.y) as i32);
+                placement.reference.composite_within(
+                    &mut expected,
+                    &mut layers,
+                    &backgrounds,
+                    canvas_size,
+                    origin + placement.shift,
+                );
                 placements.push((x, span, columns, placement));
             }
+            composed.push((skipped, placements));
+        }
+        for (y, (skipped, placements)) in (0..snapshot.size().height).zip(&composed) {
+            let cells = snapshot.row(y);
+            let row_size = UVec2::new(size.x, cell.y);
+            let top = u32::from(y) * cell.y;
+            let background = |x: u16| background_at(x, y);
             let differing_cells: Vec<usize> = (0..cells.len())
                 .filter(|x| !skipped[*x])
                 .filter(|x| {
@@ -599,7 +620,8 @@ fn check(
                             .flat_map(|dy| (0..cell.x).map(move |dx| pixels(x0 + dx, dy)))
                             .collect()
                     };
-                    let expected = region(&|px, py| expected[(py * row_size.x + px) as usize]);
+                    let expected =
+                        region(&|px, py| expected[((top + py) * row_size.x + px) as usize]);
                     let actual = region(&|px, py| {
                         let start =
                             (u32::from(y) * cell.y + py) as usize * stride + px as usize * 4;
@@ -608,7 +630,8 @@ fn check(
                     let layers = &layers;
                     let tolerance: Vec<u8> = (0..cell.y)
                         .flat_map(|dy| {
-                            (0..cell.x).map(move |dx| layers[(dy * row_size.x + x0 + dx) as usize])
+                            (0..cell.x)
+                                .map(move |dx| layers[((top + dy) * row_size.x + x0 + dx) as usize])
                         })
                         .collect();
                     fidelity_oracle::differing_pixels_within(&expected, &actual, &tolerance) > 0
@@ -621,7 +644,7 @@ fn check(
                     case.name
                 ));
             }
-            for (x, span, columns, placement) in &placements {
+            for (x, span, columns, placement) in placements {
                 let source = &cells[*x];
                 let reference = &placement.reference;
                 let required = if case.name == "mixed" {
@@ -657,16 +680,14 @@ fn check(
                     continue;
                 };
                 let span_px = IVec2::new((cell.x * *span as u32) as i32, cell.y as i32);
-                if placement.scaled {
-                    let fitted = (max - min).as_vec2();
-                    let full = placement.unconstrained.as_vec2();
-                    let bounds = Vec2::new((cell.x * *columns) as f32, cell.y as f32);
-                    let expected_size = full * (bounds / full).min_element().min(1.0);
-                    let too_large = (fitted - expected_size).max_element() > 2.0;
-                    let too_small = (expected_size * 0.85 - fitted).max_element() > 2.0;
+                if let (true, Some(target)) = (placement.scaled, placement.target) {
+                    let fitted = placement.measured;
+                    let full = placement.unconstrained;
+                    let too_large = (fitted - target).max_element() > 2.0;
+                    let too_small = (target * 0.85 - fitted).max_element() > 2.0;
                     if too_large || too_small {
                         failures.push(format!(
-                            "{} {:?}: rescaled ink {fitted:?} from {full:?} in {bounds:?}, expected about {expected_size:?}",
+                            "{} {:?}: rescaled box {fitted:?} from {full:?}, expected about {target:?}",
                             case.name,
                             source.symbol()
                         ));
@@ -743,7 +764,7 @@ fn check(
                 fidelity_oracle::save_detail(
                     &out.join(format!("{name}-reference.png")),
                     region_size,
-                    region(&|px, py| expected[(py * row_size.x + px) as usize]),
+                    region(&|px, py| expected[((top + py) * row_size.x + px) as usize]),
                 );
             }
         }

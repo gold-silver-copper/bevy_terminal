@@ -29,7 +29,8 @@
 //!   Ghostty's rules:
 //!   ordinary text at its rasterized size on the terminal's shared baseline,
 //!   symbols scaled down only as needed to fit the cells they may occupy, ink
-//!   confined to its row, wider runs overflowing their neighbours. Missing font
+//!   overflowing neighbouring cells and rows (only the texture's edges clip
+//!   it), later runs drawn over earlier ones. Missing font
 //!   coverage is recorded separately. Solid, half-block, and line tiles are
 //!   strict. Results are TSV plus native and 8x diagnostic PNGs, by default
 //!   under `target/glyph-fidelity-check`.
@@ -875,14 +876,17 @@ fn groups() -> Vec<Group> {
     ]
 }
 
-/// Block elements are drawn as geometry, never as glyphs (shades excluded).
-fn is_block_element(symbol: &str) -> bool {
-    let mut chars = symbol.chars();
-    matches!(
-        (chars.next(), chars.next()),
-        (Some('\u{2580}'..='\u{2590}' | '\u{2594}'..='\u{259f}'), None)
-    )
+/// One composed run: its symbol, logical span, visual columns and placement.
+struct Composed {
+    symbol: String,
+    span: usize,
+    columns: u32,
+    placement: Result<fidelity_oracle::Placement, String>,
 }
+
+/// Placement "error" marking procedural sprites, which the tiles and the
+/// renderer's comparison with Ghostty's reference atlases check.
+const SPRITE: &str = "procedural sprite";
 
 /// Compares each capture with raw glyph coverage and checks the procedural tiles.
 /// Returns the number of failed (family, scale, group) combinations.
@@ -937,11 +941,121 @@ fn run_checks(
         let expected_baseline = oracle
             .baseline(config, font_size, cell.y as f32)
             .expect("configured baseline reference");
+        let face = oracle
+            .face(config, font_size, cell, expected_baseline)
+            .expect("configured face box");
+        // Compose the whole texture the way a full scene draws it: every
+        // row's runs in row-major order, later cells over earlier ones, ink
+        // clipped only by the texture (grid graphics by their cells), so
+        // accents and descenders overflow into the neighbouring rows.
+        let canvas_size = UVec2::new(size.x, cell.y * u32::from(ROWS));
+        let mut expected: Vec<[u8; 3]> = (0..canvas_size.y)
+            .flat_map(|y| {
+                let row = (y / cell.y) as u16;
+                let cells = snapshot.row(row);
+                (0..canvas_size.x).map(move |x| {
+                    // A wide glyph's continuation cells carry their anchor's background.
+                    let mut anchor = (x / cell.x) as usize;
+                    while anchor > 0 && cells[anchor].is_continuation() {
+                        anchor -= 1;
+                    }
+                    checker_rgb(anchor as u16, row)
+                })
+            })
+            .collect();
+        let mut layers = vec![0u8; expected.len()];
+        // Luminance of the cell background under each pixel, for the
+        // renderer's linear-corrected blending.
+        let backgrounds: Vec<f32> = expected
+            .iter()
+            .map(|rgb| {
+                let color = LinearRgba::from(Srgba::rgb_u8(rgb[0], rgb[1], rgb[2]));
+                fidelity_oracle::luminance(Vec3::new(color.red, color.green, color.blue))
+            })
+            .collect();
+        let mut procedural = vec![false; expected.len()];
+        let mut composed: Vec<Vec<Option<Composed>>> = Vec::new();
+        for row in 0..ROWS {
+            let cells = snapshot.row(row);
+            let mut row_runs: Vec<Option<Composed>> = (0..cells.len()).map(|_| None).collect();
+            let mut column = 0;
+            while column < cells.len() {
+                let span = fidelity_oracle::span(cells, column) as usize;
+                let Some(symbol) = glyph_at(&snapshot, column as u16, row) else {
+                    column += 1;
+                    continue;
+                };
+                if fidelity_oracle::is_sprite(&symbol) {
+                    // Procedural geometry; checked by the tiles and against
+                    // Ghostty's sprite atlases. Its diagonal overshoot is
+                    // excluded from the neighbouring pixels' comparison.
+                    if fidelity_oracle::sprite_overshoots(&symbol) {
+                        let x0 = column as u32 * cell.x;
+                        let y0 = u32::from(row) * cell.y;
+                        for y in y0.saturating_sub(2)..(y0 + cell.y + 2).min(canvas_size.y) {
+                            for x in x0.saturating_sub(2)
+                                ..(x0 + cell.x * span as u32 + 2).min(canvas_size.x)
+                            {
+                                procedural[(y * canvas_size.x + x) as usize] = true;
+                            }
+                        }
+                    }
+                    row_runs[column] = Some(Composed {
+                        symbol,
+                        span,
+                        columns: span as u32,
+                        placement: Err(SPRITE.into()),
+                    });
+                    column += span;
+                    continue;
+                }
+                let columns = fidelity_oracle::visual_columns(cells, column);
+                let placement = oracle
+                    .place(
+                        &cells[column],
+                        config,
+                        font_size,
+                        cell,
+                        columns,
+                        expected_baseline,
+                        face,
+                    )
+                    .map(|mut placement| {
+                        if let Some((min, max)) = placement.ink() {
+                            let x0 = (column as u32 * cell.x) as i32;
+                            placement.shift.x +=
+                                fidelity_oracle::edge_shift(x0 + min.x, x0 + max.x, size.x as i32);
+                        }
+                        placement
+                    });
+                if let Ok(placement) = &placement {
+                    let origin = IVec2::new(
+                        (column as u32 * cell.x) as i32,
+                        (u32::from(row) * cell.y) as i32,
+                    );
+                    placement.reference.composite_within(
+                        &mut expected,
+                        &mut layers,
+                        &backgrounds,
+                        canvas_size,
+                        origin + placement.shift,
+                    );
+                }
+                row_runs[column] = Some(Composed {
+                    symbol,
+                    span,
+                    columns,
+                    placement,
+                });
+                column += span;
+            }
+            composed.push(row_runs);
+        }
         for group in groups().into_iter().filter(|_| !tiles_only) {
             // Every content cell of a row, blank or not, must show exactly the
-            // row the oracle composes: ordinary text at its rasterized size,
-            // symbols fitted, ink confined to the row, wider runs overflowing
-            // their neighbours with later cells drawn on top.
+            // texture the oracle composes: ordinary text at its rasterized
+            // size, symbols fitted, ink overflowing neighbouring cells and
+            // rows with later runs drawn on top.
             let mut problems: Vec<String> = Vec::new();
             let mut constrained: Vec<String> = Vec::new();
             let mut checked = 0;
@@ -949,63 +1063,33 @@ fn run_checks(
             let mut saved = 0;
             for row in &group.rows {
                 let cells = snapshot.row(*row);
-                let row_size = UVec2::new(size.x, cell.y);
-                // A wide glyph's continuation cells carry their anchor's background.
-                let anchors: Vec<u16> = (0..cells.len())
-                    .map(|column| {
-                        let mut anchor = column;
-                        while anchor > 0 && cells[anchor].is_continuation() {
-                            anchor -= 1;
-                        }
-                        anchor as u16
-                    })
-                    .collect();
-                let mut expected: Vec<[u8; 3]> = (0..row_size.y)
-                    .flat_map(|_| {
-                        (0..row_size.x).map(|x| checker_rgb(anchors[(x / cell.x) as usize], *row))
-                    })
-                    .collect();
-                let mut layers = vec![0u8; expected.len()];
                 let mut skipped = vec![false; cells.len()];
-                // Compose the whole row (edge columns can reach the interior);
-                // compare only the interior.
-                let mut column = 0;
-                while column < cells.len() {
-                    let source_cell = &cells[column];
-                    let span = fidelity_oracle::span(cells, column) as usize;
-                    let Some(symbol) = glyph_at(&snapshot, column as u16, *row) else {
-                        column += 1;
+                for (column, run) in composed[usize::from(*row)].iter().enumerate() {
+                    let Some(Composed {
+                        symbol,
+                        span,
+                        columns,
+                        placement,
+                    }) = run
+                    else {
                         continue;
                     };
-                    if is_block_element(&symbol) {
-                        // Procedural geometry, drawn over text; checked by the tiles.
-                        skipped[column..column + span].fill(true);
-                        column += span;
-                        continue;
-                    }
+                    let (span, columns) = (*span, *columns);
                     let interior = column > 0 && column + 1 < usize::from(COLUMNS);
-                    if interior {
-                        checked += 1;
-                    }
-                    let columns = fidelity_oracle::visual_columns(cells, column);
-                    let placement = match oracle.place(
-                        source_cell,
-                        config,
-                        font_size,
-                        cell,
-                        columns,
-                        expected_baseline,
-                    ) {
+                    let placement = match placement {
                         Ok(placement) => placement,
                         Err(error) => {
-                            if interior {
+                            if interior && error != SPRITE {
+                                checked += 1;
                                 problems.push(format!("{symbol:?}: oracle error: {error}"));
                             }
                             skipped[column..column + span].fill(true);
-                            column += span;
                             continue;
                         }
                     };
+                    if interior {
+                        checked += 1;
+                    }
                     if !placement.reference.supported {
                         // A font-coverage gap: the cell itself is not judged, but
                         // its `.notdef` raster is drawn and may reach its neighbours.
@@ -1025,46 +1109,23 @@ fn run_checks(
                         if interior {
                             problems.push(format!("{symbol:?}: empty reference"));
                         }
-                        column += span;
                         continue;
                     };
-                    let x0 = (column as u32 * cell.x) as i32;
-                    let origin = IVec2::new(x0, 0);
-                    if fidelity_oracle::is_graphics(&symbol) {
-                        placement.reference.composite_within(
-                            &mut expected,
-                            &mut layers,
-                            row_size,
-                            origin + placement.shift,
-                            x0..x0 + (cell.x * columns) as i32,
-                        );
-                    } else {
-                        placement.reference.composite(
-                            &mut expected,
-                            row_size,
-                            origin + placement.shift,
-                        );
-                    }
                     if !interior || !placement.reference.supported {
-                        column += span;
                         continue;
                     }
-                    // A rescaled symbol must be the unconstrained raster shrunk
-                    // uniformly by about the ratio that makes it fit: never
-                    // larger, and no more than 15% (a whole-pixel font-size
-                    // step plus hinting) and two pixels smaller per axis. This
-                    // is not derived from the renderer's or the oracle's
-                    // fitting arithmetic.
-                    if placement.scaled {
-                        let fitted = (max - min).as_vec2();
-                        let full = placement.unconstrained.as_vec2();
-                        let bounds = Vec2::new((cell.x * columns) as f32, cell.y as f32);
-                        let expected_size = full * (bounds / full).min_element().min(1.0);
-                        let too_large = (fitted - expected_size).max_element() > 2.0;
-                        let too_small = (expected_size * 0.85 - fitted).max_element() > 2.0;
+                    // A rescaled run must reach about Ghostty's target size:
+                    // never more than two pixels larger, and no more than 15%
+                    // (a whole-pixel font-size step plus hinting) and two
+                    // pixels smaller per axis.
+                    if let (true, Some(target)) = (placement.scaled, placement.target) {
+                        let fitted = placement.measured;
+                        let full = placement.unconstrained;
+                        let too_large = (fitted - target).max_element() > 2.0;
+                        let too_small = (target * 0.85 - fitted).max_element() > 2.0;
                         if too_large || too_small {
                             problems.push(format!(
-                                "{symbol:?} at ({column},{row}): rescaled ink {fitted:?} from {full:?} in {bounds:?}, expected about {expected_size:?}"
+                                "{symbol:?} at ({column},{row}): rescaled box {fitted:?} from {full:?}, expected about {target:?}"
                             ));
                         }
                     }
@@ -1075,7 +1136,7 @@ fn run_checks(
                     } else if columns as usize > span {
                         Some("spread")
                     } else if min.y < 0 || max.y > cell.y as i32 {
-                        Some("clipped")
+                        Some("overflow-vertical")
                     } else {
                         None
                     };
@@ -1089,7 +1150,6 @@ fn run_checks(
                         ));
                         constrained.push(message);
                     }
-                    column += span;
                 }
                 for column in 1..usize::from(COLUMNS) - 1 {
                     if skipped[column] {
@@ -1103,13 +1163,31 @@ fn run_checks(
                             .flat_map(|y| (0..cell.x).map(move |x| pixels(x0 + x, y)))
                             .collect()
                     };
-                    let expected_cell = region(&|x, y| expected[(y * row_size.x + x) as usize]);
+                    let top = u32::from(*row) * cell.y;
+                    let expected_cell =
+                        region(&|x, y| expected[((top + y) * canvas_size.x + x) as usize]);
                     let actual_cell =
                         region(&|x, y| texel(data, *size, x, u32::from(*row) * cell.y + y));
+                    // Pixels a neighbouring sprite's overshoot may reach are
+                    // taken as drawn.
+                    let expected_cell: Vec<[u8; 3]> = expected_cell
+                        .iter()
+                        .zip(&actual_cell)
+                        .enumerate()
+                        .map(|(i, (e, a))| {
+                            let (x, y) = (x0 + i as u32 % cell.x, top + i as u32 / cell.x);
+                            if procedural[(y * canvas_size.x + x) as usize] {
+                                *a
+                            } else {
+                                *e
+                            }
+                        })
+                        .collect();
                     let layers = &layers;
                     let tolerance: Vec<u8> = (0..cell.y)
                         .flat_map(|y| {
-                            (0..cell.x).map(move |x| layers[(y * row_size.x + x0 + x) as usize])
+                            (0..cell.x)
+                                .map(move |x| layers[((top + y) * canvas_size.x + x0 + x) as usize])
                         })
                         .collect();
                     let differences = fidelity_oracle::differing_pixels_within(

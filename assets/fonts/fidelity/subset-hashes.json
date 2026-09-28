@@ -14,5 +14,9 @@
   "FidelityWideSymbols.ttf": {
     "sha256": "69bef091f45e39b0fdcf65b95ab9a352deb3dd3a8737f73b29c61e44bda566d0",
     "bytes": 13384
+  },
+  "FidelityNerdSymbols.ttf": {
+    "sha256": "f031d3b47b26c3edd402deaa61dcee0fa571ab621aee608a1e0492f15e7c9956",
+    "bytes": 8064
   }
 }

@@ -26,6 +26,8 @@ exclude = [
     "CLEANUP_PROGRESS.md",
     "*_PROMPT.md",
     "HANDOFF_*.md",
+    "GHOSTTY_PARITY_*",
+    "ghostty-parity/**",
     "assets/fonts/*",
     "!assets/fonts/jetbrains-mono",
 ]
@@ -51,6 +53,8 @@ ratatui = { version = "0.30.2", default-features = false, features = ["std", "un
 [dev-dependencies]
 # Deterministic font collections for the glyph fidelity oracle.
 fontique = { version = "0.9", default-features = false }
+# Raw font metrics (line gap, cap height) for the oracle's face box.
+skrifa = { version = "0.42", default-features = false, features = ["std"] }
 ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets"] }
 bevy = { version = "0.19", default-features = false, features = ["2d", "3d", "ui", "system_font_discovery"] }
 bevy_image_export = { version = "0.17.0", git = "https://github.com/paulkre/bevy_image_export", tag = "v0.17.0" }
@@ -64,3 +68,11 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 all = "warn"
+
+# Optimized builds for day-to-day development: no LTO and split codegen,
+# with incremental compilation, so rebuilds after an edit take seconds.
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true

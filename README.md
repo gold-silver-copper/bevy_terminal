@@ -134,8 +134,8 @@ enable the appropriate Bevy features in the application itself.
 - `TerminalSizing::FromFont` derives cells from font size and line height.
 - `TerminalSizing::FitCellWidth` fits the font to a cell width and grows height
   to contain its line box.
-- `TerminalSizing::Fixed` uses explicit cell and font sizes; the row clips
-  taller ink.
+- `TerminalSizing::Fixed` uses explicit cell and font sizes; taller ink
+  overflows into the neighbouring rows.
 
 Cells snap to physical pixels. Wide glyphs occupy explicit continuation cells,
 and shaping stays anchored to grid columns. The renderer supports ANSI/indexed/RGB
@@ -197,6 +197,15 @@ cargo run --example high_dpi_export
 cargo run --example multiple_terminals_export
 ```
 
+For optimized builds that still rebuild quickly after an edit, use the
+`release-fast` profile (no LTO, 16 codegen units, incremental; binaries land in
+`target/release-fast/`). `release` itself is unchanged:
+
+```text
+cargo run --profile release-fast --example render_test
+cargo run --profile release-fast --example glyph_fidelity -- --check --font all --scale all
+```
+
 `colors_rgb` ports Ratatui's animated RGB example and redraws every cell on
 every frame, making it a live renderer-throughput stress test. Its title bar
 reports the fitted grid size and per-frame renderer statistics.
@@ -219,12 +228,18 @@ cargo test --test glyph_fidelity -- --ignored                         # the same
 
 `--check` compares GPU pixels with rows composed from raw Bevy glyph-atlas
 coverage under Ghostty's placement rules, independently of the renderer's
-fitting: ordinary text at its rasterized size on a shared typographic baseline,
-symbols scaled down only as needed to fit the cells they may occupy, ink
-confined to its row, wider runs overflowing their neighbours. Every content
+fitting: ordinary text at its rasterized size and bearings on a shared
+typographic baseline, centered in cells wider than the face, symbols scaled
+down only as needed to fit the face box of the cells they may occupy, colour
+glyphs covering it, ink
+overflowing neighbouring cells and rows (only the texture's edges clip it),
+later runs drawn over earlier ones. Every content
 cell, blank ones included, must match within two sRGB code values per blend
-(8-bit linear blending on software Vulkan). Solid blocks, half-block joins, and line panels have
-strict continuity checks at 1×, 1.5×, 2×, and 3×.
+(8-bit linear blending on software Vulkan), with text coverage blended by
+Ghostty's `linear-corrected` rule against the cell background. Solid blocks, half-block joins, and line panels have
+strict continuity checks at 1×, 1.5×, 2×, and 3×. Grid graphics are drawn
+procedurally, like Ghostty's sprites, and are compared with Ghostty's own
+reference sprite atlases by `cargo test -p bevy_terminal --lib sprite`.
 
 Checks disable host font discovery and use bundled faces plus a monochrome emoji
 fallback. Unsupported characters are reported as font-coverage gaps, separately
@@ -235,6 +250,7 @@ are written to `target/glyph-fidelity-check` (override with `--output`).
 cargo run --example glyph_fidelity -- --check --font all --scale all --from-font 23
 cargo run --example glyph_fidelity -- --check --font all --scale all --from-font 23 --line-height 0.85
 cargo run --example glyph_fidelity -- --check --font all --scale all --fixed-cell 9x18 --font-size 18
+cargo run --example glyph_fidelity -- --check --font all --scale all --fixed-cell 14x24 --font-size 16
 cargo test --example glyph_fidelity  # reference-oracle regressions
 ```
 

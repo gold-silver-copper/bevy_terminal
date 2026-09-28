@@ -14,24 +14,28 @@ fn quad(value: f32) -> QuadInstance {
         rect: Vec4::splat(value),
         uv: Vec4::ZERO,
         color: Vec4::ONE,
+        background: value,
     }
 }
 
 #[test]
 fn unsuccessful_atlas_insertion_preserves_packing_state() {
-    let mut atlas = UnifiedGlyphAtlas::new(Handle::default());
-    atlas.cursor = UVec2::new(GLYPH_ATLAS_SIZE - 2, 10);
-    atlas.row_height = 30;
+    let mut atlas = UnifiedGlyphAtlas {
+        cursor: UVec2::new(GLYPH_ATLAS_SIZE - 2, 10),
+        row_height: 30,
+        ..default()
+    };
     let cursor = atlas.cursor;
-    let mut images = Assets::<Image>::default();
+    let images = Assets::<Image>::default();
     let source = SourceGlyph {
         texture: Handle::<Image>::default().id(),
         x: 0,
         y: 0,
         width: 8,
         height: 8,
+        scaled: UVec2::ZERO,
     };
-    assert!(atlas.cache(source, &mut images).is_none());
+    assert!(atlas.cache(source, &images).is_none());
     assert!(
         atlas
             .cache(
@@ -39,7 +43,7 @@ fn unsuccessful_atlas_insertion_preserves_packing_state() {
                     width: u32::MAX,
                     ..source
                 },
-                &mut images
+                &images
             )
             .is_none()
     );
@@ -50,7 +54,7 @@ fn unsuccessful_atlas_insertion_preserves_packing_state() {
                     height: u32::MAX,
                     ..source
                 },
-                &mut images
+                &images
             )
             .is_none()
     );
@@ -168,11 +172,7 @@ fn failed_measurement_and_shapes_retry_after_font_registration() {
         ..default()
     };
     let raster = physical_config(resolve_metrics(&config, None), 1.0);
-    let atlas = app
-        .world_mut()
-        .resource_mut::<Assets<Image>>()
-        .add(make_glyph_atlas_image());
-    let mut atlas = UnifiedGlyphAtlas::new(atlas);
+    let mut atlas = UnifiedGlyphAtlas::default();
     let mut shapes = ShapeCaches::default();
     let mut stats = TerminalStats::default();
     let mut resources = SystemState::<(TextResources, ResMut<Assets<Image>>)>::new(app.world_mut());
@@ -505,7 +505,7 @@ fn repeated_despawns_release_owned_images_and_pending_scenes() {
         assert_eq!(pending.scenes.len(), entities.len());
         let owned = entities.map(|entity| {
             let state = app.world().get::<BatchMainState>(entity).unwrap();
-            [state.output.id(), state.glyph_atlas.image.id()]
+            [state.output.id(), state.glyph_atlas.id]
         });
         for entity in entities {
             app.world_mut().despawn(entity);
@@ -1019,47 +1019,28 @@ fn glyph(offset_x: f32, columns: &[u32]) -> CachedGlyph {
 }
 
 #[test]
-fn horizontal_fit_pushes_overhang_inside_and_lets_overflow_keep_its_bearings() {
-    // Inside the span: bearings are kept.
+fn text_keeps_its_bearings_except_at_the_texture_edges() {
+    // Inside the texture, overhangs and wide runs keep their bearings.
+    assert_eq!(edge_shift(&[glyph(-2.0, &[9; 8])], 11.0, 110.0), 0.0);
+    assert_eq!(edge_shift(&[glyph(6.0, &[9; 15])], 11.0, 110.0), 0.0);
+    // Ink crossing the first column's left edge is pushed right...
+    assert_eq!(edge_shift(&[glyph(-2.0, &[9; 8])], 0.0, 110.0), 2.0);
+    // ...and ink crossing the last column's right edge is pushed left.
+    assert_eq!(edge_shift(&[glyph(6.0, &[9; 8])], 99.0, 110.0), -3.0);
+    // Transparent columns are not ink.
+    assert_eq!(edge_shift(&[glyph(-2.0, &[0, 0, 9, 9])], 0.0, 110.0), 0.0);
+    // A run wider than the texture keeps its place; blank runs never move.
+    assert_eq!(edge_shift(&[glyph(-3.0, &[9; 15])], 0.0, 11.0), 0.0);
+    assert_eq!(edge_shift(&[glyph(-3.0, &[0, 0])], 0.0, 11.0), 0.0);
+    // A combined run moves as one unit.
     assert_eq!(
-        fit_horizontally(&[glyph(2.0, &[9, 9, 9])], 11.0, false),
-        0.0
-    );
-    // Overhanging left (an italic): pushed right by the overhang.
-    assert_eq!(fit_horizontally(&[glyph(-2.0, &[9; 8])], 11.0, false), 2.0);
-    // Overhanging right: pushed left.
-    assert_eq!(fit_horizontally(&[glyph(6.0, &[9; 8])], 11.0, false), -3.0);
-    // Leading transparent columns do not count as ink.
-    assert_eq!(
-        fit_horizontally(&[glyph(-2.0, &[0, 0, 9, 9])], 11.0, false),
-        0.0
-    );
-    // Wider than the span: drawn as shaped, overflowing the neighbour.
-    assert_eq!(fit_horizontally(&[glyph(0.0, &[9; 15])], 11.0, false), 0.0);
-    assert_eq!(fit_horizontally(&[glyph(-3.0, &[9; 15])], 11.0, false), 0.0);
-    // A combined run is fitted as one unit, not one translation per glyph.
-    assert_eq!(
-        fit_horizontally(
+        edge_shift(
             &[glyph(-1.0, &[2, 2]), glyph(1.0, &[10, 19, 1])],
-            5.0,
-            false
+            0.0,
+            110.0
         ),
         1.0
     );
-    // Blank runs never shift.
-    assert_eq!(fit_horizontally(&[glyph(3.0, &[0, 0])], 11.0, false), 0.0);
-}
-
-#[test]
-fn ordinary_text_keeps_faint_edge_columns_that_fit() {
-    // Cascadia Mono italic W at 1x: 11 ink columns at x=1 in an 11px cell.
-    let mut columns = vec![255; 11];
-    columns[10] = 120;
-    let run = [glyph(1.0, &columns)];
-    assert_eq!(fit_horizontally(&run, 11.0, false), -1.0);
-    assert_eq!(fit_horizontally(&run, 11.0, true), 0.0);
-    columns.reverse();
-    assert_eq!(fit_horizontally(&[glyph(-1.0, &columns)], 11.0, false), 1.0);
 }
 
 #[test]
@@ -1085,76 +1066,6 @@ fn symbols_before_blank_cells_may_spread_into_them() {
     assert_eq!(visual_columns(&wide, 0, 2), 2);
     assert!(is_symbol("🙂") && is_symbol("↔") && is_symbol("★") && is_symbol("\u{e0b0}"));
     assert!(!is_symbol("∑") && !is_symbol("◆") && !is_symbol("⣿") && !is_symbol("─"));
-}
-
-#[test]
-fn block_elements_map_to_cell_fractions() {
-    assert_eq!(block_element("█"), Some(&[(0.0, 0.0, 1.0, 1.0)][..]));
-    assert_eq!(block_element("▄"), Some(&[(0.0, 0.5, 1.0, 1.0)][..]));
-    assert_eq!(block_element("▁"), Some(&[(0.0, 0.875, 1.0, 1.0)][..]));
-    assert_eq!(block_element("▏"), Some(&[(0.0, 0.0, 0.125, 1.0)][..]));
-    assert_eq!(
-        block_element("▚"),
-        Some(&[(0.0, 0.0, 0.5, 0.5), (0.5, 0.5, 1.0, 1.0)][..])
-    );
-    // Shades keep their font glyphs; text and clusters are never blocks.
-    assert_eq!(block_element("░"), None);
-    assert_eq!(block_element("a"), None);
-    assert_eq!(block_element("█\u{fe0f}"), None);
-    // Every quadrant combination covers exactly the quadrants it names.
-    for (symbol, quadrants) in [
-        ("▖", 0b0010),
-        ("▗", 0b0001),
-        ("▘", 0b1000),
-        ("▙", 0b1011),
-        ("▚", 0b1001),
-        ("▛", 0b1110),
-        ("▜", 0b1101),
-        ("▝", 0b0100),
-        ("▞", 0b0110),
-        ("▟", 0b0111),
-    ] {
-        let rects = block_element(symbol).expect(symbol);
-        let covered = |x: f32, y: f32| {
-            rects
-                .iter()
-                .any(|&(l, t, r, b)| x >= l && x < r && y >= t && y < b)
-        };
-        let mask = u8::from(covered(0.25, 0.25)) << 3
-            | u8::from(covered(0.75, 0.25)) << 2
-            | u8::from(covered(0.25, 0.75)) << 1
-            | u8::from(covered(0.75, 0.75));
-        assert_eq!(mask, quadrants, "{symbol}");
-    }
-}
-
-/// A box-drawing bar drawn a fraction past its advance rasterises to one
-/// faint column outside the span; that is overshoot to clip, not overhang
-/// to push, or `┌` would land a pixel away from `│`.
-#[test]
-fn horizontal_fit_ignores_sub_pixel_overshoot() {
-    // `─`: full-strength bar across the cell plus a 47% column past it.
-    let mut bar = vec![255; 11];
-    bar.push(120);
-    assert_eq!(fit_horizontally(&[glyph(0.0, &bar)], 11.0, true), 0.0);
-    // The same on the left (`┐`'s bar reaching into the previous cell).
-    let mut bar = vec![120];
-    bar.extend([255; 11]);
-    assert_eq!(fit_horizontally(&[glyph(-1.0, &bar)], 11.0, true), 0.0);
-    // Overshoot on both sides at once.
-    let mut bar = vec![120];
-    bar.extend([255; 11]);
-    bar.push(120);
-    assert_eq!(fit_horizontally(&[glyph(-1.0, &bar)], 11.0, true), 0.0);
-    // A full-strength column outside the span is real overhang: pushed.
-    assert_eq!(fit_horizontally(&[glyph(3.0, &[255; 9])], 11.0, true), -1.0);
-    // Two faint columns are past the tolerance: the run is wider than the
-    // span and placed by retained coverage, which keeps the solid columns.
-    let mut bar = vec![255; 11];
-    bar.extend([120, 120]);
-    assert_eq!(fit_horizontally(&[glyph(0.0, &bar)], 11.0, true), 0.0);
-    // A negative-bearing italic with a solid first column is still pushed.
-    assert_eq!(fit_horizontally(&[glyph(-1.0, &[255; 9])], 11.0, true), 1.0);
 }
 
 #[test]
@@ -1613,43 +1524,32 @@ fn unified_atlas_copies_each_bevy_glyph_once_and_reuses_its_uv() {
         GLYPH_FORMAT,
         RenderAssetUsages::MAIN_WORLD,
     ));
-    let target = images.add(make_glyph_atlas_image());
-    let mut atlas = UnifiedGlyphAtlas::new(target.clone());
+    let mut atlas = UnifiedGlyphAtlas::default();
     let glyph = SourceGlyph {
         texture: source.id(),
         x: 1,
         y: 1,
         width: 1,
         height: 1,
+        scaled: UVec2::ZERO,
     };
 
-    let first = atlas.cache(glyph, &mut images).expect("glyph should fit");
+    let first = atlas.cache(glyph, &images).expect("glyph should fit");
     let cursor = atlas.cursor;
-    let second = atlas
-        .cache(glyph, &mut images)
-        .expect("glyph should be cached");
+    let second = atlas.cache(glyph, &images).expect("glyph should be cached");
     assert_eq!(first, second);
     assert_eq!(atlas.cursor, cursor);
     assert_eq!(atlas.glyphs.len(), 1);
+    // Only the new entry's pixels are queued for the atlas texture.
+    assert_eq!(atlas.uploads.len(), 1);
+    assert_eq!(atlas.uploads[0].origin, UVec2::ONE);
+    assert_eq!(atlas.uploads[0].size, UVec2::ONE);
+    assert_eq!(atlas.uploads[0].pixels, [11, 22, 33, 44]);
 
-    let target_offset = (GLYPH_ATLAS_SIZE as usize + 1) * 4;
-    {
-        let target = images.get(&target).expect("target atlas exists");
-        assert_eq!(
-            &target.data.as_ref().expect("atlas has CPU data")[target_offset..target_offset + 4],
-            &[11, 22, 33, 44]
-        );
-    }
-
-    atlas.clear(&mut images);
-    assert!(atlas.glyphs.is_empty());
+    atlas.clear();
+    assert!(atlas.glyphs.is_empty() && atlas.uploads.is_empty());
     assert_eq!(atlas.cursor, UVec2::splat(1));
     assert_eq!(atlas.row_height, 0);
-    let target = images.get(&target).expect("target atlas exists");
-    assert_eq!(
-        &target.data.as_ref().expect("atlas has CPU data")[target_offset..target_offset + 4],
-        &[0, 0, 0, 0]
-    );
 }
 
 #[test]
@@ -1903,12 +1803,13 @@ fn instance_bytes_append_whole_instances_in_order() {
             rect: Vec4::new(1.0, 2.0, 3.0, 4.0),
             uv: Vec4::new(5.0, 6.0, 7.0, 8.0),
             color: Vec4::new(9.0, 10.0, 11.0, 12.0),
+            background: 13.0,
         },
         quad(42.0),
     ];
     let mut bytes = Vec::new();
     append_instance_bytes(&instances, &mut bytes);
-    assert_eq!(bytes.len(), 96);
+    assert_eq!(bytes.len(), 104);
     let floats: Vec<f32> = bytes
         .as_chunks::<4>()
         .0
@@ -1916,16 +1817,17 @@ fn instance_bytes_append_whole_instances_in_order() {
         .map(|chunk| f32::from_ne_bytes(*chunk))
         .collect();
     assert_eq!(
-        &floats[..12],
+        &floats[..13],
         &[
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0
         ]
     );
-    assert_eq!(&floats[12..16], &[42.0; 4]);
+    assert_eq!(&floats[13..17], &[42.0; 4]);
+    assert_eq!(floats[25], 42.0);
     // Appending again extends at the previous end, as the shared staging
     // buffer relies on.
     append_instance_bytes(&instances[1..], &mut bytes);
-    assert_eq!(bytes.len(), 144);
+    assert_eq!(bytes.len(), 156);
 }
 
 #[test]
@@ -2092,44 +1994,31 @@ fn glyph_atlas_stays_small_until_actual_glyphs_are_drawn() {
     for _ in 0..4 {
         app.update();
     }
-    let atlas = app
-        .world()
-        .get::<BatchMainState>(entity)
-        .unwrap()
-        .glyph_atlas
-        .image
-        .clone();
-    assert_eq!(
+    // Solid-only terminals queue no atlas pixels and retain no CPU image.
+    let image_bytes = |app: &App| -> usize {
         app.world()
             .resource::<Assets<Image>>()
-            .get(&atlas)
-            .unwrap()
-            .data
-            .as_ref()
-            .unwrap()
-            .len(),
-        4
-    );
+            .iter()
+            .map(|(_, image)| image.data.as_ref().map_or(0, Vec::len))
+            .sum()
+    };
+    let state = app.world().get::<BatchMainState>(entity).unwrap();
+    let atlas = state.glyph_atlas.id;
+    assert!(state.glyph_atlas.glyphs.is_empty());
+    let empty = image_bytes(&app);
     write_text(&surface, "A");
     app.update();
-    assert_eq!(
-        app.world()
-            .get::<BatchMainState>(entity)
-            .unwrap()
-            .glyph_atlas
-            .image,
-        atlas
-    );
-    assert_eq!(
-        app.world()
-            .resource::<Assets<Image>>()
-            .get(&atlas)
-            .unwrap()
-            .data
-            .as_ref()
-            .unwrap()
-            .len(),
-        2048 * 2048 * 4
+    let state = app.world().get::<BatchMainState>(entity).unwrap();
+    assert_eq!(state.glyph_atlas.id, atlas, "the atlas keeps its identity");
+    let scene = state.pending.as_ref().expect("a scene with the new glyph");
+    assert_eq!(scene.atlas, atlas);
+    assert_eq!(scene.atlas_uploads.len(), 1, "one glyph's pixels travel");
+    // The atlas texture lives in the render world; the main world grows only
+    // by Bevy's own glyph cache.
+    assert!(
+        image_bytes(&app) - empty < 2 * 1024 * 1024,
+        "{} bytes",
+        image_bytes(&app) - empty
     );
 }
 
@@ -2162,14 +2051,12 @@ fn cached_ink(app: &App, entity: Entity, text: &str, columns: u16) -> Rect {
     let state = app.world().get::<BatchMainState>(entity).unwrap();
     let index = state
         .shapes
-        .lookup(&ResolvedStyle::plain(), text, columns)
+        .lookup_current(&ResolvedStyle::plain(), text, columns)
         .unwrap_or_else(|| panic!("{text:?} over {columns} cells is cached"));
-    let images = app.world().resource::<Assets<Image>>();
-    let atlas = images.get(&state.glyph_atlas.image).unwrap();
-    let data = atlas.data.as_ref().unwrap();
+    let data = &state.glyph_atlas.shadow;
     let mut ink: Option<Rect> = None;
     for glyph in &state.shapes.entries[index] {
-        assert_eq!(glyph.texture, state.glyph_atlas.image.id());
+        assert_eq!(glyph.texture, state.glyph_atlas.id);
         let rect = glyph.uv * GLYPH_ATLAS_SIZE as f32;
         for y in 0..glyph.size.y as u32 {
             for x in 0..glyph.size.x as u32 {
@@ -2264,7 +2151,7 @@ fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
             .get::<BatchMainState>(entity)
             .unwrap()
             .shapes
-            .lookup(&ResolvedStyle::plain(), "∑", 2)
+            .lookup_current(&ResolvedStyle::plain(), "∑", 2)
             .is_none()
     );
 
@@ -2284,4 +2171,50 @@ fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
     app.update();
     let stats = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!((stats.shape_misses, stats.changed_rows), (0, 1), "{stats}");
+}
+
+/// A sprite without atlas room is drawn nowhere this frame but is not cached
+/// as empty: the atlas-overflow rebuild (or a later frame) draws it again.
+#[test]
+fn sprites_without_atlas_room_are_not_cached_empty() {
+    use bevy::ecs::system::SystemState;
+    let mut app = text_app();
+    let config = TerminalRenderConfig {
+        sizing: TerminalSizing::Fixed {
+            cell_size: Vec2::new(10.0, 20.0),
+            font_size: 16.0,
+        },
+        ..default()
+    };
+    let raster = physical_config(resolve_metrics(&config, None), 1.0);
+    let mut atlas = UnifiedGlyphAtlas {
+        cursor: UVec2::new(1, GLYPH_ATLAS_SIZE - 4),
+        row_height: 3,
+        ..default()
+    };
+    let mut shapes = ShapeCaches::default();
+    let mut stats = TerminalStats::default();
+    let mut resources = SystemState::<(TextResources, ResMut<Assets<Image>>)>::new(app.world_mut());
+    let (mut text, mut images) = resources.get_mut(app.world_mut()).unwrap();
+    let mut cx = text.context(&mut images);
+    let run = cached_shape(
+        "\u{2592}",
+        1,
+        &ResolvedStyle::plain(),
+        &config,
+        raster,
+        Vec2::splat(100.0),
+        &mut cx,
+        &mut shapes,
+        &mut atlas,
+        &mut stats,
+    );
+    assert!(run.is_empty());
+    drop(run);
+    assert!(atlas.overflowed, "the overflow triggers a rebuild");
+    assert!(
+        shapes
+            .lookup_current(&ResolvedStyle::plain(), "\u{2592}", 1)
+            .is_none()
+    );
 }

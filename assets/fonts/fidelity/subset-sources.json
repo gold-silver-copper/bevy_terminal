@@ -40,5 +40,17 @@
     "family": "Fidelity Wide Symbols",
     "text": "()0W[]_agjpqy{|}ÅÉẪ↔∑∞█◆★⠿⣿",
     "layout_features": []
+  },
+  {
+    "repository": "ghostty-org/ghostty",
+    "revision": "b40acce58dcf77df52231c3798ea58e924647c89",
+    "path": "src/font/res/JetBrainsMonoNerdFont-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/ghostty-org/ghostty/b40acce58dcf77df52231c3798ea58e924647c89/src/font/res/JetBrainsMonoNerdFont-Regular.ttf",
+    "sha256": "a2f4268a1719b95d1f1448376173a42317919cb598423f18ea327eaca13dd916",
+    "input_name": "ghostty-JetBrainsMonoNerdFont-Regular.ttf",
+    "output": "../../../crates/bevy_terminal/assets/fonts/fidelity/FidelityNerdSymbols.ttf",
+    "family": "Fidelity Nerd Symbols",
+    "text": "0☰",
+    "layout_features": []
   }
 ]
