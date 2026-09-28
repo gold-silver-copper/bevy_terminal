@@ -1224,9 +1224,20 @@ fn late_consumer_observes_current_geometry_and_resizes_keep_the_image() {
     surface.update(|update| {
         update.resize((8, 3));
     });
+    // Readiness is what the last sync recorded; retained geometry is checked
+    // against the live surface.
     assert!(
-        initial.measured().is_none(),
+        !initial.geometry.is_current(),
         "a resize immediately invalidates old geometry"
+    );
+    assert_eq!(
+        app.world()
+            .get::<TerminalTexture>(entity)
+            .unwrap()
+            .measured()
+            .map(TerminalGeometry::grid),
+        Some(initial.geometry.grid()),
+        "until the next sync, the texture describes the previous grid"
     );
     app.update();
     let resized = app.world().get::<TerminalTexture>(entity).unwrap().clone();
@@ -2319,4 +2330,57 @@ fn withdrawn_scenes_hand_their_atlas_entries_to_the_next_scene() {
     let scene = &pending.scenes[&output];
     assert!(scene.clear && !scene.instances.is_empty());
     assert_eq!(scene.atlas_uploads.len(), carried);
+}
+
+/// Readiness is recorded by the sync, so `Changed<TerminalTexture>` fires
+/// exactly when geometry or status change: not for content, and once for a
+/// resize, after which `measured()` describes the new grid.
+#[test]
+fn texture_changes_track_geometry_not_content() {
+    #[derive(Resource, Default)]
+    struct Changes(usize);
+    let mut app = text_app();
+    app.init_resource::<Changes>().add_systems(
+        Update,
+        (|changed: Query<(), Changed<TerminalTexture>>, mut count: ResMut<Changes>| {
+            count.0 += changed.iter().count();
+        })
+        .after(super::super::TerminalSystems::Sync),
+    );
+    let surface = TerminalSurface::new((4, 2));
+    let entity = app
+        .world_mut()
+        .spawn(TerminalRenderer::new(surface.clone()))
+        .id();
+    for _ in 0..4 {
+        app.update();
+    }
+    let texture = |app: &App| app.world().get::<TerminalTexture>(entity).unwrap().clone();
+    assert_eq!(
+        texture(&app).measured().unwrap().grid(),
+        GridSize::new(4, 2)
+    );
+    app.world_mut().resource_mut::<Changes>().0 = 0;
+    write_text(&surface, "text");
+    app.update();
+    assert_eq!(
+        app.world().resource::<Changes>().0,
+        0,
+        "content is not geometry"
+    );
+    surface.update(|update| {
+        update.resize((6, 3));
+    });
+    app.update();
+    app.update();
+    assert_eq!(
+        app.world().resource::<Changes>().0,
+        1,
+        "one change per resize"
+    );
+    assert_eq!(
+        texture(&app).measured().unwrap().grid(),
+        GridSize::new(6, 3)
+    );
+    assert!(texture(&app).measured().unwrap().is_current());
 }

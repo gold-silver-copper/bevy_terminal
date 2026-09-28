@@ -81,12 +81,19 @@ pub struct TerminalTexture {
 }
 
 impl TerminalTexture {
-    /// Returns authoritative geometry, or `None` while loading, failed, or
-    /// waiting for a shared surface resize to be measured.
+    /// Returns the measured geometry, or `None` while loading or failed.
+    ///
+    /// Readiness is recorded by the renderer when it syncs
+    /// ([`super::TerminalSystems::Sync`]), so this is a plain field check and
+    /// the component changes (for `Changed<TerminalTexture>`) only when the
+    /// geometry or status does. It describes the surface as of the last sync:
+    /// a producer that resizes the surface after `Sync` sees the previous
+    /// geometry here until the next one. [`TerminalGeometry::is_current`]
+    /// and [`TerminalGeometry::matches_surface`] check retained geometry
+    /// against the live surface.
     #[must_use]
     pub fn measured(&self) -> Option<&TerminalGeometry> {
-        (self.status == TerminalStatus::Ready && self.geometry.is_current())
-            .then_some(&self.geometry)
+        (self.status == TerminalStatus::Ready).then_some(&self.geometry)
     }
 }
 
