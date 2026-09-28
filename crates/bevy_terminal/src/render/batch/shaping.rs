@@ -3,8 +3,8 @@ use super::constraint::{Align, Constraint, GlyphSize, Size};
 use super::metrics::{GlyphBox, InkSpan, inked_columns};
 use super::sprite::{self, Sprite};
 use super::{
-    Face, GLYPH_ATLAS_SIZE, GLYPH_FORMAT, RasterMetrics, TerminalRenderConfig, TerminalStats,
-    TextContext, text_font,
+    Face, GLYPH_ATLAS_SIZE, GLYPH_FORMAT, RasterMetrics, ShapingFailure, TerminalRenderConfig,
+    TerminalStats, TextContext, text_font,
 };
 use bevy::{
     platform::collections::HashMap,
@@ -67,7 +67,10 @@ pub(super) fn shape_run(
         20.0,
     );
     let shape_result = shape_result
-        .map_err(|error| ("layout", error))
+        .map_err(|error| ShapingFailure::Layout {
+            font: font.font.clone(),
+            error,
+        })
         .and_then(|()| {
             cx.text_pipeline
                 .update_text_layout_info(
@@ -80,11 +83,13 @@ pub(super) fn shape_run(
                     Justify::Left,
                     config.raster.hinting,
                 )
-                .map_err(|error| ("rasterization", error))
+                .map_err(|error| ShapingFailure::Rasterization {
+                    font: font.font.clone(),
+                    error,
+                })
         });
-    if let Err((phase, error)) = shape_result {
-        cx.failure
-            .get_or_insert_with(|| format!("{phase} for {:?}: {error}", font.font));
+    if let Err(failure) = shape_result {
+        cx.failure.get_or_insert(failure);
         return None;
     }
     let line = computed.buffer().lines().next()?;
@@ -971,7 +976,9 @@ pub(super) fn cached_shape<'a>(
         .map(|glyphs| glyphs.into_iter().flatten().collect::<Vec<_>>());
     let Some(cached) = cached else {
         cx.failure
-            .get_or_insert_with(|| format!("glyph atlas unavailable for {:?}", config.font));
+            .get_or_insert_with(|| ShapingFailure::AtlasUnavailable {
+                fonts: Box::new(config.font.clone()),
+            });
         return Cow::Borrowed(&[]);
     };
     shapes.insert(face, text, columns, cached)

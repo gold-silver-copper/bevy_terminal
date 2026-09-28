@@ -2276,3 +2276,32 @@ fn texture_changes_track_geometry_not_content() {
     );
     assert!(texture(&app).measured().unwrap().is_current());
 }
+
+/// Failures are typed until logged, with the messages they always had.
+#[test]
+fn shaping_failures_format_only_when_logged() {
+    let font = FontSource::from("mono");
+    let failure = ShapingFailure::Advance {
+        font: font.clone(),
+        error: super::metrics::AdvanceError::Invalid(0.0),
+    };
+    assert_eq!(
+        failure.to_string(),
+        "advance measurement for Family(\"mono\"): font produced invalid advance 0"
+    );
+    assert_eq!(
+        ShapingFailure::Layout {
+            font,
+            error: bevy::text::TextError::NoSuchFont
+        }
+        .to_string(),
+        "layout for Family(\"mono\"): font not found"
+    );
+    assert_ne!(
+        failure,
+        ShapingFailure::Advance {
+            font: FontSource::from("mono"),
+            error: super::metrics::AdvanceError::NotRegistered,
+        }
+    );
+}

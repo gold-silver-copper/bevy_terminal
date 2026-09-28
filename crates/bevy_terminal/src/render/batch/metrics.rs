@@ -17,6 +17,27 @@ pub(crate) const PROBE_FONT_SIZE: f32 = 64.0;
 /// Font size used while [`TerminalSizing::FitCellWidth`] has not been measured yet.
 const UNMEASURED_FONT_SIZE: f32 = 16.0;
 
+/// Why the regular font's advance could not be measured.
+#[derive(Debug, PartialEq)]
+pub(in crate::render) enum AdvanceError {
+    /// The font asset is not registered with the font context yet.
+    NotRegistered,
+    /// Bevy could not lay the probe run out.
+    Layout(bevy::text::TextError),
+    /// The font produced a non-finite or non-positive advance.
+    Invalid(f32),
+}
+
+impl std::fmt::Display for AdvanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRegistered => f.write_str("font asset has not registered"),
+            Self::Layout(error) => write!(f, "{error}"),
+            Self::Invalid(advance) => write!(f, "font produced invalid advance {advance}"),
+        }
+    }
+}
+
 /// Measures the average advance of the regular font at [`PROBE_FONT_SIZE`] by
 /// shaping a run of `0` glyphs, preserving the reason measurement failed.
 pub(in crate::render) fn measure_advance(
@@ -25,7 +46,7 @@ pub(in crate::render) fn measure_advance(
     text_pipeline: &mut TextPipeline,
     font_cx: &mut FontCx,
     layout_cx: &mut LayoutCx,
-) -> Result<f32, String> {
+) -> Result<f32, AdvanceError> {
     // A font asset is only usable once Bevy has registered it with the font
     // context (which assigns its alias); measuring before that would shape a
     // fallback font. Report "not yet" so the caller retries next frame.
@@ -34,7 +55,7 @@ pub(in crate::render) fn measure_advance(
             .get(handle.id())
             .is_none_or(|font| font.alias.is_empty())
     {
-        return Err("font asset has not registered".into());
+        return Err(AdvanceError::NotRegistered);
     }
     let font = TextFont {
         font: faces.regular.clone(),
@@ -64,12 +85,12 @@ pub(in crate::render) fn measure_advance(
             Vec2::new(f32::MAX, f32::MAX),
             20.0,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(AdvanceError::Layout)?;
     let advance = measure.max.x / PROBE_GLYPHS as f32;
     if advance.is_finite() && advance > 0.0 {
         Ok(advance)
     } else {
-        Err(format!("font produced invalid advance {advance}"))
+        Err(AdvanceError::Invalid(advance))
     }
 }
 

@@ -36,7 +36,7 @@ use bevy::{
         render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
         renderer::{RenderDevice, RenderGraph, RenderGraphSystems},
     },
-    text::{FontAtlasSet, FontCx, LayoutCx, ScaleCx, TextPipeline},
+    text::{FontAtlasSet, FontCx, LayoutCx, ScaleCx, TextError, TextPipeline},
 };
 
 use super::terminal::Measurement;
@@ -130,8 +130,39 @@ struct TextResources<'w> {
     scale_cx: ResMut<'w, ScaleCx>,
 }
 
+/// Why a terminal's text could not be measured or shaped. It is formatted
+/// only when logged, and a repeated failure is logged once.
+#[derive(Debug, PartialEq)]
+enum ShapingFailure {
+    /// The regular font's advance could not be measured.
+    Advance {
+        font: FontSource,
+        error: metrics::AdvanceError,
+    },
+    /// Bevy's text layout of a run failed.
+    Layout { font: FontSource, error: TextError },
+    /// Rasterizing a run into Bevy's font atlases failed.
+    Rasterization { font: FontSource, error: TextError },
+    /// A shaped glyph's Bevy font atlas was missing.
+    AtlasUnavailable { fonts: Box<super::FontFaces> },
+}
+
+impl std::fmt::Display for ShapingFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Advance { font, error } => write!(f, "advance measurement for {font:?}: {error}"),
+            Self::Layout { font, error } => write!(f, "layout for {font:?}: {error}"),
+            Self::Rasterization { font, error } => {
+                write!(f, "rasterization for {font:?}: {error}")
+            }
+            Self::AtlasUnavailable { fonts } => write!(f, "glyph atlas unavailable for {fonts:?}"),
+        }
+    }
+}
+
 struct TextContext<'a> {
-    failure: Option<String>,
+    /// The first failure of this update.
+    failure: Option<ShapingFailure>,
     fonts: &'a Assets<Font>,
     images: &'a mut Assets<Image>,
     text_pipeline: &'a mut TextPipeline,
@@ -253,7 +284,8 @@ fn resolve_raster_scale(requested: f32) -> f32 {
 struct BatchMainState {
     output: Handle<Image>,
     fonts: FontUse,
-    last_failure: Option<String>,
+    /// The failure last logged, so a repeated one is not logged again.
+    last_failure: Option<ShapingFailure>,
     last_config: Option<TerminalRenderConfig>,
     /// The configured theme, resolved once per configuration change.
     palette: Palette,
@@ -901,10 +933,10 @@ fn sync_batch_terminal(
         ) {
             Ok(advance) => Some(advance),
             Err(error) => {
-                cx.failure = Some(format!(
-                    "advance measurement for {:?}: {error}",
-                    config.font.regular
-                ));
+                cx.failure = Some(ShapingFailure::Advance {
+                    font: config.font.regular.clone(),
+                    error,
+                });
                 None
             }
         };
