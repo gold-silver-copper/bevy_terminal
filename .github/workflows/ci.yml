@@ -21,6 +21,21 @@ env:
   CARGO_BUILD_JOBS: "2"
 
 jobs:
+  generated:
+    name: Generated tables
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GHOSTTY_REVISION: b40acce58dcf77df52231c3798ea58e924647c89
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nerd Fonts table matches Ghostty's attributes
+        run: |
+          curl -sSfL "https://raw.githubusercontent.com/ghostty-org/ghostty/$GHOSTTY_REVISION/src/font/nerd_font_attributes.zig" \
+            -o "$RUNNER_TEMP/nerd_font_attributes.zig"
+          python3 ghostty-parity/gen_nerd_font_table.py "$RUNNER_TEMP/nerd_font_attributes.zig" "$GHOSTTY_REVISION" \
+            | diff -u crates/bevy_terminal/src/render/batch/nerd_font.rs -
+
   consumer:
     name: Real bevy_ratatui context
     runs-on: ubuntu-24.04

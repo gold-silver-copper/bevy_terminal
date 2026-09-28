@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Generate bevy_terminal's Nerd Font constraint table from Ghostty.
 
-Usage: gen_nerd_font_table.py <ghostty checkout> > \
+Usage: gen_nerd_font_table.py <nerd_font_attributes.zig> <ghostty revision> > \
     crates/bevy_terminal/src/render/batch/nerd_font.rs
+
+CI fetches the file at the pinned revision and checks that the output equals
+the committed table.
 
 Reads Ghostty's generated `src/font/nerd_font_attributes.zig` (derived from
 the Nerd Fonts patcher by `nerd_font_codegen.py`) and writes the same data as
@@ -11,14 +14,10 @@ Ghostty is MIT licensed (Copyright (c) 2024 Mitchell Hashimoto, Ghostty
 contributors).
 """
 import re
-import subprocess
 import sys
 
-root = sys.argv[1]
-source = open(f"{root}/src/font/nerd_font_attributes.zig").read()
-revision = subprocess.run(
-    ["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-).stdout.strip()
+source = open(sys.argv[1]).read()
+revision = sys.argv[2]
 
 body = source[source.index("return switch (cp) {") :]
 entries = re.findall(r"((?:\s*0x[0-9a-f]+(?:\.\.\.0x[0-9a-f]+)?,)+)\s*=>\s*\.\{(.*?)\n        \}", body, re.S)

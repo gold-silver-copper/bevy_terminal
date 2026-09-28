@@ -29,6 +29,6 @@ Other files:
 
 - `REPORT.md` is the implementation report, and `verification.json` its machine-readable verification manifest.
 - `ratty-captures/` holds enlarged before/after crops of Ratty's render test.
-- `gen_nerd_font_table.py` generates `crates/bevy_terminal/src/render/batch/nerd_font.rs` from a Ghostty checkout.
+- `gen_nerd_font_table.py` generates `crates/bevy_terminal/src/render/batch/nerd_font.rs` from Ghostty's `src/font/nerd_font_attributes.zig`. CI regenerates it from the pinned revision and fails if the committed table differs.
 - `RUN_SHAPING.md` assesses run shaping.
 - `benchmarks/` holds the benchmark results.
