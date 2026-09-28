@@ -41,10 +41,43 @@ pub(super) struct ProbeGlyph {
     pub(super) geometry: Rect,
     /// Index of the glyph among the scene's placed glyphs.
     pub(super) placed: usize,
-    /// The quads the scene emitted for it, after clipping.
-    pub(super) pieces: Vec<Rect>,
     /// Horizontal shift applied on top of the run's own placement.
     pub(super) shift: f32,
+}
+
+/// What the probe reads from the last full scene: the glyphs it placed,
+/// the quads it emitted for each placed glyph (in placement order), and all
+/// of its quads.
+#[derive(Clone, Default)]
+pub(super) struct ProbeRecord {
+    pub(super) glyphs: Vec<ProbeGlyph>,
+    pub(super) emitted: Vec<std::ops::Range<usize>>,
+    pub(super) quads: Vec<QuadInstance>,
+    pub(super) target: Vec2,
+}
+
+impl ProbeRecord {
+    pub(super) fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// The pixel rectangles of the quads the scene emitted for `glyph`,
+    /// after clipping.
+    fn pieces(&self, glyph: &ProbeGlyph) -> Vec<Rect> {
+        let size = self.target;
+        self.emitted[glyph.placed]
+            .clone()
+            .map(|index| {
+                let [left, top, right, bottom] = self.quads[index].rect();
+                pixel_rect(
+                    (left + 1.0) / 2.0 * size.x,
+                    (1.0 - top) / 2.0 * size.y,
+                    (right - left) / 2.0 * size.x,
+                    (top - bottom) / 2.0 * size.y,
+                )
+            })
+            .collect()
+    }
 }
 
 impl ProbeGlyph {
@@ -362,7 +395,7 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
         .get_mut::<BatchMainState>(entity)
         .expect("initialized terminal")
         .scratch
-        .probe = Some(Vec::new());
+        .probe = Some(ProbeRecord::default());
     for _ in 0..8 {
         app.update();
     }
@@ -373,12 +406,14 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
         .unwrap_or_else(|| panic!("{}: terminal never became ready", case.label))
         .size();
     let state = app.world().get::<BatchMainState>(entity).unwrap();
-    let glyphs = state.scratch.probe.clone().unwrap_or_default();
+    let record = state.scratch.probe.clone().unwrap_or_default();
+    let glyphs = &record.glyphs;
     assert!(!glyphs.is_empty(), "{}: no full scene recorded", case.label);
     let cell = state.raster().cell_size;
     let images = app.world().resource::<Assets<Image>>();
     let mut entries: Vec<ProbeEntry> = Vec::new();
-    for glyph in &glyphs {
+    for glyph in glyphs {
+        let pieces = record.pieces(glyph);
         let index = match entries.last() {
             Some(last) if last.row == glyph.row && last.column == glyph.column => entries.len() - 1,
             _ => {
@@ -430,7 +465,7 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
                 let y = glyph.geometry.min.y + (ty as f32 - texels.y);
                 entry.ink += 1;
                 let in_texture = x >= 0.0 && y >= 0.0 && x < size.x as f32 && y < size.y as f32;
-                let in_clip = glyph.pieces.iter().any(|piece| {
+                let in_clip = pieces.iter().any(|piece| {
                     x >= piece.min.x - 0.01
                         && y >= piece.min.y - 0.01
                         && x + 1.0 <= piece.max.x + 0.01

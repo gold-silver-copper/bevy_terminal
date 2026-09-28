@@ -35,7 +35,7 @@ pub(super) struct SceneScratch {
     pub(super) row_backgrounds: Vec<Vec<BackgroundRun>>,
     /// Glyphs of the last full scene before clipping, recorded for the probe.
     #[cfg(test)]
-    pub(super) probe: Option<Vec<super::probe::ProbeGlyph>>,
+    pub(super) probe: Option<super::probe::ProbeRecord>,
 }
 
 impl SceneScratch {
@@ -220,6 +220,7 @@ pub(super) fn build_scene(
     let size = terminal_pixel_size(snapshot.size(), &raster).as_vec2();
     let height = snapshot.size().height;
     scratch.clear();
+    // The probe records full scenes only.
     #[cfg(test)]
     let mut probe = scratch.probe.take().map(|mut probe| {
         if full {
@@ -227,6 +228,11 @@ pub(super) fn build_scene(
         }
         probe
     });
+    #[cfg(test)]
+    let probe_glyphs = probe
+        .as_mut()
+        .filter(|_| full)
+        .map(|probe| &mut probe.glyphs);
     if full || rows.rows.len() != usize::from(height) {
         // Nothing drawn before a full scene survives it.
         rows.reset(height);
@@ -267,7 +273,7 @@ pub(super) fn build_scene(
         styles: &mut *styles,
         styles_row: None,
         #[cfg(test)]
-        probe: probe.as_mut(),
+        probe: probe_glyphs,
     };
 
     // Changed rows and every row their previous ink reached.
@@ -361,20 +367,9 @@ pub(super) fn build_scene(
     // backgrounds; coverage glyphs are split where the background changes
     // so every piece is blended against the background under it.
     let cell_height = raster.cell_size.y;
-    #[cfg(test)]
-    let mut emitted = vec![
-        Vec::new();
-        if probe.is_some() && full {
-            placed.len()
-        } else {
-            0
-        }
-    ];
-    #[cfg(test)]
-    let mut placed_index = 0;
     for glyph in placed.iter() {
         #[cfg(test)]
-        let pieces_before = quads.instances.len();
+        let first_quad = quads.instances.len();
         let first = (glyph.geometry.min.y / cell_height).floor().max(0.0) as u16;
         let last = ((glyph.geometry.max.y / cell_height).ceil() as u16).min(height);
         // Most glyphs lie inside their row and the texture: no clip needed.
@@ -457,29 +452,14 @@ pub(super) fn build_scene(
             }
         }
         #[cfg(test)]
-        if let Some(pieces) = emitted.get_mut(placed_index) {
-            pieces.extend(quads.instances[pieces_before..].iter().map(|quad| {
-                let [left, top, right, bottom] = quad.rect();
-                pixel_rect(
-                    (left + 1.0) / 2.0 * size.x,
-                    (1.0 - top) / 2.0 * size.y,
-                    (right - left) / 2.0 * size.x,
-                    (top - bottom) / 2.0 * size.y,
-                )
-            }));
-        }
-        #[cfg(test)]
-        {
-            placed_index += 1;
+        if let Some(probe) = probe.as_mut().filter(|_| full) {
+            probe.emitted.push(first_quad..quads.instances.len());
         }
     }
     #[cfg(test)]
-    if let Some(probe) = probe.as_mut() {
-        for glyph in probe.iter_mut() {
-            if let Some(pieces) = emitted.get_mut(glyph.placed) {
-                glyph.pieces = std::mem::take(pieces);
-            }
-        }
+    if let Some(probe) = probe.as_mut().filter(|_| full) {
+        probe.quads = quads.instances.clone();
+        probe.target = size;
     }
 
     quads.extend(primary_atlas, Blend::Alpha, decorations.iter().copied());
@@ -764,7 +744,6 @@ impl RowPainter<'_, '_> {
                             uv: glyph.uv,
                             geometry,
                             placed: placed.len(),
-                            pieces: Vec::new(),
                             shift: shift.x,
                         });
                     }
