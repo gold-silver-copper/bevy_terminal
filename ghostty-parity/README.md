@@ -27,6 +27,8 @@ Output goes to `target/glyph-placement-probe/{summary,entries}.tsv`. `BEVY_TERMI
 
 Other files:
 
+- `REPORT.md` is the implementation report, and `verification.json` its machine-readable verification manifest.
+- `ratty-captures/` holds enlarged before/after crops of Ratty's render test.
 - `gen_nerd_font_table.py` generates `crates/bevy_terminal/src/render/batch/nerd_font.rs` from a Ghostty checkout.
 - `RUN_SHAPING.md` assesses run shaping.
 - `benchmarks/` holds the benchmark results.
