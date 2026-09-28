@@ -1,4 +1,5 @@
 use crate::scene::TerminalColor;
+use bevy::color::{LinearRgba, Srgba};
 use bevy::prelude::Color as BevyColor;
 
 /// Default colors and the 16-color ANSI palette used by the renderer.
@@ -40,17 +41,15 @@ impl Default for TerminalTheme {
 }
 
 impl TerminalTheme {
-    /// Resolves a foreground color; [`TerminalColor::Default`] is the theme foreground.
-    pub(crate) fn foreground(&self, color: TerminalColor) -> BevyColor {
-        self.resolve(color, self.foreground)
-    }
-
     /// Resolves a background color; [`TerminalColor::Default`] is the theme background.
+    #[cfg(test)]
     pub(crate) fn background(&self, color: TerminalColor) -> BevyColor {
         self.resolve(color, self.background)
     }
 
-    /// Resolves `color`, using `default` for [`TerminalColor::Default`].
+    /// Resolves `color`, using `default` for [`TerminalColor::Default`]:
+    /// the per-cell conversion [`Palette`] replaces, kept as its reference.
+    #[cfg(test)]
     pub(crate) fn resolve(&self, color: TerminalColor, default: BevyColor) -> BevyColor {
         match color {
             TerminalColor::Default => default,
@@ -85,15 +84,85 @@ const fn cube(component: u8) -> u8 {
     }
 }
 
-pub(crate) fn dim(foreground: BevyColor, background: BevyColor) -> BevyColor {
-    let foreground = foreground.to_srgba();
-    let background = background.to_srgba();
-    BevyColor::srgba(
-        foreground.red.mul_add(0.5, background.red * 0.5),
-        foreground.green.mul_add(0.5, background.green * 0.5),
-        foreground.blue.mul_add(0.5, background.blue * 0.5),
-        foreground.alpha,
-    )
+/// A colour in the two forms the scene uses: linear for drawing, sRGB for
+/// dimming (which mixes in sRGB space).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Resolved {
+    pub(crate) linear: LinearRgba,
+    srgba: Srgba,
+}
+
+impl Resolved {
+    fn new(color: BevyColor) -> Self {
+        Self {
+            linear: color.to_linear(),
+            srgba: color.to_srgba(),
+        }
+    }
+
+    fn from_srgba(srgba: Srgba) -> Self {
+        Self {
+            linear: srgba.into(),
+            srgba,
+        }
+    }
+
+    /// Mixes halfway toward `background` in sRGB space, keeping the alpha.
+    pub(crate) fn dim(self, background: Self) -> Self {
+        let (foreground, background) = (self.srgba, background.srgba);
+        Self::from_srgba(Srgba::new(
+            foreground.red.mul_add(0.5, background.red * 0.5),
+            foreground.green.mul_add(0.5, background.green * 0.5),
+            foreground.blue.mul_add(0.5, background.blue * 0.5),
+            foreground.alpha,
+        ))
+    }
+}
+
+/// A theme with every colour resolved once, so cells resolve theirs by
+/// table lookup instead of converting sRGB to linear per cell. The
+/// conversions are Bevy's own, so the results are bit-identical.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Palette {
+    pub(crate) foreground: Resolved,
+    pub(crate) background: Resolved,
+    indexed: [Resolved; 256],
+    /// Linear value of each 8-bit sRGB channel value, for true colours.
+    channels: [f32; 256],
+}
+
+impl Palette {
+    pub(crate) fn new(theme: &TerminalTheme) -> Self {
+        Self {
+            foreground: Resolved::new(theme.foreground),
+            background: Resolved::new(theme.background),
+            indexed: std::array::from_fn(|index| Resolved::new(theme.indexed(index as u8))),
+            channels: std::array::from_fn(|value| Srgba::gamma_function(value as f32 / 255.0)),
+        }
+    }
+
+    /// Resolves `color`, using `default` for [`TerminalColor::Default`].
+    pub(crate) fn resolve(&self, color: TerminalColor, default: Resolved) -> Resolved {
+        match color {
+            TerminalColor::Default => default,
+            TerminalColor::Indexed(index) => self.indexed[usize::from(index)],
+            TerminalColor::Rgb(red, green, blue) => Resolved {
+                linear: LinearRgba::new(
+                    self.channels[usize::from(red)],
+                    self.channels[usize::from(green)],
+                    self.channels[usize::from(blue)],
+                    1.0,
+                ),
+                srgba: Srgba::rgb_u8(red, green, blue),
+            },
+        }
+    }
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self::new(&TerminalTheme::default())
+    }
 }
 
 #[cfg(test)]
@@ -137,7 +206,53 @@ mod tests {
     #[test]
     fn default_uses_the_contextual_color() {
         let theme = TerminalTheme::default();
-        assert_eq!(theme.foreground(TerminalColor::Default), theme.foreground);
         assert_eq!(theme.background(TerminalColor::Default), theme.background);
+        let palette = Palette::new(&theme);
+        let default = palette.resolve(TerminalColor::Default, palette.foreground);
+        assert_eq!(default.linear, theme.foreground.to_linear());
+    }
+
+    /// The tables must reproduce the per-cell conversions they replace
+    /// bit for bit, or pixels would change.
+    #[test]
+    fn palette_tables_match_bevys_conversions_bit_for_bit() {
+        let mut theme = TerminalTheme::default();
+        // Palette entries of any colour space, as a theme may use.
+        theme.ansi[3] = BevyColor::linear_rgba(0.2, 0.4, 0.6, 0.8);
+        theme.ansi[4] = BevyColor::hsla(200.0, 0.5, 0.4, 1.0);
+        let palette = Palette::new(&theme);
+        use bevy::color::ColorToComponents;
+        let bits = |color: LinearRgba| color.to_f32_array().map(f32::to_bits);
+        for value in 0..=255u8 {
+            let color = TerminalColor::Rgb(value, 255 - value, value / 3);
+            let expected = theme.resolve(color, BevyColor::NONE);
+            let resolved = palette.resolve(color, palette.foreground);
+            assert_eq!(
+                bits(resolved.linear),
+                bits(expected.to_linear()),
+                "{color:?}"
+            );
+            assert_eq!(resolved.srgba, expected.to_srgba(), "{color:?}");
+            let color = TerminalColor::Indexed(value);
+            let expected = theme.resolve(color, BevyColor::NONE);
+            let resolved = palette.resolve(color, palette.foreground);
+            assert_eq!(
+                bits(resolved.linear),
+                bits(expected.to_linear()),
+                "{color:?}"
+            );
+            assert_eq!(resolved.srgba, expected.to_srgba(), "{color:?}");
+        }
+        // Dimming mixes in sRGB, as the replaced `Color` code did.
+        let (fg, bg) = (theme.ansi[4], BevyColor::srgb_u8(18, 40, 90));
+        let (f, b) = (fg.to_srgba(), bg.to_srgba());
+        let expected = BevyColor::srgba(
+            f.red.mul_add(0.5, b.red * 0.5),
+            f.green.mul_add(0.5, b.green * 0.5),
+            f.blue.mul_add(0.5, b.blue * 0.5),
+            f.alpha,
+        );
+        let dimmed = Resolved::new(fg).dim(Resolved::new(bg));
+        assert_eq!(bits(dimmed.linear), bits(expected.to_linear()));
     }
 }

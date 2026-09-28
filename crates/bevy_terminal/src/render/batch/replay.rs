@@ -301,6 +301,7 @@ impl Replay {
         let blink = state.blink;
         let BatchMainState {
             raster_config,
+            palette,
             shapes,
             glyph_atlas,
             ..
@@ -312,6 +313,7 @@ impl Replay {
         let scene = build_scene(
             &snapshot,
             &config,
+            palette,
             *raster_config,
             &rows,
             true,

@@ -4,8 +4,8 @@ use super::shaping::{
 };
 use super::sprite::{self, sprite_codepoint};
 use super::{
-    BatchScene, BlinkPhases, DrawBatch, PixelGeometry, QuadInstance, RasterMetrics, ResolvedStyle,
-    TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext, cell_span,
+    BatchScene, BlinkPhases, DrawBatch, Palette, PixelGeometry, QuadInstance, RasterMetrics,
+    ResolvedStyle, TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext, cell_span,
     cursor_should_be_visible, terminal_pixel_size,
 };
 use crate::scene::TerminalCell;
@@ -152,6 +152,7 @@ pub(super) struct PlacedGlyph {
 pub(super) fn build_scene(
     snapshot: &TerminalSnapshot,
     config: &TerminalRenderConfig,
+    palette: &Palette,
     raster: RasterMetrics,
     changed: &[u16],
     full: bool,
@@ -200,6 +201,7 @@ pub(super) fn build_scene(
     let mut painter = RowPainter {
         snapshot,
         config,
+        palette,
         raster,
         size,
         full,
@@ -476,6 +478,7 @@ pub(super) fn build_scene(
 struct RowPainter<'a, 'w> {
     snapshot: &'a TerminalSnapshot,
     config: &'a TerminalRenderConfig,
+    palette: &'a Palette,
     raster: RasterMetrics,
     size: Vec2,
     full: bool,
@@ -502,7 +505,7 @@ impl RowPainter<'_, '_> {
             self.snapshot
                 .row(row)
                 .iter()
-                .map(|cell| ResolvedStyle::new(cell, &self.config.theme)),
+                .map(|cell| ResolvedStyle::new(cell, self.palette)),
         );
     }
 
@@ -517,7 +520,7 @@ impl RowPainter<'_, '_> {
         luminances: &mut Vec<(f32, f32, f32)>,
     ) {
         let raster = self.raster;
-        let theme_background = self.config.theme.background;
+        let theme_background = self.palette.background.linear;
         if !self.full {
             // Partial repaints interleave a per-row clear with that row's runs,
             // so later rows' clears would overwrite runs merged upward; merge
@@ -529,7 +532,7 @@ impl RowPainter<'_, '_> {
                     width: self.size.x,
                     height: raster.cell_size.y,
                 },
-                theme_background.to_linear(),
+                theme_background,
             ));
         }
         self.resolve_styles(row);
@@ -544,8 +547,7 @@ impl RowPainter<'_, '_> {
             // Adjacent runs of equal luminance correct identically: merge them.
             let left = start as f32 * raster.cell_size.x;
             let right = end as f32 * raster.cell_size.x;
-            let linear = color.to_linear();
-            let run_luminance = luminance(linear);
+            let run_luminance = luminance(color);
             match luminances.last_mut() {
                 Some(last) if last.2 == run_luminance && last.1 == left => last.1 = right,
                 _ => luminances.push((left, right, run_luminance)),
@@ -558,9 +560,9 @@ impl RowPainter<'_, '_> {
                     height: raster.cell_size.y,
                 };
                 if self.full {
-                    merge_background_rect(rects, prev_runs, current_runs, geometry, linear);
+                    merge_background_rect(rects, prev_runs, current_runs, geometry, color);
                 } else {
-                    rects.push((geometry, linear));
+                    rects.push((geometry, color));
                 }
             }
             start = end;
@@ -609,7 +611,7 @@ impl RowPainter<'_, '_> {
                 // rectangles, drawn as solid quads in the glyphs' paint order
                 // (combined quadrants overlap at odd sizes, so they are drawn
                 // from the atlas instead).
-                let foreground = style.foreground.to_linear();
+                let foreground = style.foreground;
                 for [x0, y0, x1, y1] in rects {
                     placed.push(PlacedGlyph {
                         row,
@@ -650,7 +652,7 @@ impl RowPainter<'_, '_> {
                 // Sprites are drawn in cell pixels; text shares the centered
                 // baseline and keeps its bearings, pushed in only at the
                 // texture's edges.
-                let foreground = style.foreground.to_linear();
+                let foreground = style.foreground;
                 let shift = if sprite {
                     Vec2::ZERO
                 } else {

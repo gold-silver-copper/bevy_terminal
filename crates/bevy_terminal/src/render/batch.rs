@@ -41,8 +41,9 @@ use bevy::{
 };
 
 use super::{
-    PixelGeometry, ResolvedStyle, TerminalGeometry, TerminalRenderConfig, TerminalRenderer,
-    TerminalStats, TerminalStatus, TerminalTexture, cell_span, cursor_should_be_visible, text_font,
+    Palette, PixelGeometry, ResolvedStyle, TerminalGeometry, TerminalRenderConfig,
+    TerminalRenderer, TerminalStats, TerminalStatus, TerminalTexture, cell_span,
+    cursor_should_be_visible, text_font,
 };
 use crate::{
     scene::{GridSize, StyleFlags, TerminalSnapshot},
@@ -255,6 +256,8 @@ struct BatchMainState {
     /// Logical font size in use.
     metrics: Option<LogicalMetrics>,
     last_config: Option<TerminalRenderConfig>,
+    /// The configured theme, resolved once per configuration change.
+    palette: Palette,
     surface: Option<TerminalSurface>,
     last_snapshot: Option<TerminalSnapshot>,
     /// Whether the retained snapshot holds any `SLOW_BLINK`/`RAPID_BLINK` cells.
@@ -301,6 +304,7 @@ impl BatchMainState {
             measured_advance: None,
             metrics: None,
             last_config: None,
+            palette: Palette::default(),
             surface: None,
             last_snapshot: None,
             snapshot_blinks: false,
@@ -512,6 +516,7 @@ fn sync_batch_terminals(
                     || previous.raster.hinting != effective.raster.hinting
             });
             if config_changed {
+                state.palette = Palette::new(&effective.theme);
                 state.last_config = Some(effective);
             }
         }
@@ -859,6 +864,7 @@ fn sync_batch_terminal(
     let destination = state.output.id();
     let BatchMainState {
         raster_config,
+        palette,
         shapes,
         glyph_atlas,
         scratch,
@@ -868,6 +874,7 @@ fn sync_batch_terminal(
     let mut scene = build_scene(
         &snapshot,
         config,
+        palette,
         *raster_config,
         &rows,
         full,
@@ -890,6 +897,7 @@ fn sync_batch_terminal(
         scene = build_scene(
             &snapshot,
             config,
+            palette,
             *raster_config,
             &all,
             true,
