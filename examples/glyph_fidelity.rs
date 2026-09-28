@@ -455,7 +455,8 @@ fn main() {
         .init_resource::<Captures>()
         .init_resource::<Frame>()
         .add_systems(Update, on_ready.after(TerminalSystems::Sync))
-        .add_systems(Update, (refresh_titles, tick));
+        // Titles follow the geometry the sync publishes in the same frame.
+        .add_systems(Update, (refresh_titles.after(TerminalSystems::Sync), tick));
     if export {
         app.add_plugins(export_plugin)
             .add_systems(Update, spawn_pending_exports);
