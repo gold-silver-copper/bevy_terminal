@@ -99,7 +99,9 @@ fn set_ui_scale(
     }
 }
 
-fn present_ui(mut terminals: Query<(&TerminalTexture, &mut Node, &mut ImageNode)>) {
+fn present_ui(
+    mut terminals: Query<(&TerminalTexture, &mut Node, &mut ImageNode), Changed<TerminalTexture>>,
+) {
     for (texture, mut node, mut image) in &mut terminals {
         let Some(geometry) = texture.measured() else {
             continue;

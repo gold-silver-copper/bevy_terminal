@@ -19,9 +19,9 @@
 
 use super::shaping::is_symbol;
 use super::*;
-use crate::render::PixelGeometry;
+use crate::render::pixel_rect;
 use crate::render::{BlinkConfig, CursorConfig, FontFaces, RasterConfig, TerminalSizing};
-use crate::scene::TerminalCell;
+use crate::scene::{StyleFlags, TerminalCell};
 use std::fmt::Write as _;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -38,13 +38,46 @@ pub(super) struct ProbeGlyph {
     pub(super) texture: AssetId<Image>,
     pub(super) uv: Vec4,
     /// The placed bitmap.
-    pub(super) geometry: PixelGeometry,
+    pub(super) geometry: Rect,
     /// Index of the glyph among the scene's placed glyphs.
     pub(super) placed: usize,
-    /// The quads the scene emitted for it, after clipping.
-    pub(super) pieces: Vec<PixelGeometry>,
     /// Horizontal shift applied on top of the run's own placement.
     pub(super) shift: f32,
+}
+
+/// What the probe reads from the last full scene: the glyphs it placed,
+/// the quads it emitted for each placed glyph (in placement order), and all
+/// of its quads.
+#[derive(Clone, Default)]
+pub(super) struct ProbeRecord {
+    pub(super) glyphs: Vec<ProbeGlyph>,
+    pub(super) emitted: Vec<std::ops::Range<usize>>,
+    pub(super) quads: Vec<QuadInstance>,
+    pub(super) target: Vec2,
+}
+
+impl ProbeRecord {
+    pub(super) fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// The pixel rectangles of the quads the scene emitted for `glyph`,
+    /// after clipping.
+    fn pieces(&self, glyph: &ProbeGlyph) -> Vec<Rect> {
+        let size = self.target;
+        self.emitted[glyph.placed]
+            .clone()
+            .map(|index| {
+                let [left, top, right, bottom] = self.quads[index].rect();
+                pixel_rect(
+                    (left + 1.0) / 2.0 * size.x,
+                    (1.0 - top) / 2.0 * size.y,
+                    (right - left) / 2.0 * size.x,
+                    (top - bottom) / 2.0 * size.y,
+                )
+            })
+            .collect()
+    }
 }
 
 impl ProbeGlyph {
@@ -362,7 +395,7 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
         .get_mut::<BatchMainState>(entity)
         .expect("initialized terminal")
         .scratch
-        .probe = Some(Vec::new());
+        .probe = Some(ProbeRecord::default());
     for _ in 0..8 {
         app.update();
     }
@@ -373,12 +406,14 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
         .unwrap_or_else(|| panic!("{}: terminal never became ready", case.label))
         .size();
     let state = app.world().get::<BatchMainState>(entity).unwrap();
-    let glyphs = state.scratch.probe.clone().unwrap_or_default();
+    let record = state.scratch.probe.clone().unwrap_or_default();
+    let glyphs = &record.glyphs;
     assert!(!glyphs.is_empty(), "{}: no full scene recorded", case.label);
-    let cell = state.raster_config.cell_size;
+    let cell = state.raster().cell_size;
     let images = app.world().resource::<Assets<Image>>();
     let mut entries: Vec<ProbeEntry> = Vec::new();
-    for glyph in &glyphs {
+    for glyph in glyphs {
+        let pieces = record.pieces(glyph);
         let index = match entries.last() {
             Some(last) if last.row == glyph.row && last.column == glyph.column => entries.len() - 1,
             _ => {
@@ -414,27 +449,27 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
         };
         let atlas = Vec2::new(width as f32, height as f32);
         let texels = (glyph.uv * Vec4::new(atlas.x, atlas.y, atlas.x, atlas.y)).round();
-        let cell_box = PixelGeometry {
-            x: f32::from(glyph.column) * cell.x,
-            y: f32::from(glyph.row) * cell.y,
-            width: f32::from(glyph.columns) * cell.x,
-            height: cell.y,
-        };
+        let cell_box = pixel_rect(
+            f32::from(glyph.column) * cell.x,
+            f32::from(glyph.row) * cell.y,
+            f32::from(glyph.columns) * cell.x,
+            cell.y,
+        );
         for ty in texels.y as u32..texels.w as u32 {
             for tx in texels.x as u32..texels.z as u32 {
                 let alpha = data[((ty * width + tx) * 4 + 3) as usize];
                 if alpha == 0 {
                     continue;
                 }
-                let x = glyph.geometry.x + (tx as f32 - texels.x);
-                let y = glyph.geometry.y + (ty as f32 - texels.y);
+                let x = glyph.geometry.min.x + (tx as f32 - texels.x);
+                let y = glyph.geometry.min.y + (ty as f32 - texels.y);
                 entry.ink += 1;
                 let in_texture = x >= 0.0 && y >= 0.0 && x < size.x as f32 && y < size.y as f32;
-                let in_clip = glyph.pieces.iter().any(|piece| {
-                    x >= piece.x - 0.01
-                        && y >= piece.y - 0.01
-                        && x + 1.0 <= piece.x + piece.width + 0.01
-                        && y + 1.0 <= piece.y + piece.height + 0.01
+                let in_clip = pieces.iter().any(|piece| {
+                    x >= piece.min.x - 0.01
+                        && y >= piece.min.y - 0.01
+                        && x + 1.0 <= piece.max.x + 0.01
+                        && y + 1.0 <= piece.max.y + 0.01
                 });
                 if !in_texture {
                     entry.lost_edge += 1;
@@ -442,15 +477,15 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
                     entry.lost_clip += 1;
                 }
                 let over = [
-                    cell_box.y - y,
-                    y + 1.0 - (cell_box.y + cell_box.height),
-                    cell_box.x - x,
-                    x + 1.0 - (cell_box.x + cell_box.width),
+                    cell_box.min.y - y,
+                    y + 1.0 - cell_box.max.y,
+                    cell_box.min.x - x,
+                    x + 1.0 - cell_box.max.x,
                 ];
                 for (side, over) in entry.outside.iter_mut().zip(over) {
                     *side = (*side).max(over as i32);
                 }
-                let (cx, cy) = ((x - cell_box.x) as i32, (y - cell_box.y) as i32);
+                let (cx, cy) = ((x - cell_box.min.x) as i32, (y - cell_box.min.y) as i32);
                 entry.bounds = [
                     entry.bounds[0].min(cx),
                     entry.bounds[1].min(cy),
@@ -505,12 +540,15 @@ pub(super) fn matrix() -> Vec<ProbeCase> {
 pub(super) const REPORT_HEADER: &str = "font\tsize\tscale\tline_height\tcell\tsymbol\trow\tcolumn\tcolumns\tclass\tink\tlost_clip\tlost_edge\tout_top\tout_bottom\tout_left\tout_right\tshift_x\tink_left\tink_top\tink_right\tink_bottom\n";
 pub(super) const SUMMARY_HEADER: &str = "font\tsize\tscale\tline_height\tcell\tgraphemes\tclipped\tlost_clip\tedge_clipped\tlost_edge\ttext_shifted\ttext_shift_px\toverflowing\n";
 
-/// Appends the notable entries of one run and its summary line.
+/// Appends the notable entries of one run and its summary line; at 24 px
+/// and scale 2, entries of non-sprite graphemes that lost ink or were
+/// shifted also go to `defects` (committed as `probe-after-defects.tsv`).
 pub(super) fn report(
     case: &ProbeCase,
     result: &ProbeResult,
     report: &mut String,
     summary: &mut String,
+    defects: &mut String,
 ) {
     let cell = format!("{}x{}", result.cell.x, result.cell.y);
     let mut clipped = 0;
@@ -540,8 +578,7 @@ pub(super) fn report(
             continue;
         }
         let [top, bottom, left, right] = entry.outside;
-        writeln!(
-            report,
+        let line = format!(
             "{}\t{cell}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{top}\t{bottom}\t{left}\t{right}\t{}\t{}",
             case.label,
             entry.symbol,
@@ -554,8 +591,15 @@ pub(super) fn report(
             entry.lost_edge,
             entry.shift,
             entry.bounds.map(|v| v.to_string()).join("\t"),
-        )
-        .unwrap();
+        );
+        writeln!(report, "{line}").unwrap();
+        if case.font_size == 24.0
+            && case.scale == 2.0
+            && entry.class != "sprite"
+            && (entry.lost_clip > 0 || entry.lost_edge > 0 || entry.shift != 0.0)
+        {
+            writeln!(defects, "{line}").unwrap();
+        }
     }
     writeln!(
         summary,
@@ -579,12 +623,14 @@ fn glyph_placement_probe_report() {
     std::fs::create_dir_all(&directory).unwrap();
     let mut report = String::from(REPORT_HEADER);
     let mut summary = String::from(SUMMARY_HEADER);
+    let mut defects = String::from(REPORT_HEADER);
     for case in matrix() {
         let result = run(&case);
-        self::report(&case, &result, &mut report, &mut summary);
+        self::report(&case, &result, &mut report, &mut summary, &mut defects);
     }
     std::fs::write(format!("{directory}/entries.tsv"), &report).unwrap();
     std::fs::write(format!("{directory}/summary.tsv"), &summary).unwrap();
+    std::fs::write(format!("{directory}/defects.tsv"), &defects).unwrap();
     print!("{summary}");
 }
 

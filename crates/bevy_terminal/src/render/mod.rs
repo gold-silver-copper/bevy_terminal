@@ -16,8 +16,8 @@ mod color;
 mod terminal;
 
 pub use batch::TerminalPlugin;
+use color::Palette;
 pub use color::TerminalTheme;
-use color::dim;
 pub use terminal::{
     TerminalGeometry, TerminalRenderer, TerminalStats, TerminalStatus, TerminalTexture, grid_for,
 };
@@ -119,9 +119,10 @@ impl FontFaces {
         }
     }
 
-    /// Returns the face for a style together with the weight and style to
+    /// Returns the font for a face together with the weight and style to
     /// request from it.
-    fn resolve(&self, bold: bool, italic: bool) -> (&FontSource, FontWeight, FontStyle) {
+    fn resolve(&self, face: Face) -> (&FontSource, FontWeight, FontStyle) {
+        let (bold, italic) = (face.bold(), face.italic());
         let (face, exact) = match (bold, italic) {
             (true, true) => self
                 .bold_italic
@@ -302,8 +303,46 @@ pub enum TerminalSystems {
     Sync,
 }
 
-fn text_font(faces: &FontFaces, font_size: f32, style: &ResolvedStyle) -> TextFont {
-    let (face, weight, font_style) = faces.resolve(style.bold, style.italic);
+/// Which of the four faces a run of text uses.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum Face {
+    Regular,
+    Bold,
+    Italic,
+    BoldItalic,
+}
+
+impl Face {
+    const ALL: [Self; 4] = [Self::Regular, Self::Bold, Self::Italic, Self::BoldItalic];
+
+    fn of(flags: StyleFlags) -> Self {
+        match (
+            flags.contains(StyleFlags::BOLD),
+            flags.contains(StyleFlags::ITALIC),
+        ) {
+            (false, false) => Self::Regular,
+            (true, false) => Self::Bold,
+            (false, true) => Self::Italic,
+            (true, true) => Self::BoldItalic,
+        }
+    }
+
+    fn bold(self) -> bool {
+        matches!(self, Self::Bold | Self::BoldItalic)
+    }
+
+    fn italic(self) -> bool {
+        matches!(self, Self::Italic | Self::BoldItalic)
+    }
+
+    /// A dense index, for per-face tables.
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+fn text_font(faces: &FontFaces, font_size: f32, face: Face) -> TextFont {
+    let (face, weight, font_style) = faces.resolve(face);
     TextFont {
         font: face.clone(),
         font_size: font_size.into(),
@@ -313,12 +352,12 @@ fn text_font(faces: &FontFaces, font_size: f32, style: &ResolvedStyle) -> TextFo
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct PixelGeometry {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
+/// The texture-pixel rectangle `width` × `height` at (`x`, `y`), y down.
+fn pixel_rect(x: f32, y: f32, width: f32, height: f32) -> Rect {
+    Rect {
+        min: Vec2::new(x, y),
+        max: Vec2::new(x + width, y + height),
+    }
 }
 
 /// Returns the number of columns rendered for the cell at `column`.
@@ -349,65 +388,45 @@ fn blink_hidden(elapsed: f32, frequency_hz: Option<f32>) -> bool {
     })
 }
 
+/// A cell's colours resolved against the theme, with its attributes.
 #[derive(Clone, Debug, PartialEq)]
 struct ResolvedStyle {
-    foreground: Color,
-    background: Color,
-    underline: Color,
-    bold: bool,
-    italic: bool,
-    underlined: bool,
-    crossed_out: bool,
-    slow_blink: bool,
-    rapid_blink: bool,
-    hidden: bool,
+    foreground: LinearRgba,
+    background: LinearRgba,
+    underline: LinearRgba,
+    flags: StyleFlags,
 }
 
 impl ResolvedStyle {
-    /// White-on-black regular style used for measurement runs.
-    pub(crate) fn plain() -> Self {
-        Self {
-            foreground: Color::WHITE,
-            background: Color::BLACK,
-            underline: Color::WHITE,
-            bold: false,
-            italic: false,
-            underlined: false,
-            crossed_out: false,
-            slow_blink: false,
-            rapid_blink: false,
-            hidden: false,
-        }
+    /// Whether any of `flags` is set.
+    fn any(&self, flags: StyleFlags) -> bool {
+        self.flags.intersects(flags)
     }
-}
 
-impl ResolvedStyle {
-    fn new(cell: &TerminalCell, theme: &TerminalTheme) -> Self {
-        let mut foreground = theme.foreground(cell.style.foreground);
-        let mut background = theme.background(cell.style.background);
+    fn face(&self) -> Face {
+        Face::of(self.flags)
+    }
+
+    fn new(cell: &TerminalCell, palette: &Palette) -> Self {
+        let mut foreground = palette.resolve(cell.style.foreground, palette.foreground);
+        let mut background = palette.resolve(cell.style.background, palette.background);
         if cell.style.has(StyleFlags::REVERSED) {
             std::mem::swap(&mut foreground, &mut background);
         }
-        let mut underline = theme.resolve(cell.style.underline, foreground);
+        let mut underline = palette.resolve(cell.style.underline, foreground);
         if cell.style.has(StyleFlags::DIM) {
-            foreground = dim(foreground, background);
-            underline = dim(underline, background);
+            foreground = foreground.dim(background);
+            underline = underline.dim(background);
         }
         if cell.style.has(StyleFlags::HIDDEN) {
             foreground = background;
             underline = background;
         }
         Self {
-            foreground,
-            background,
-            underline,
-            bold: cell.style.has(StyleFlags::BOLD),
-            italic: cell.style.has(StyleFlags::ITALIC),
-            underlined: cell.style.has(StyleFlags::UNDERLINED),
-            crossed_out: cell.style.has(StyleFlags::CROSSED_OUT),
-            slow_blink: cell.style.has(StyleFlags::SLOW_BLINK),
-            rapid_blink: cell.style.has(StyleFlags::RAPID_BLINK),
-            hidden: cell.style.has(StyleFlags::HIDDEN),
+            foreground: foreground.linear,
+            background: background.linear,
+            underline: underline.linear,
+            flags: cell.style.flags,
         }
     }
 }
@@ -490,15 +509,20 @@ mod tests {
                         | StyleFlags::ITALIC,
                 ),
         );
-        let style = ResolvedStyle::new(&cell, &theme);
-        assert_eq!(style.background, theme.ansi[1]);
-        assert_ne!(style.foreground, theme.ansi[4]);
-        assert!(style.bold && style.italic && style.underlined && style.crossed_out);
+        let style = ResolvedStyle::new(&cell, &Palette::new(&theme));
+        assert_eq!(style.background, theme.ansi[1].to_linear());
+        assert_ne!(style.foreground, theme.ansi[4].to_linear());
+        assert!(style.flags.contains(
+            StyleFlags::BOLD
+                | StyleFlags::ITALIC
+                | StyleFlags::UNDERLINED
+                | StyleFlags::CROSSED_OUT
+        ));
 
         cell.style.flags.insert(StyleFlags::HIDDEN);
-        let hidden = ResolvedStyle::new(&cell, &theme);
+        let hidden = ResolvedStyle::new(&cell, &Palette::new(&theme));
         assert_eq!(hidden.foreground, hidden.background);
-        assert!(hidden.hidden);
+        assert!(hidden.any(StyleFlags::HIDDEN));
 
         let reversed = TerminalCell::new("X").with_style(
             TerminalStyle::new()
@@ -506,8 +530,8 @@ mod tests {
                 .bg(TerminalColor::BLUE)
                 .with(StyleFlags::REVERSED | StyleFlags::UNDERLINED),
         );
-        let reversed = ResolvedStyle::new(&reversed, &theme);
-        assert_eq!(reversed.foreground, theme.ansi[4]);
+        let reversed = ResolvedStyle::new(&reversed, &Palette::new(&theme));
+        assert_eq!(reversed.foreground, theme.ansi[4].to_linear());
         assert_eq!(reversed.underline, reversed.foreground);
     }
 
@@ -519,22 +543,22 @@ mod tests {
         let bold_italic = FontSource::from("bold italic");
 
         let only_regular = FontFaces::regular(regular.clone());
-        assert_eq!(only_regular.resolve(true, true).0, &regular);
+        assert_eq!(only_regular.resolve(Face::BoldItalic).0, &regular);
         assert_eq!(FontFaces::from(regular.clone()), only_regular);
 
         let with_bold = FontFaces {
             bold: Some(bold.clone()),
             ..only_regular.clone()
         };
-        assert_eq!(with_bold.resolve(true, false).0, &bold);
-        assert_eq!(with_bold.resolve(true, true).0, &bold);
-        assert_eq!(with_bold.resolve(false, true).0, &regular);
+        assert_eq!(with_bold.resolve(Face::Bold).0, &bold);
+        assert_eq!(with_bold.resolve(Face::BoldItalic).0, &bold);
+        assert_eq!(with_bold.resolve(Face::Italic).0, &regular);
 
         let with_italic = FontFaces {
             italic: Some(italic.clone()),
             ..only_regular.clone()
         };
-        assert_eq!(with_italic.resolve(true, true).0, &italic);
+        assert_eq!(with_italic.resolve(Face::BoldItalic).0, &italic);
 
         let complete = FontFaces {
             regular: regular.clone(),
@@ -543,15 +567,19 @@ mod tests {
             bold_italic: Some(bold_italic.clone()),
             synthesize: true,
         };
-        assert_eq!(complete.resolve(false, false).0, &regular);
-        assert_eq!(complete.resolve(true, false).0, &bold);
-        assert_eq!(complete.resolve(false, true).0, &italic);
-        assert_eq!(complete.resolve(true, true).0, &bold_italic);
+        assert_eq!(complete.resolve(Face::Regular).0, &regular);
+        assert_eq!(complete.resolve(Face::Bold).0, &bold);
+        assert_eq!(complete.resolve(Face::Italic).0, &italic);
+        assert_eq!(complete.resolve(Face::BoldItalic).0, &bold_italic);
 
         let theme = TerminalTheme::default();
         let cell = TerminalCell::new("X")
             .with_style(TerminalStyle::new().with(StyleFlags::BOLD | StyleFlags::ITALIC));
-        let font = text_font(&complete, 18.0, &ResolvedStyle::new(&cell, &theme));
+        let font = text_font(
+            &complete,
+            18.0,
+            ResolvedStyle::new(&cell, &Palette::new(&theme)).face(),
+        );
         assert_eq!(font.font, bold_italic);
         assert_eq!(font.weight, FontWeight::BOLD);
         assert_eq!(font.style, FontStyle::Italic);
@@ -564,7 +592,11 @@ mod tests {
         };
         let italic_cell =
             TerminalCell::new("X").with_style(TerminalStyle::new().with(StyleFlags::ITALIC));
-        let synthesized = text_font(&bold_only, 18.0, &ResolvedStyle::new(&italic_cell, &theme));
+        let synthesized = text_font(
+            &bold_only,
+            18.0,
+            ResolvedStyle::new(&italic_cell, &Palette::new(&theme)).face(),
+        );
         assert_eq!(synthesized.font, regular);
         assert_eq!(synthesized.style, FontStyle::Italic);
         let plain = text_font(
@@ -573,7 +605,7 @@ mod tests {
                 ..bold_only.clone()
             },
             18.0,
-            &ResolvedStyle::new(&italic_cell, &theme),
+            ResolvedStyle::new(&italic_cell, &Palette::new(&theme)).face(),
         );
         assert_eq!(plain.font, regular);
         assert_eq!(plain.style, FontStyle::Normal);
@@ -586,7 +618,7 @@ mod tests {
                 ..bold_only
             },
             18.0,
-            &ResolvedStyle::new(&bold_cell, &theme),
+            ResolvedStyle::new(&bold_cell, &Palette::new(&theme)).face(),
         );
         assert_eq!(exact.font, bold);
         assert_eq!(exact.weight, FontWeight::BOLD);

@@ -5,18 +5,17 @@ mod gpu;
 pub(super) mod metrics;
 #[rustfmt::skip]
 mod nerd_font;
+mod quad;
 mod scene;
 mod shaping;
 mod sprite;
-use gpu::{
-    BatchGpuState, batch_scenes_can_render_early, extract_batch_scenes, render_batch_scenes,
-    reset_batch_gpu_state,
-};
+use gpu::{extract_batch_scenes, init_batch_pipelines, load_shader, render_batch_scenes};
 use metrics::{
     LogicalMetrics, RasterMetrics, measure_advance, physical_config, refine_metrics,
     resolve_metrics,
 };
-use scene::{RowReach, SceneScratch, build_scene};
+use quad::QuadInstance;
+use scene::{RowStates, SceneInput, SceneScratch, build_scene};
 use shaping::{AtlasUpload, ShapeCaches, UnifiedGlyphAtlas};
 
 use std::sync::{
@@ -33,20 +32,21 @@ use bevy::{
     platform::collections::{HashMap, HashSet},
     prelude::*,
     render::{
-        ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems,
+        ExtractSchedule, RenderApp, RenderStartup,
         render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
-        renderer::RenderDevice,
+        renderer::{RenderDevice, RenderGraph, RenderGraphSystems},
     },
-    text::{FontAtlasSet, FontCx, LayoutCx, ScaleCx, TextPipeline},
+    text::{FontAtlasSet, FontCx, LayoutCx, ScaleCx, TextError, TextPipeline},
 };
 
+use super::terminal::Measurement;
 use super::{
-    PixelGeometry, ResolvedStyle, TerminalGeometry, TerminalRenderConfig, TerminalRenderer,
+    Face, Palette, ResolvedStyle, TerminalGeometry, TerminalRenderConfig, TerminalRenderer,
     TerminalStats, TerminalStatus, TerminalTexture, cell_span, cursor_should_be_visible, text_font,
 };
 use crate::{
     scene::{GridSize, StyleFlags, TerminalSnapshot},
-    surface::TerminalSurface,
+    surface::{TerminalSurface, WeakSurface},
 };
 
 /// The terminal texture format: the shader emits linear colors and the sRGB
@@ -67,43 +67,46 @@ pub struct TerminalPlugin;
 
 impl Plugin for TerminalPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<FontCatalog>().add_systems(
-            Update,
-            (
-                release_removed_terminals.before(initialize_terminals),
-                initialize_terminals.before(super::TerminalSystems::Sync),
+        app.init_resource::<FontCatalog>()
+            .init_resource::<SceneQueue>()
+            .add_observer(initialize_terminal)
+            .add_observer(release_terminal)
+            .add_systems(
+                Update,
                 sync_batch_terminals.in_set(super::TerminalSystems::Sync),
-            ),
-        );
-        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app
-                .init_resource::<PendingBatchScenes>()
-                .init_resource::<BatchGpuState>()
-                .add_systems(RenderStartup, reset_batch_gpu_state)
-                .add_systems(ExtractSchedule, extract_batch_scenes)
-                .add_systems(
-                    Render,
-                    render_batch_scenes
-                        .run_if(batch_scenes_can_render_early)
-                        .in_set(RenderSystems::ExtractCommands),
-                )
-                .add_systems(
-                    Render,
-                    render_batch_scenes.in_set(RenderSystems::PrepareMeshes),
-                );
+            );
+        if app.get_sub_app(RenderApp).is_none() {
+            return;
         }
+        load_shader(app);
+        app.sub_app_mut(RenderApp)
+            .init_resource::<PendingBatchScenes>()
+            .add_systems(RenderStartup, init_batch_pipelines)
+            .add_systems(ExtractSchedule, extract_batch_scenes)
+            // Terminal textures are drawn first, so cameras sample this
+            // frame's content.
+            .add_systems(
+                RenderGraph,
+                render_batch_scenes.in_set(RenderGraphSystems::Begin),
+            );
     }
 }
 
-fn release_removed_terminals(
+/// Drops the renderer's components when a terminal stops rendering (its
+/// [`TerminalRenderer`] is removed or the entity despawned), and has the
+/// render world drop its scene and free its atlas.
+fn release_terminal(
+    remove: On<Remove, TerminalRenderer>,
+    states: Query<&BatchMainState>,
+    mut queue: ResMut<SceneQueue>,
     mut commands: Commands,
-    removed: Query<Entity, (With<BatchMainState>, Without<TerminalRenderer>)>,
 ) {
-    for entity in &removed {
-        commands
-            .entity(entity)
-            .remove::<(BatchMainState, TerminalTexture, TerminalStats)>();
+    if let Ok(state) = states.get(remove.entity) {
+        queue.release(state.output.id(), state.glyph_atlas.id);
     }
+    commands
+        .entity(remove.entity)
+        .try_remove::<(BatchMainState, TerminalTexture, TerminalStats)>();
 }
 
 /// Everything the sync system touches on a terminal entity.
@@ -127,8 +130,39 @@ struct TextResources<'w> {
     scale_cx: ResMut<'w, ScaleCx>,
 }
 
+/// Why a terminal's text could not be measured or shaped. It is formatted
+/// only when logged, and a repeated failure is logged once.
+#[derive(Debug, PartialEq)]
+enum ShapingFailure {
+    /// The regular font's advance could not be measured.
+    Advance {
+        font: FontSource,
+        error: metrics::AdvanceError,
+    },
+    /// Bevy's text layout of a run failed.
+    Layout { font: FontSource, error: TextError },
+    /// Rasterizing a run into Bevy's font atlases failed.
+    Rasterization { font: FontSource, error: TextError },
+    /// A shaped glyph's Bevy font atlas was missing.
+    AtlasUnavailable { fonts: Box<super::FontFaces> },
+}
+
+impl std::fmt::Display for ShapingFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Advance { font, error } => write!(f, "advance measurement for {font:?}: {error}"),
+            Self::Layout { font, error } => write!(f, "layout for {font:?}: {error}"),
+            Self::Rasterization { font, error } => {
+                write!(f, "rasterization for {font:?}: {error}")
+            }
+            Self::AtlasUnavailable { fonts } => write!(f, "glyph atlas unavailable for {fonts:?}"),
+        }
+    }
+}
+
 struct TextContext<'a> {
-    failure: Option<String>,
+    /// The first failure of this update.
+    failure: Option<ShapingFailure>,
     fonts: &'a Assets<Font>,
     images: &'a mut Assets<Image>,
     text_pipeline: &'a mut TextPipeline,
@@ -153,14 +187,18 @@ impl TextResources<'_> {
     }
 }
 
-fn initialize_terminals(
-    mut commands: Commands,
-    added: Query<(Entity, &TerminalRenderer, &TerminalRenderConfig), Without<BatchMainState>>,
+/// Gives a terminal its texture, statistics and renderer state as soon as
+/// its [`TerminalRenderer`] is added.
+fn initialize_terminal(
+    add: On<Add, TerminalRenderer>,
+    terminals: Query<(&TerminalRenderer, &TerminalRenderConfig)>,
     mut images: ResMut<Assets<Image>>,
     device: Option<Res<RenderDevice>>,
+    mut commands: Commands,
 ) {
     let limit = texture_limit(device.as_deref());
-    for (entity, terminal, config) in &added {
+    let entity = add.entity;
+    if let Ok((terminal, config)) = terminals.get(entity) {
         let raster_scale = resolve_raster_scale(config.raster.scale);
         let metrics = if config.sizing.is_valid() {
             resolve_metrics(config, None)
@@ -184,15 +222,17 @@ fn initialize_terminals(
                 image: output.clone(),
                 geometry: TerminalGeometry {
                     surface: terminal.surface().downgrade(),
-                    resize_generation: terminal.surface().info().resize_generation,
-                    grid: terminal.surface().size(),
-                    size,
-                    raster_scale,
-                    physical_cell_size: raster_config.cell_size,
-                    physical_font_size: raster_config.font_size,
+                    measurement: Measurement {
+                        resize_generation: terminal.surface().info().resize_generation,
+                        grid: terminal.surface().size(),
+                        size,
+                        raster_scale,
+                        physical_cell_size: raster_config.cell_size,
+                        physical_font_size: raster_config.font_size,
+                    },
                 },
             },
-            BatchMainState::new(output.clone(), raster_scale, raster_config),
+            BatchMainState::new(output.clone()),
             TerminalStats::default(),
         ));
     }
@@ -243,76 +283,150 @@ fn resolve_raster_scale(requested: f32) -> f32 {
 #[derive(Component)]
 struct BatchMainState {
     output: Handle<Image>,
-    /// Font asset ids in use, to scope re-measurement to this terminal's own fonts.
-    font_ids: [Option<AssetId<Font>>; 4],
-    /// Whether every handle font above is registered with the font context.
-    fonts_ready: bool,
-    last_failure: Option<String>,
-    raster_scale: f32,
-    raster_config: RasterMetrics,
-    /// Advance of the regular font at the probe size; `None` until measured.
-    measured_advance: Option<f32>,
-    /// Logical font size in use.
-    metrics: Option<LogicalMetrics>,
+    fonts: FontUse,
+    /// The failure last logged, so a repeated one is not logged again.
+    last_failure: Option<ShapingFailure>,
     last_config: Option<TerminalRenderConfig>,
-    surface: Option<TerminalSurface>,
-    last_snapshot: Option<TerminalSnapshot>,
-    /// Whether the retained snapshot holds any `SLOW_BLINK`/`RAPID_BLINK` cells.
-    snapshot_blinks: bool,
-    pending: Option<BatchScene>,
-    generation: u64,
-    submitted: Arc<AtomicU64>,
+    /// The configured theme, resolved once per configuration change.
+    palette: Palette,
+    measure: FontMeasurement,
+    /// The surface being rendered and what the last scene drew from it;
+    /// `None` until the first sync.
+    retained: Option<Retained>,
+    submissions: Submissions,
     shapes: ShapeCaches,
     glyph_atlas: UnifiedGlyphAtlas,
     scratch: SceneScratch,
-    /// How far each row's drawn ink reaches into its neighbours.
-    reach: Vec<RowReach>,
+    /// The rows the next scene repaints, reused between scenes.
+    repaint_rows: Vec<u16>,
+}
+
+/// The fonts a terminal uses.
+#[derive(Default)]
+struct FontUse {
+    /// Font asset ids in use, to scope re-measurement to this terminal's own
+    /// fonts.
+    ids: [Option<AssetId<Font>>; 4],
+    /// Whether every handle font above is registered with the font context.
+    ready: bool,
+}
+
+/// What measuring a terminal's fonts produced.
+#[derive(Default)]
+struct FontMeasurement {
+    /// Advance of the regular font at the probe size; `None` until measured.
+    advance: Option<f32>,
+    /// The metrics in use, which change together; `None` until measured and
+    /// after invalidation.
+    in_use: Option<MetricsInUse>,
+}
+
+#[derive(Clone, Copy)]
+struct MetricsInUse {
+    /// Logical font and cell size.
+    logical: LogicalMetrics,
+    /// The physical raster metrics refined from `logical` at `scale`.
+    raster: RasterMetrics,
+    scale: f32,
+}
+
+/// The surface a terminal renders and what its last scene drew from it.
+struct Retained {
+    surface: TerminalSurface,
+    /// The content drawn; `None` when the next scene must repaint everything.
+    snapshot: Option<TerminalSnapshot>,
+    /// How far each drawn row's ink reaches, and which rows blink.
+    rows: RowStates,
+    /// The blink phases drawn.
     blink: BlinkPhases,
 }
 
-impl BatchMainState {
-    /// Drops the scene waiting for extraction, keeping the atlas entries it
-    /// carried for the next one.
-    fn discard_pending(&mut self) {
-        if let Some(scene) = self.pending.take()
-            && !self.glyph_atlas.fresh
-        {
-            let mut uploads = scene.atlas_uploads;
-            uploads.append(&mut self.glyph_atlas.uploads);
-            self.glyph_atlas.uploads = uploads;
-            self.glyph_atlas.fresh = scene.atlas_fresh;
+impl Retained {
+    fn new(surface: TerminalSurface) -> Self {
+        Self {
+            surface,
+            snapshot: None,
+            rows: RowStates::default(),
+            blink: BlinkPhases::default(),
         }
     }
+}
 
-    fn invalidate(&mut self) {
-        self.discard_pending();
-        self.last_snapshot = None;
-        self.metrics = None;
+/// Scene numbering shared with the render world, which stores a scene's
+/// generation in `acknowledged` once it has drawn it.
+#[derive(Default)]
+struct Submissions {
+    generation: u64,
+    acknowledged: Arc<AtomicU64>,
+}
+
+impl Submissions {
+    /// Numbers the next scene.
+    fn next(&mut self) -> (Arc<AtomicU64>, u64) {
+        self.generation = self.generation.wrapping_add(1);
+        (self.acknowledged.clone(), self.generation)
     }
 
-    fn new(output: Handle<Image>, raster_scale: f32, raster_config: RasterMetrics) -> Self {
+    /// Whether the render world has drawn every submitted scene.
+    fn all_drawn(&self) -> bool {
+        self.acknowledged.load(Ordering::Acquire) == self.generation
+    }
+
+    /// Acknowledges every submitted scene, as drawing them would.
+    #[cfg(test)]
+    fn acknowledge(&self) {
+        self.acknowledged.store(self.generation, Ordering::Release);
+    }
+}
+
+impl BatchMainState {
+    /// Withdraws the terminal's scenes that have not drawn, keeping the atlas
+    /// entries they carried.
+    fn discard_pending(&mut self, queue: &mut SceneQueue) {
+        queue.discard(self.output.id(), &mut self.glyph_atlas);
+    }
+
+    fn invalidate(&mut self, queue: &mut SceneQueue) {
+        self.discard_pending(queue);
+        if let Some(retained) = &mut self.retained {
+            retained.snapshot = None;
+        }
+        self.measure.in_use = None;
+    }
+
+    fn new(output: Handle<Image>) -> Self {
         Self {
             output,
-            font_ids: [None; 4],
-            fonts_ready: false,
+            fonts: FontUse::default(),
             last_failure: None,
-            raster_scale,
-            raster_config,
-            measured_advance: None,
-            metrics: None,
             last_config: None,
-            surface: None,
-            last_snapshot: None,
-            snapshot_blinks: false,
-            pending: None,
-            generation: 0,
-            submitted: Arc::default(),
+            palette: Palette::default(),
+            measure: FontMeasurement::default(),
+            retained: None,
+            submissions: Submissions::default(),
             shapes: ShapeCaches::default(),
             glyph_atlas: UnifiedGlyphAtlas::default(),
             scratch: SceneScratch::default(),
-            reach: Vec::new(),
-            blink: BlinkPhases::default(),
+            repaint_rows: Vec::new(),
         }
+    }
+
+    /// The content the last scene drew.
+    #[cfg(test)]
+    fn snapshot(&self) -> Option<&TerminalSnapshot> {
+        self.retained.as_ref()?.snapshot.as_ref()
+    }
+
+    /// The raster metrics in use.
+    #[cfg(test)]
+    fn raster(&self) -> RasterMetrics {
+        self.measure.in_use.expect("measured metrics").raster
+    }
+
+    /// The retained rows' ink reach and blinking.
+    #[cfg(test)]
+    fn rows(&self) -> &RowStates {
+        &self.retained.as_ref().expect("a retained surface").rows
     }
 }
 
@@ -321,20 +435,18 @@ struct DrawBatch {
     texture: AssetId<Image>,
     start: u32,
     count: u32,
-    /// Replace the destination instead of alpha-blending over it. Used for
-    /// cell backgrounds so a translucent theme background does not accumulate
-    /// over stale texels when only some rows are repainted.
-    replace: bool,
+    blend: Blend,
 }
 
-#[derive(Clone, Copy)]
-struct QuadInstance {
-    rect: Vec4,
-    uv: Vec4,
-    color: Vec4,
-    /// Linear luminance of the cell background under a coverage glyph, for
-    /// Ghostty's linear-corrected blending; negative for no correction.
-    background: f32,
+/// How a draw batch writes its target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Blend {
+    /// Alpha-blend over the target.
+    Alpha,
+    /// Replace the destination. Used for cell backgrounds so a translucent
+    /// theme background does not accumulate over stale texels when only some
+    /// rows are repainted.
+    Replace,
 }
 
 struct BatchScene {
@@ -352,7 +464,9 @@ struct BatchScene {
     batches: Vec<DrawBatch>,
     clear: bool,
     clear_color: Color,
-    requires_prepared_assets: bool,
+    /// The surface and resize generation the scene was built for; a scene
+    /// whose surface has been resized since must not draw.
+    source: Option<(WeakSurface, u64)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -372,16 +486,94 @@ impl BlinkPhases {
     }
 
     fn hides(self, style: &ResolvedStyle) -> bool {
-        (style.rapid_blink && self.rapid_hidden) || (style.slow_blink && self.slow_hidden)
+        (self.rapid_hidden && style.any(StyleFlags::RAPID_BLINK))
+            || (self.slow_hidden && style.any(StyleFlags::SLOW_BLINK))
     }
 }
 
+/// Scenes the main world has built and the render world has not taken yet,
+/// at most one per terminal output, and what the render world must
+/// withdraw or free. Nothing is scanned per frame: sync submits scenes,
+/// suspension withdraws them, removal releases a terminal's resources and
+/// extraction drains the queue.
+#[derive(Resource, Default)]
+struct SceneQueue {
+    scenes: HashMap<AssetId<Image>, BatchScene>,
+    /// Outputs whose extracted scenes must no longer draw.
+    withdrawn: HashSet<AssetId<Image>>,
+    /// Outputs and atlases of removed terminals.
+    released: Vec<(AssetId<Image>, AssetId<Image>)>,
+    /// Whether a render world takes scenes. Until one does, it holds no
+    /// scene or atlas to withdraw or free.
+    extracting: bool,
+}
+
+impl SceneQueue {
+    /// Queues `scene`, which carries the atlas entries of the one it
+    /// supersedes.
+    fn submit(&mut self, mut scene: BatchScene) {
+        if let Some(superseded) = self.scenes.remove(&scene.destination) {
+            scene.absorb(superseded);
+        }
+        self.scenes.insert(scene.destination, scene);
+    }
+
+    /// Drops `output`'s queued scene, handing the atlas entries it carried
+    /// back to `atlas` for the next scene, and has the render world withdraw
+    /// any scene of it that has not drawn.
+    fn discard(&mut self, output: AssetId<Image>, atlas: &mut UnifiedGlyphAtlas) {
+        if let Some(scene) = self.scenes.remove(&output)
+            && !atlas.fresh
+        {
+            let mut uploads = scene.atlas_uploads;
+            uploads.append(&mut atlas.uploads);
+            atlas.uploads = uploads;
+            atlas.fresh = scene.atlas_fresh;
+        }
+        if self.extracting {
+            self.withdrawn.insert(output);
+        }
+    }
+
+    /// Drops a removed terminal's scene and has the render world free its
+    /// scene and atlas.
+    fn release(&mut self, output: AssetId<Image>, atlas: AssetId<Image>) {
+        self.scenes.remove(&output);
+        if self.extracting {
+            self.released.push((output, atlas));
+        }
+    }
+
+    #[cfg(test)]
+    fn scene(&self, output: AssetId<Image>) -> Option<&BatchScene> {
+        self.scenes.get(&output)
+    }
+}
+
+/// The terminal's scene waiting for extraction.
+#[cfg(test)]
+fn queued(world: &World, entity: Entity) -> Option<&BatchScene> {
+    let output = world.get::<BatchMainState>(entity)?.output.id();
+    world.resource::<SceneQueue>().scene(output)
+}
+
+/// Takes the terminal's queued scene and acknowledges it, as extraction
+/// and the GPU would.
+#[cfg(test)]
+fn take_queued(world: &mut World, entity: Entity) -> Option<BatchScene> {
+    let output = world.get::<BatchMainState>(entity)?.output.id();
+    let scene = world.resource_mut::<SceneQueue>().scenes.remove(&output)?;
+    let state = world.get::<BatchMainState>(entity)?;
+    state.submissions.acknowledge();
+    Some(scene)
+}
+
+/// Scenes the render world has taken and not drawn yet, per output.
 #[derive(Resource, Default)]
 struct PendingBatchScenes {
     scenes: HashMap<AssetId<Image>, BatchScene>,
-    live_textures: HashSet<AssetId<Image>>,
-    /// Atlases of live terminals, whose textures the render world retains.
-    live_atlases: HashSet<AssetId<Image>>,
+    /// Atlases of removed terminals, freed before the next draw.
+    released_atlases: Vec<AssetId<Image>>,
 }
 
 impl BatchScene {
@@ -399,6 +591,22 @@ impl BatchScene {
         uploads.append(&mut self.atlas_uploads);
         self.atlas_uploads = uploads;
         self.atlas_fresh = superseded.atlas_fresh;
+    }
+
+    /// Whether the surface still has the grid the scene was built for.
+    fn is_current(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_none_or(|(surface, generation)| surface.is_current(*generation))
+    }
+
+    /// Keeps the atlas entries of a scene that must not draw: nothing is
+    /// drawn, cleared or acknowledged, and a later scene absorbs it.
+    fn withdraw(&mut self) {
+        self.instances.clear();
+        self.batches.clear();
+        self.clear = false;
+        self.submission = None;
     }
 }
 
@@ -437,17 +645,31 @@ impl FontCatalog {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn sync_batch_terminals(
-    mut terminals: Query<TerminalQuery>,
-    text: Option<TextResources>,
-    mut images: ResMut<Assets<Image>>,
-    font_events: Option<MessageReader<AssetEvent<Font>>>,
-    time: Option<Res<Time>>,
-    asset_server: Option<Res<AssetServer>>,
-    device: Option<Res<RenderDevice>>,
-    mut catalog: ResMut<FontCatalog>,
-) {
+/// The world state the sync reads besides the terminals: Bevy's text,
+/// image, font, time and device resources, and the renderer's own.
+#[derive(bevy::ecs::system::SystemParam)]
+struct SyncResources<'w, 's> {
+    text: Option<TextResources<'w>>,
+    images: ResMut<'w, Assets<Image>>,
+    font_events: Option<MessageReader<'w, 's, AssetEvent<Font>>>,
+    time: Option<Res<'w, Time>>,
+    asset_server: Option<Res<'w, AssetServer>>,
+    device: Option<Res<'w, RenderDevice>>,
+    catalog: ResMut<'w, FontCatalog>,
+    queue: ResMut<'w, SceneQueue>,
+}
+
+fn sync_batch_terminals(mut terminals: Query<TerminalQuery>, resources: SyncResources) {
+    let SyncResources {
+        text,
+        mut images,
+        font_events,
+        time,
+        asset_server,
+        device,
+        mut catalog,
+        mut queue,
+    } = resources;
     if terminals.is_empty() {
         catalog.initialized = false;
         return;
@@ -464,6 +686,7 @@ fn sync_batch_terminals(
                 &mut state,
                 &mut output,
                 TerminalStatus::MissingTextResources,
+                &mut queue,
             );
         }
         return;
@@ -488,7 +711,12 @@ fn sync_batch_terminals(
     for (entity, terminal, config, mut state, mut output, mut stats) in &mut terminals {
         stats.set_if_neq(TerminalStats::default());
         if !config.sizing.is_valid() {
-            suspend_terminal(&mut state, &mut output, TerminalStatus::InvalidSizing);
+            suspend_terminal(
+                &mut state,
+                &mut output,
+                TerminalStatus::InvalidSizing,
+                &mut queue,
+            );
             continue;
         }
         // Inspect effective values only when the component was touched. Invalid
@@ -512,6 +740,7 @@ fn sync_batch_terminals(
                     || previous.raster.hinting != effective.raster.hinting
             });
             if config_changed {
+                state.palette = Palette::new(&effective.theme);
                 state.last_config = Some(effective);
             }
         }
@@ -531,15 +760,17 @@ fn sync_batch_terminals(
             .any(|face| !matches!(face, FontSource::Handle(_)));
         let fonts_changed = (named_faces
             && (catalog_changed || changed_fonts.iter().any(|id| registered_fonts.contains(id))))
-            || state.font_ids != face_ids
-            || state.fonts_ready != fonts_ready
+            || state.fonts.ids != face_ids
+            || state.fonts.ready != fonts_ready
             || (!changed_fonts.is_empty()
                 && face_ids
                     .iter()
                     .flatten()
                     .any(|id| changed_fonts.contains(id)));
-        state.font_ids = face_ids;
-        state.fonts_ready = fonts_ready;
+        state.fonts = FontUse {
+            ids: face_ids,
+            ready: fonts_ready,
+        };
         if !fonts_ready {
             let failed = face_ids.iter().flatten().any(|id| {
                 let invalid = text
@@ -559,16 +790,18 @@ fn sync_batch_terminals(
             } else {
                 TerminalStatus::Loading
             };
-            suspend_terminal(&mut state, &mut output, status);
+            suspend_terminal(&mut state, &mut output, status, &mut queue);
             continue;
         }
-        let mut next_output = output.clone();
+        // Plain values only: the texture's handles are not cloned each frame.
+        let mut measurement = output.geometry.measurement;
         let mut next_stats = TerminalStats::default();
         let mut context = text.context(&mut images);
         let result = sync_batch_terminal(
             terminal,
             SyncInput {
                 config,
+                measured_surface: &output.geometry.surface,
                 config_changed,
                 shaping_changed,
                 fonts_changed,
@@ -577,14 +810,27 @@ fn sync_batch_terminals(
                 texture_limit: texture_limit(device.as_deref()),
             },
             &mut state,
-            &mut next_output,
+            &mut measurement,
             &mut next_stats,
             &mut context,
+            &mut queue,
         );
         match result {
-            Ok(()) => {
+            Ok(surface_changed) => {
                 state.last_failure = None;
-                next_output.status = TerminalStatus::Ready;
+                // Write the texture component only when something changed so
+                // `Changed<TerminalTexture>` observers are not woken every frame.
+                if output.status != TerminalStatus::Ready
+                    || output.geometry.measurement != measurement
+                    || surface_changed
+                {
+                    let output = &mut *output;
+                    output.status = TerminalStatus::Ready;
+                    output.geometry.measurement = measurement;
+                    if surface_changed {
+                        output.geometry.surface = terminal.surface().downgrade();
+                    }
+                }
             }
             Err(status) => {
                 if let Some(failure) = context.failure.take()
@@ -593,24 +839,14 @@ fn sync_batch_terminals(
                     warn!(?entity, "bevy_terminal: {failure}");
                     state.last_failure = Some(failure);
                 }
-                suspend_terminal(&mut state, &mut output, status);
+                suspend_terminal(&mut state, &mut output, status, &mut queue);
                 // Failed partial construction cannot publish provisional geometry.
                 stats.set_if_neq(next_stats);
                 continue;
             }
         };
         stats.set_if_neq(next_stats);
-        output.set_if_neq(next_output);
     }
-}
-
-/// Whether any snapshot cell carries a text blink attribute.
-fn snapshot_blinks(snapshot: &TerminalSnapshot) -> bool {
-    let blink = (StyleFlags::SLOW_BLINK | StyleFlags::RAPID_BLINK).bits();
-    snapshot
-        .cells()
-        .iter()
-        .any(|cell| cell.style.flags.bits() & blink != 0)
 }
 
 /// Font asset ids referenced by a set of faces (system/family sources have none).
@@ -635,8 +871,9 @@ fn suspend_terminal(
     state: &mut BatchMainState,
     output: &mut Mut<'_, TerminalTexture>,
     status: TerminalStatus,
+    queue: &mut SceneQueue,
 ) {
-    state.invalidate();
+    state.invalidate(queue);
     if output.status != status {
         output.status = status;
     }
@@ -646,6 +883,8 @@ fn suspend_terminal(
 /// causes preserve cached shaping for paint-only changes.
 struct SyncInput<'a> {
     config: &'a TerminalRenderConfig,
+    /// The surface the published geometry refers to.
+    measured_surface: &'a WeakSurface,
     config_changed: bool,
     shaping_changed: bool,
     fonts_changed: bool,
@@ -654,16 +893,22 @@ struct SyncInput<'a> {
     texture_limit: u32,
 }
 
+/// Brings one terminal's scene up to date. Measured values are written to
+/// `measurement`; the result says whether the geometry must now refer to
+/// the renderer's surface instead of the measured one. Nothing is
+/// published on failure, so partial construction never leaks geometry.
 fn sync_batch_terminal(
     terminal: &TerminalRenderer,
     input: SyncInput<'_>,
     state: &mut BatchMainState,
-    output: &mut TerminalTexture,
+    measurement: &mut Measurement,
     stats: &mut TerminalStats,
     cx: &mut TextContext<'_>,
-) -> Result<(), TerminalStatus> {
+    queue: &mut SceneQueue,
+) -> Result<bool, TerminalStatus> {
     let SyncInput {
         config,
+        measured_surface,
         config_changed,
         shaping_changed,
         fonts_changed,
@@ -673,28 +918,36 @@ fn sync_batch_terminal(
     } = input;
     let surface = terminal.surface();
     if state
-        .surface
+        .retained
         .as_ref()
-        .is_none_or(|previous| !previous.shares_state_with(surface))
+        .is_none_or(|retained| !retained.surface.shares_state_with(surface))
     {
-        state.surface = Some(surface.clone());
-        state.last_snapshot = None;
-        state.discard_pending();
-        state.snapshot_blinks = false;
+        state.retained = Some(Retained::new(surface.clone()));
+        state.discard_pending(queue);
     }
-    if state.glyph_atlas.lost.swap(false, Ordering::AcqRel) {
+    let BatchMainState {
+        output,
+        palette,
+        measure,
+        retained,
+        submissions,
+        shapes,
+        glyph_atlas,
+        scratch,
+        repaint_rows,
+        ..
+    } = state;
+    let retained = retained.as_mut().expect("the surface was just retained");
+    if glyph_atlas.lost.swap(false, Ordering::AcqRel) {
         // The render world recreated the atlas texture (a device reset):
         // rebuild every entry and repaint everything.
-        state.shapes.clear();
-        state.glyph_atlas.clear();
-        state.last_snapshot = None;
+        shapes.clear();
+        glyph_atlas.clear();
+        retained.snapshot = None;
     }
-    let scale_changed = state.raster_scale != raster_scale;
     let needs_measured_advance = needs_measured_advance(config);
-    if needs_measured_advance
-        && (state.measured_advance.is_none() || shaping_changed || fonts_changed)
-    {
-        state.measured_advance = match measure_advance(
+    if needs_measured_advance && (measure.advance.is_none() || shaping_changed || fonts_changed) {
+        measure.advance = match measure_advance(
             &config.font,
             cx.fonts,
             cx.text_pipeline,
@@ -703,60 +956,61 @@ fn sync_batch_terminal(
         ) {
             Ok(advance) => Some(advance),
             Err(error) => {
-                cx.failure = Some(format!(
-                    "advance measurement for {:?}: {error}",
-                    config.font.regular
-                ));
+                cx.failure = Some(ShapingFailure::Advance {
+                    font: config.font.regular.clone(),
+                    error,
+                });
                 None
             }
         };
     }
     // An unmeasured cell is not geometry. Keep the provisional component and
     // do not publish a scene or measured geometry until the selected face shapes.
-    if needs_measured_advance && state.measured_advance.is_none() {
+    if needs_measured_advance && measure.advance.is_none() {
         return Err(TerminalStatus::ShapingFailed);
     }
-    let metrics = resolve_metrics(config, state.measured_advance);
+    let metrics = resolve_metrics(config, measure.advance);
     let requested = physical_config(metrics, raster_scale);
     if terminal_pixel_size(surface.size(), &requested).max_element() > texture_limit
         || requested.font_size > texture_limit as f32
     {
         return Err(TerminalStatus::TextureTooLarge);
     }
-    let font_size_changed = state.metrics != Some(metrics);
-    state.metrics = Some(metrics);
-    let text_assets_changed =
-        shaping_changed || fonts_changed || scale_changed || font_size_changed;
+    let text_assets_changed = shaping_changed
+        || fonts_changed
+        || measure
+            .in_use
+            .is_none_or(|in_use| in_use.logical != metrics || in_use.scale != raster_scale);
     if text_assets_changed {
-        state.raster_config = refine_metrics(
-            config,
-            state.measured_advance,
-            physical_config(metrics, raster_scale),
-            cx,
-        );
+        measure.in_use = None;
+        let raster = refine_metrics(config, measure.advance, requested, cx);
         if cx.failure.is_some() {
             return Err(TerminalStatus::ShapingFailed);
         }
-        output.geometry.physical_font_size = state.raster_config.font_size;
-        output.geometry.physical_cell_size = state.raster_config.cell_size;
+        measure.in_use = Some(MetricsInUse {
+            logical: metrics,
+            raster,
+            scale: raster_scale,
+        });
+        measurement.physical_font_size = raster.font_size;
+        measurement.physical_cell_size = raster.cell_size;
+        shapes.clear();
+        glyph_atlas.clear();
     }
-    if text_assets_changed {
-        state.shapes.clear();
-        state.glyph_atlas.clear();
-    }
+    let raster = measure.in_use.expect("metrics were measured above").raster;
     let blink = BlinkPhases::at(elapsed, config);
     // A phase flip only matters where it changes pixels: text phases when the
     // snapshot holds blinking cells, the cursor phase when the cursor shows.
-    let text_blink_changed = state.snapshot_blinks
-        && (blink.slow_hidden != state.blink.slow_hidden
-            || blink.rapid_hidden != state.blink.rapid_hidden);
-    let cursor_blink_changed = blink.cursor_hidden != state.blink.cursor_hidden
-        && state
-            .last_snapshot
+    let text_blink_changed = retained.rows.any_blinking()
+        && (blink.slow_hidden != retained.blink.slow_hidden
+            || blink.rapid_hidden != retained.blink.rapid_hidden);
+    let cursor_blink_changed = blink.cursor_hidden != retained.blink.cursor_hidden
+        && retained
+            .snapshot
             .as_ref()
             .is_some_and(cursor_should_be_visible);
     let blink_changed = text_blink_changed || cursor_blink_changed;
-    if state.last_snapshot.as_ref().is_some_and(|snapshot| {
+    if retained.snapshot.as_ref().is_some_and(|snapshot| {
         snapshot.revision() == surface.revision()
             && !config_changed
             && !text_assets_changed
@@ -764,18 +1018,17 @@ fn sync_batch_terminal(
     }) {
         // Keep the recorded phases current so an irrelevant flip is not
         // mistaken for a change once blinking content appears later.
-        state.blink = blink;
-        return Ok(());
+        retained.blink = blink;
+        return Ok(false);
     }
 
     #[cfg(feature = "timings")]
     let snapshot_start = Instant::now();
-    let (snapshot, changed_rows, mut full) = if let Some(mut snapshot) = state.last_snapshot.take()
-    {
+    let mut rows = std::mem::take(repaint_rows);
+    let (snapshot, mut full) = if let Some(mut snapshot) = retained.snapshot.take() {
         let old_cursor = snapshot.cursor_position();
-        let update = surface.update_snapshot(&mut snapshot);
+        let update = surface.update_snapshot(&mut snapshot, &mut rows);
         stats.snapshot_cells = u32::try_from(update.changed_cells).unwrap_or(u32::MAX);
-        let mut rows = update.changed_rows;
         if update.cursor_position_changed || update.cursor_visibility_changed {
             rows.push(old_cursor.y);
             rows.push(snapshot.cursor_position().y);
@@ -795,12 +1048,13 @@ fn sync_batch_terminal(
             rows.sort_unstable();
             rows.dedup();
         }
-        (snapshot, rows, full)
+        (snapshot, full)
     } else {
         let snapshot = surface.snapshot();
         stats.snapshot_cells = u32::try_from(snapshot.cells().len()).unwrap_or(u32::MAX);
-        let rows = (0..snapshot.size().height).collect();
-        (snapshot, rows, true)
+        rows.clear();
+        rows.extend(0..snapshot.size().height);
+        (snapshot, true)
     };
 
     #[cfg(feature = "timings")]
@@ -810,75 +1064,63 @@ fn sync_batch_terminal(
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
     }
-    if changed_rows.is_empty() && !full && !blink_changed {
-        state.last_snapshot = Some(snapshot);
-        return Ok(());
+    if rows.is_empty() && !full && !blink_changed {
+        retained.snapshot = Some(snapshot);
+        *repaint_rows = rows;
+        return Ok(false);
     }
     // Extraction can be delayed while a newly created output or glyph atlas reaches the render
     // world. If a newer payload is already waiting in the main world, make its replacement a
     // complete image of the newest snapshot so rows changed by an intermediate payload cannot be
     // lost when that payload is superseded.
-    full |= state.submitted.load(Ordering::Acquire) != state.generation;
+    full |= !submissions.all_drawn();
 
-    let new_size = terminal_pixel_size(snapshot.size(), &state.raster_config);
+    let new_size = terminal_pixel_size(snapshot.size(), &raster);
     if new_size.max_element() > texture_limit {
         return Err(TerminalStatus::TextureTooLarge);
     }
-    output.geometry.surface = surface.downgrade();
-    output.geometry.grid = snapshot.size();
-    output.geometry.resize_generation = snapshot.resize_generation;
-    let output_resized = output.geometry.size != new_size;
-    let logical_size = new_size.as_vec2() / raster_scale;
-    if output_resized {
+    let surface_changed = !measured_surface.matches(surface);
+    measurement.grid = snapshot.size();
+    measurement.resize_generation = snapshot.resize_generation;
+    if measurement.size != new_size {
         // Reallocate the image in place so the handle stays stable; the render world
         // recreates the GPU texture for the modified asset.
         if cx
             .images
-            .insert(state.output.id(), make_target_image(new_size))
+            .insert(output.id(), make_target_image(new_size))
             .is_err()
         {
             warn!("bevy_terminal: could not reallocate a terminal texture in place");
         }
-        output.geometry.size = new_size;
+        measurement.size = new_size;
     }
-    // Write the texture component only when something changed so `Changed<TerminalTexture>`
-    // observers are not woken on every synced frame.
-    if output.geometry.logical_size() != logical_size
-        || output.geometry.raster_scale != raster_scale
-    {
-        output.geometry.raster_scale = raster_scale;
-    }
+    measurement.raster_scale = raster_scale;
 
-    let rows: Vec<u16> = if full {
-        (0..snapshot.size().height).collect()
-    } else {
-        changed_rows
-    };
+    if full {
+        rows.clear();
+        rows.extend(0..snapshot.size().height);
+    }
     #[cfg(feature = "timings")]
     let scene_start = Instant::now();
-    let destination = state.output.id();
-    let BatchMainState {
-        raster_config,
-        shapes,
-        glyph_atlas,
-        scratch,
-        reach,
-        ..
-    } = &mut *state;
-    let mut scene = build_scene(
-        &snapshot,
+    let destination = output.id();
+    let input = SceneInput {
+        snapshot: &snapshot,
         config,
-        *raster_config,
-        &rows,
+        palette,
+        raster,
+        changed: &rows,
         full,
         destination,
+        blink,
+    };
+    let mut scene = build_scene(
+        input,
         cx,
         shapes,
         glyph_atlas,
         scratch,
-        reach,
+        &mut retained.rows,
         stats,
-        blink,
     );
     if glyph_atlas.overflowed {
         // The atlas filled up: start it afresh with only what this frame
@@ -886,53 +1128,49 @@ fn sync_batch_terminal(
         debug!("bevy_terminal: glyph atlas full; rebuilding it for the current frame");
         shapes.clear();
         glyph_atlas.clear();
-        let all: Vec<u16> = (0..snapshot.size().height).collect();
-        scene = build_scene(
-            &snapshot,
+        rows.clear();
+        rows.extend(0..snapshot.size().height);
+        let input = SceneInput {
+            snapshot: &snapshot,
             config,
-            *raster_config,
-            &all,
-            true,
+            palette,
+            raster,
+            changed: &rows,
+            full: true,
             destination,
+            blink,
+        };
+        scene = build_scene(
+            input,
             cx,
             shapes,
             glyph_atlas,
             scratch,
-            reach,
+            &mut retained.rows,
             stats,
-            blink,
         );
     }
+    *repaint_rows = rows;
     if cx.failure.is_some() {
         return Err(TerminalStatus::ShapingFailed);
     }
-    // Existing GPU textures are safe to consume before Bevy's asset preparation systems. A
-    // resize creates an Image, and glyphs drawn straight from Bevy's font atlases may use
-    // images modified this frame, so those scenes use the later submission point after
-    // RenderAsset preparation instead.
-    scene.requires_prepared_assets = output_resized
-        || scene
-            .batches
-            .iter()
-            .any(|batch| batch.texture != scene.atlas);
     #[cfg(feature = "timings")]
     {
         stats.scene_ns = scene_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
     }
     stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
-    state.generation = state.generation.wrapping_add(1);
-    scene.submission = Some((state.submitted.clone(), state.generation));
-    if let Some(superseded) = state.pending.take() {
-        scene.absorb(superseded);
-    }
-    state.pending = Some(scene);
-    state.snapshot_blinks = snapshot_blinks(&snapshot);
-    state.last_snapshot = Some(snapshot);
-    state.blink = blink;
-    state.raster_scale = raster_scale;
-    Ok(())
+    scene.submission = Some(submissions.next());
+    scene.source = Some((surface.downgrade(), snapshot.resize_generation));
+    queue.submit(scene);
+    retained.snapshot = Some(snapshot);
+    retained.blink = blink;
+    Ok(surface_changed)
 }
 
+#[cfg(test)]
+mod baseline;
+#[cfg(test)]
+mod invariants;
 #[cfg(test)]
 mod probe;
 #[cfg(test)]

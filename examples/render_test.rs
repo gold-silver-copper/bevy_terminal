@@ -7,7 +7,7 @@
 //! shade/braille elements, wide CJK/emoji cells, combining marks, RTL/Indic
 //! text, and a blinking cursor. Pass `--export` (or set `RENDER_TEST_EXPORT=1`)
 //! to write the renderer-owned texture to `target/render-test/<family>/`
-//! headlessly instead, and `--font <index|dir>` (or `RENDER_TEST_FONT`) to
+//! headlessly instead (with blinking disabled, so exports are deterministic), and `--font <index|dir>` (or `RENDER_TEST_FONT`) to
 //! pick the initial font family.
 //!
 //! Pass `--transparent` to render the terminal with a 60 % translucent
@@ -35,8 +35,8 @@ use bevy::{
 use bevy_image_export::ImageExportPlugin;
 use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::prelude::{
-    CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
-    TerminalSystems, TerminalTexture, TerminalTheme,
+    BlinkConfig, CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalRenderConfig,
+    TerminalSizing, TerminalSystems, TerminalTexture, TerminalTheme,
 };
 use ratatui::{
     layout::Position,
@@ -230,6 +230,12 @@ fn main() {
         cursor: CursorConfig {
             blink_hz: if export { None } else { Some(1.0) },
             ..default()
+        },
+        // Exports must not depend on when a frame is captured.
+        blink: if export {
+            BlinkConfig::NONE
+        } else {
+            BlinkConfig::default()
         },
         ..default()
     };

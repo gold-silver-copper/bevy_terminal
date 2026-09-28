@@ -17,7 +17,7 @@ The matrix covers the six bundled families at 18 and 24 px, raster scale 1 and 2
 cargo test -p bevy_terminal --lib --locked probe -- --ignored
 ```
 
-Output goes to `target/glyph-placement-probe/{summary,entries}.tsv`. `BEVY_TERMINAL_PROBE_FONTS="Label=/path/font.ttf;Menlo"` adds optional host fonts.
+Output goes to `target/glyph-placement-probe/{summary,entries,defects}.tsv`. CI runs the whole matrix and fails unless `summary.tsv` and `defects.tsv` equal the committed `probe-after-summary.tsv` and `probe-after-defects.tsv`. `BEVY_TERMINAL_PROBE_FONTS="Label=/path/font.ttf;Menlo"` adds optional host fonts.
 
 - `probe-baseline-summary.tsv`: per configuration, before any change (`main` at `9281c92`).
 - `probe-baseline-defects.tsv`: the non-graphics graphemes that lost ink or were shifted at 24 px, scale 2.
@@ -29,6 +29,6 @@ Other files:
 
 - `REPORT.md` is the implementation report, and `verification.json` its machine-readable verification manifest.
 - `ratty-captures/` holds enlarged before/after crops of Ratty's render test.
-- `gen_nerd_font_table.py` generates `crates/bevy_terminal/src/render/batch/nerd_font.rs` from a Ghostty checkout.
+- `gen_nerd_font_table.py` generates `crates/bevy_terminal/src/render/batch/nerd_font.rs` from Ghostty's `src/font/nerd_font_attributes.zig`. CI regenerates it from the pinned revision and fails if the committed table differs.
 - `RUN_SHAPING.md` assesses run shaping.
 - `benchmarks/` holds the benchmark results.

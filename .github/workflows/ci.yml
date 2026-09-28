@@ -21,6 +21,43 @@ env:
   CARGO_BUILD_JOBS: "2"
 
 jobs:
+  generated:
+    name: Generated tables
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GHOSTTY_REVISION: b40acce58dcf77df52231c3798ea58e924647c89
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nerd Fonts table matches Ghostty's attributes
+        run: |
+          curl -sSfL "https://raw.githubusercontent.com/ghostty-org/ghostty/$GHOSTTY_REVISION/src/font/nerd_font_attributes.zig" \
+            -o "$RUNNER_TEMP/nerd_font_attributes.zig"
+          python3 ghostty-parity/gen_nerd_font_table.py "$RUNNER_TEMP/nerd_font_attributes.zig" "$GHOSTTY_REVISION" \
+            | diff -u crates/bevy_terminal/src/render/batch/nerd_font.rs -
+
+  metal:
+    name: Metal readback and fidelity
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: GPU readback regressions
+        timeout-minutes: 15
+        run: cargo test --workspace --all-features --test gpu_readback --test export_readiness --locked -- --ignored --test-threads=1
+      - name: Deterministic glyph fidelity
+        timeout-minutes: 20
+        run: cargo run --all-features --locked --example glyph_fidelity -- --check --font all --scale all --output "$RUNNER_TEMP/glyph-fidelity/fit"
+      - name: Upload glyph fidelity diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: glyph-fidelity-metal
+          path: ${{ runner.temp }}/glyph-fidelity
+          retention-days: 7
+
   consumer:
     name: Real bevy_ratatui context
     runs-on: ubuntu-24.04
@@ -115,6 +152,15 @@ jobs:
 
       - name: Unit and integration tests
         run: cargo test --workspace --all-features --lib --tests --locked
+
+      # The whole placement probe matrix (six bundled families, two sizes,
+      # two scales, two line heights) must reproduce the committed results:
+      # per-configuration totals and every grapheme that loses ink or shifts.
+      - name: Glyph placement probe matrix
+        run: |
+          cargo test --workspace --all-features --lib --locked glyph_placement_probe_report -- --ignored
+          diff -u ghostty-parity/probe-after-summary.tsv target/glyph-placement-probe/summary.tsv
+          diff -u ghostty-parity/probe-after-defects.tsv target/glyph-placement-probe/defects.tsv
 
       - name: GPU readback regressions
         timeout-minutes: 10

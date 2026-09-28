@@ -150,3 +150,48 @@ fn sprites_match_ghostty_reference_atlases() {
         path_failures.join("\n")
     );
 }
+
+/// The scene draws `solid_block` rectangles as solid quads instead of the
+/// sprite: they must cover exactly the pixels the sprite fills, and exist
+/// only for blocks the sprite draws as one opaque rectangle.
+#[test]
+fn solid_blocks_are_exactly_the_single_rectangle_sprites() {
+    for (width, height) in [(9, 17), (10, 20), (11, 21)] {
+        let metrics = Metrics {
+            cell_width: width,
+            cell_height: height,
+            box_thickness: 1,
+        };
+        for codepoint in 0x2580..=0x259f {
+            let sprite = draw(codepoint, width, height, metrics).expect("block element");
+            let inked = |x: i32, y: i32| {
+                let (x, y) = (x - sprite.offset.x, y - sprite.offset.y);
+                x >= 0
+                    && y >= 0
+                    && (x as u32) < sprite.size.x
+                    && (y as u32) < sprite.size.y
+                    && sprite.alpha[(y as u32 * sprite.size.x + x as u32) as usize] > 0
+            };
+            let opaque = sprite
+                .alpha
+                .iter()
+                .all(|alpha| *alpha == 0 || *alpha == 255);
+            match solid_block(codepoint, metrics) {
+                Some([x0, y0, x1, y1]) => {
+                    for y in -(height as i32)..2 * height as i32 {
+                        for x in -(width as i32)..2 * width as i32 {
+                            let inside = x >= x0 && x < x1 && y >= y0 && y < y1;
+                            assert_eq!(inked(x, y), inside, "U+{codepoint:04X} at ({x},{y})");
+                        }
+                    }
+                    assert!(opaque, "U+{codepoint:04X}");
+                }
+                // Shades are translucent; combined quadrants are unions.
+                None => assert!(
+                    matches!(codepoint, 0x2591..=0x2593 | 0x2599..=0x259c | 0x259e | 0x259f),
+                    "U+{codepoint:04X}"
+                ),
+            }
+        }
+    }
+}

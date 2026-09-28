@@ -62,11 +62,14 @@ fn draw(keys: Res<ButtonInput<KeyCode>>, mut screen: ResMut<Screen>) {
 }
 
 fn present(
-    mut screens: Query<(
-        &TerminalTexture,
-        &MeshMaterial3d<StandardMaterial>,
-        &mut Transform,
-    )>,
+    mut screens: Query<
+        (
+            &TerminalTexture,
+            &MeshMaterial3d<StandardMaterial>,
+            &mut Transform,
+        ),
+        Changed<TerminalTexture>,
+    >,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for (texture, material, mut transform) in &mut screens {

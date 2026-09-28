@@ -1,54 +1,50 @@
 //! CPU scene construction, glyph fitting, and quad geometry.
+use super::super::pixel_rect;
+use super::quad::Ink;
 use super::shaping::{
-    CachedGlyph, ShapeCaches, UnifiedGlyphAtlas, cached_shape, is_powerline, is_symbol,
+    CachedGlyph, Run, RunLayout, ShapeCaches, ShapeContext, UnifiedGlyphAtlas, cached_shape,
+    is_powerline, is_symbol,
 };
 use super::sprite::{self, sprite_codepoint};
 use super::{
-    BatchScene, BlinkPhases, DrawBatch, PixelGeometry, QuadInstance, RasterMetrics, ResolvedStyle,
+    BatchScene, Blend, BlinkPhases, DrawBatch, Palette, QuadInstance, RasterMetrics, ResolvedStyle,
     TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext, cell_span,
     cursor_should_be_visible, terminal_pixel_size,
 };
-use crate::scene::TerminalCell;
+use crate::scene::{StyleFlags, TerminalCell};
 use bevy::prelude::*;
 
 #[derive(Default)]
 pub(super) struct SceneScratch {
-    pub(super) backgrounds: Vec<QuadInstance>,
     /// Background rectangles in pixel space, so adjoining rows can merge
     /// before conversion to clip-space quads.
-    pub(super) background_rects: Vec<(PixelGeometry, LinearRgba)>,
+    pub(super) background_rects: Vec<(Rect, LinearRgba)>,
     /// Indices into `background_rects` emitted for the previous row.
     pub(super) prev_runs: Vec<usize>,
     /// Indices into `background_rects` emitted for the current row.
     pub(super) current_runs: Vec<usize>,
-    pub(super) glyphs: Vec<(AssetId<Image>, QuadInstance)>,
     /// Glyphs of the laid-out rows before clipping to the repainted bands.
     pub(super) placed: Vec<PlacedGlyph>,
     pub(super) decorations: Vec<QuadInstance>,
-    pub(super) cursor: Vec<QuadInstance>,
     pub(super) styles: Vec<ResolvedStyle>,
     /// Rows whose bands this scene repaints.
     pub(super) repaint: Vec<bool>,
     /// Rows whose backgrounds, glyphs and decorations have been laid out.
     pub(super) painted: Vec<bool>,
-    /// Per painted row, its background runs as `[left, right)` pixels and
-    /// the background's luminance.
-    pub(super) row_backgrounds: Vec<Vec<(f32, f32, f32)>>,
+    /// Per painted row, its background runs.
+    pub(super) row_backgrounds: Vec<Vec<BackgroundRun>>,
     /// Glyphs of the last full scene before clipping, recorded for the probe.
     #[cfg(test)]
-    pub(super) probe: Option<Vec<super::probe::ProbeGlyph>>,
+    pub(super) probe: Option<super::probe::ProbeRecord>,
 }
 
 impl SceneScratch {
     pub(super) fn clear(&mut self) {
-        self.backgrounds.clear();
         self.background_rects.clear();
         self.prev_runs.clear();
         self.current_runs.clear();
-        self.glyphs.clear();
         self.placed.clear();
         self.decorations.clear();
-        self.cursor.clear();
         self.styles.clear();
         self.repaint.clear();
         self.painted.clear();
@@ -61,28 +57,38 @@ impl SceneScratch {
 /// Records a background run, extending an identically aligned run from the
 /// previous row into one taller rectangle when possible.
 pub(super) fn merge_background_rect(
-    rects: &mut Vec<(PixelGeometry, LinearRgba)>,
+    rects: &mut Vec<(Rect, LinearRgba)>,
     prev_runs: &[usize],
     current_runs: &mut Vec<usize>,
-    geometry: PixelGeometry,
+    geometry: Rect,
     color: LinearRgba,
 ) {
     for &index in prev_runs {
         let (rect, existing) = &mut rects[index];
         if *existing == color
-            && rect.x == geometry.x
-            && rect.width == geometry.width
-            && (rect.y + rect.height - geometry.y).abs() < 0.01
+            && rect.min.x == geometry.min.x
+            && rect.width() == geometry.width()
+            && (rect.max.y - geometry.min.y).abs() < 0.01
         {
             // Anchor the merged bottom edge on the current row's own geometry
             // so accumulated float error cannot drift the rectangle.
-            rect.height = geometry.y + geometry.height - rect.y;
+            rect.max.y = geometry.max.y;
             current_runs.push(index);
             return;
         }
     }
     rects.push((geometry, color));
     current_runs.push(rects.len() - 1);
+}
+
+/// A run of a row's cells whose backgrounds share one luminance, as
+/// `[left, right)` texture pixels.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct BackgroundRun {
+    left: f32,
+    right: f32,
+    /// Linear luminance, against which glyphs over the run are corrected.
+    luminance: f32,
 }
 
 /// How many rows above and below its own a row's glyph ink reaches.
@@ -119,12 +125,56 @@ impl RowReach {
     }
 }
 
+/// What the last layout of each row left behind: how far its ink reaches,
+/// and whether it holds blinking text, with a count of such rows so blink
+/// phases can be skipped without scanning the grid.
+#[derive(Default)]
+pub(super) struct RowStates {
+    rows: Vec<RowState>,
+    blinking: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+struct RowState {
+    reach: RowReach,
+    blinks: bool,
+}
+
+impl RowStates {
+    /// Forgets every row; `height` rows start with no reach and no blinking.
+    fn reset(&mut self, height: u16) {
+        self.rows.clear();
+        self.rows.resize(usize::from(height), RowState::default());
+        self.blinking = 0;
+    }
+
+    pub(super) fn reach(&self, row: u16) -> RowReach {
+        self.rows[usize::from(row)].reach
+    }
+
+    fn set(&mut self, row: u16, reach: RowReach, blinks: bool) {
+        let state = &mut self.rows[usize::from(row)];
+        self.blinking = self.blinking + usize::from(blinks) - usize::from(state.blinks);
+        *state = RowState { reach, blinks };
+    }
+
+    /// Whether any row holds `SLOW_BLINK` or `RAPID_BLINK` text.
+    pub(super) fn any_blinking(&self) -> bool {
+        self.blinking > 0
+    }
+
+    #[cfg(test)]
+    pub(super) fn reaches(&self) -> impl Iterator<Item = RowReach> + '_ {
+        self.rows.iter().map(|row| row.reach)
+    }
+}
+
 /// A glyph bitmap placed in texture pixels, before clipping.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PlacedGlyph {
     pub(super) row: u16,
     pub(super) texture: AssetId<Image>,
-    pub(super) geometry: PixelGeometry,
+    pub(super) geometry: Rect,
     pub(super) uv: Vec4,
     pub(super) color: LinearRgba,
     pub(super) alpha_mask: bool,
@@ -148,25 +198,29 @@ pub(super) struct PlacedGlyph {
 ///
 /// Rows without overflowing ink add no work: their reach is zero, so the
 /// repainted set is the changed set and no neighbour is laid out.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn build_scene(
-    snapshot: &TerminalSnapshot,
-    config: &TerminalRenderConfig,
-    raster: RasterMetrics,
-    changed: &[u16],
-    full: bool,
-    destination: AssetId<Image>,
+    input: SceneInput<'_>,
     cx: &mut TextContext<'_>,
     shapes: &mut ShapeCaches,
     glyph_atlas: &mut UnifiedGlyphAtlas,
     scratch: &mut SceneScratch,
-    reach: &mut Vec<RowReach>,
+    rows: &mut RowStates,
     stats: &mut TerminalStats,
-    blink: BlinkPhases,
 ) -> BatchScene {
+    let SceneInput {
+        snapshot,
+        config,
+        palette,
+        raster,
+        changed,
+        full,
+        destination,
+        blink,
+    } = input;
     let size = terminal_pixel_size(snapshot.size(), &raster).as_vec2();
     let height = snapshot.size().height;
     scratch.clear();
+    // The probe records full scenes only.
     #[cfg(test)]
     let mut probe = scratch.probe.take().map(|mut probe| {
         if full {
@@ -174,20 +228,21 @@ pub(super) fn build_scene(
         }
         probe
     });
-    if full || reach.len() != usize::from(height) {
+    #[cfg(test)]
+    let probe_glyphs = probe
+        .as_mut()
+        .filter(|_| full)
+        .map(|probe| &mut probe.glyphs);
+    if full || rows.rows.len() != usize::from(height) {
         // Nothing drawn before a full scene survives it.
-        reach.clear();
-        reach.resize(usize::from(height), RowReach::default());
+        rows.reset(height);
     }
     let SceneScratch {
-        backgrounds,
         background_rects,
         prev_runs,
         current_runs,
-        glyphs,
         placed,
         decorations,
-        cursor,
         styles,
         repaint,
         painted,
@@ -199,24 +254,31 @@ pub(super) fn build_scene(
     row_backgrounds.resize_with(usize::from(height), Vec::new);
     let mut painter = RowPainter {
         snapshot,
-        config,
+        palette,
         raster,
         size,
         full,
         blink,
-        cx: &mut *cx,
-        shapes: &mut *shapes,
-        glyph_atlas: &mut *glyph_atlas,
-        stats: &mut *stats,
+        shape: ShapeContext {
+            layout: RunLayout {
+                config,
+                raster,
+                viewport: size,
+            },
+            cx: &mut *cx,
+            shapes: &mut *shapes,
+            atlas: &mut *glyph_atlas,
+            stats: &mut *stats,
+        },
         styles: &mut *styles,
         styles_row: None,
         #[cfg(test)]
-        probe: probe.as_mut(),
+        probe: probe_glyphs,
     };
 
     // Changed rows and every row their previous ink reached.
     for &row in changed {
-        for reached in reach[usize::from(row)].rows(row, height) {
+        for reached in rows.reach(row).rows(row, height) {
             repaint[usize::from(reached)] = true;
         }
     }
@@ -239,12 +301,16 @@ pub(super) fn build_scene(
             .iter()
             .fold(RowReach::default(), |reach, glyph| {
                 reach.union(RowReach::of(
-                    glyph.geometry.y - row_top,
-                    glyph.geometry.y + glyph.geometry.height - row_top,
+                    glyph.geometry.min.y - row_top,
+                    glyph.geometry.max.y - row_top,
                     cell_height,
                 ))
             });
-        reach[usize::from(row)] = row_reach;
+        let blinks = painter
+            .styles
+            .iter()
+            .any(|style| style.any(StyleFlags::SLOW_BLINK | StyleFlags::RAPID_BLINK));
+        rows.set(row, row_reach, blinks);
         for reached in row_reach.rows(row, height) {
             repaint[usize::from(reached)] = true;
         }
@@ -267,7 +333,7 @@ pub(super) fn build_scene(
     }
     // Unchanged rows whose ink reaches into a repainted band.
     for row in 0..height {
-        let row_reach = reach[usize::from(row)];
+        let row_reach = rows.reach(row);
         if !painted[usize::from(row)]
             && row_reach != RowReach::default()
             && row_reach
@@ -283,41 +349,37 @@ pub(super) fn build_scene(
         // A full scene draws glyphs in row-major order; the sort is stable.
         placed.sort_by_key(|glyph| glyph.row);
     }
+    // Quads are written once, in paint order: backgrounds (whose runs are
+    // all known by now), glyphs, decorations, the cursor.
+    let primary_atlas = glyph_atlas.id;
+    let mut quads =
+        SceneQuads::with_capacity(background_rects.len() + placed.len() + decorations.len() + 1);
+    quads.extend(
+        primary_atlas,
+        Blend::Replace,
+        background_rects
+            .iter()
+            .map(|&(geometry, color)| QuadInstance::solid(geometry, color, size)),
+    );
+    let background_quads = quads.instances.len();
+
     // Each repainted row's part of a glyph is drawn over that row's cell
     // backgrounds; coverage glyphs are split where the background changes
     // so every piece is blended against the background under it.
     let cell_height = raster.cell_size.y;
-    #[cfg(test)]
-    let mut emitted = vec![
-        Vec::new();
-        if probe.is_some() && full {
-            placed.len()
-        } else {
-            0
-        }
-    ];
-    #[cfg(test)]
-    let mut placed_index = 0;
     for glyph in placed.iter() {
         #[cfg(test)]
-        let pieces_before = glyphs.len();
-        let first = (glyph.geometry.y / cell_height).floor().max(0.0) as u16;
-        let last =
-            (((glyph.geometry.y + glyph.geometry.height) / cell_height).ceil() as u16).min(height);
+        let first_quad = quads.instances.len();
+        let first = (glyph.geometry.min.y / cell_height).floor().max(0.0) as u16;
+        let last = ((glyph.geometry.max.y / cell_height).ceil() as u16).min(height);
         // Most glyphs lie inside their row and the texture: no clip needed.
-        let inside = last == first + 1
-            && glyph.geometry.x >= 0.0
-            && glyph.geometry.x + glyph.geometry.width <= size.x;
+        let inside =
+            last == first + 1 && glyph.geometry.min.x >= 0.0 && glyph.geometry.max.x <= size.x;
         for row in first..last {
             if !repaint[usize::from(row)] {
                 continue;
             }
-            let band = PixelGeometry {
-                x: 0.0,
-                y: f32::from(row) * cell_height,
-                width: size.x,
-                height: cell_height,
-            };
+            let band = pixel_rect(0.0, f32::from(row) * cell_height, size.x, cell_height);
             let clipped = if inside {
                 Some((glyph.geometry, glyph.uv))
             } else {
@@ -327,78 +389,81 @@ pub(super) fn build_scene(
                 continue;
             };
             if glyph.solid {
-                glyphs.push((glyph.texture, solid_quad(piece, glyph.color, size)));
+                quads.push(
+                    glyph.texture,
+                    Blend::Alpha,
+                    QuadInstance::solid(piece, glyph.color, size),
+                );
                 continue;
             }
             if !glyph.alpha_mask {
-                glyphs.push((
+                quads.push(
                     glyph.texture,
-                    glyph_quad(piece, uv, glyph.color, false, -1.0, size),
-                ));
+                    Blend::Alpha,
+                    QuadInstance::glyph(piece, uv, glyph.color, Ink::Color, size),
+                );
                 continue;
             }
             // Runs are sorted and disjoint: start at the first one the piece
             // reaches and stop past its right edge.
             let runs = &row_backgrounds[usize::from(row)];
-            let first = runs.partition_point(|&(_, right, _)| right <= piece.x);
-            if let Some(&(left, right, background)) = runs.get(first)
-                && left <= piece.x
-                && right >= piece.x + piece.width
+            let first = runs.partition_point(|run| run.right <= piece.min.x);
+            if let Some(&BackgroundRun {
+                left,
+                right,
+                luminance: background,
+            }) = runs.get(first)
+                && left <= piece.min.x
+                && right >= piece.max.x
             {
-                glyphs.push((
+                quads.push(
                     glyph.texture,
-                    glyph_quad(piece, uv, glyph.color, true, background, size),
-                ));
+                    Blend::Alpha,
+                    QuadInstance::glyph(piece, uv, glyph.color, Ink::Coverage { background }, size),
+                );
                 continue;
             }
-            for &(left, right, background) in &runs[first..] {
-                if left >= piece.x + piece.width {
+            for &BackgroundRun {
+                left,
+                right,
+                luminance: background,
+            } in &runs[first..]
+            {
+                if left >= piece.max.x {
                     break;
                 }
-                let run = PixelGeometry {
-                    x: left,
-                    width: right - left,
-                    ..band
+                let run = Rect {
+                    min: Vec2::new(left, band.min.y),
+                    max: Vec2::new(right, band.max.y),
                 };
                 if let Some((part, uv)) = clip_glyph_to_row(piece, uv, run) {
-                    glyphs.push((
+                    quads.push(
                         glyph.texture,
-                        glyph_quad(part, uv, glyph.color, true, background, size),
-                    ));
+                        Blend::Alpha,
+                        QuadInstance::glyph(
+                            part,
+                            uv,
+                            glyph.color,
+                            Ink::Coverage { background },
+                            size,
+                        ),
+                    );
                 }
             }
         }
         #[cfg(test)]
-        if let Some(pieces) = emitted.get_mut(placed_index) {
-            pieces.extend(glyphs[pieces_before..].iter().map(|(_, quad)| {
-                let [left, top, right, bottom] = quad.rect.to_array();
-                PixelGeometry {
-                    x: (left + 1.0) / 2.0 * size.x,
-                    y: (1.0 - top) / 2.0 * size.y,
-                    width: (right - left) / 2.0 * size.x,
-                    height: (top - bottom) / 2.0 * size.y,
-                }
-            }));
-        }
-        #[cfg(test)]
-        {
-            placed_index += 1;
+        if let Some(probe) = probe.as_mut().filter(|_| full) {
+            probe.emitted.push(first_quad..quads.instances.len());
         }
     }
     #[cfg(test)]
-    if let Some(probe) = probe.as_mut() {
-        for glyph in probe.iter_mut() {
-            if let Some(pieces) = emitted.get_mut(glyph.placed) {
-                glyph.pieces = std::mem::take(pieces);
-            }
-        }
+    if let Some(probe) = probe.as_mut().filter(|_| full) {
+        probe.quads = quads.instances.clone();
+        probe.target = size;
     }
 
-    backgrounds.extend(
-        background_rects
-            .iter()
-            .map(|&(geometry, color)| solid_quad(geometry, color, size)),
-    );
+    quads.extend(primary_atlas, Blend::Alpha, decorations.iter().copied());
+    let mut solid_quads = background_quads + decorations.len();
 
     if cursor_should_be_visible(snapshot)
         && !blink.cursor_hidden
@@ -421,16 +486,21 @@ pub(super) fn build_scene(
                 cursor_thickness.min(raster.cell_size.y),
             ),
         };
-        cursor.push(solid_quad(
-            PixelGeometry {
-                x: f32::from(position.x) * raster.cell_size.x + x,
-                y: f32::from(position.y) * raster.cell_size.y + y,
-                width,
-                height,
-            },
-            config.cursor.color,
-            size,
-        ));
+        solid_quads += 1;
+        quads.push(
+            primary_atlas,
+            Blend::Alpha,
+            QuadInstance::solid(
+                pixel_rect(
+                    f32::from(position.x) * raster.cell_size.x + x,
+                    f32::from(position.y) * raster.cell_size.y + y,
+                    width,
+                    height,
+                ),
+                config.cursor.color,
+                size,
+            ),
+        );
     }
 
     #[cfg(test)]
@@ -438,23 +508,9 @@ pub(super) fn build_scene(
         scratch.probe = probe;
     }
     stats.changed_rows = u32::try_from(painted_rows).unwrap_or(u32::MAX);
-    stats.solid_quads =
-        u32::try_from(backgrounds.len() + decorations.len() + cursor.len()).unwrap_or(u32::MAX);
-    stats.glyph_quads = u32::try_from(glyphs.len()).unwrap_or(u32::MAX);
-
-    let mut instances = Vec::with_capacity(stats.solid_quads as usize + stats.glyph_quads as usize);
-    let mut batches = Vec::new();
-    let primary_atlas = glyph_atlas.id;
-    append_batch_with(
-        &mut instances,
-        &mut batches,
-        primary_atlas,
-        backgrounds,
-        true,
-    );
-    append_glyph_batches(&mut instances, &mut batches, glyphs);
-    append_batch(&mut instances, &mut batches, primary_atlas, decorations);
-    append_batch(&mut instances, &mut batches, primary_atlas, cursor);
+    stats.solid_quads = u32::try_from(solid_quads).unwrap_or(u32::MAX);
+    stats.glyph_quads = u32::try_from(quads.instances.len() - solid_quads).unwrap_or(u32::MAX);
+    let SceneQuads { instances, batches } = quads;
     let (atlas_uploads, atlas_fresh) = glyph_atlas.take_uploads();
     BatchScene {
         submission: None,
@@ -463,27 +519,40 @@ pub(super) fn build_scene(
         atlas_uploads,
         atlas_fresh,
         atlas_lost: glyph_atlas.lost.clone(),
+        source: None,
         destination_size: size.as_uvec2(),
         instances,
         batches,
         clear: full,
         clear_color: config.theme.background,
-        requires_prepared_assets: false,
     }
+}
+
+/// What a scene draws: a snapshot with its configuration, resolved theme
+/// and raster metrics, the rows to repaint (every row when `full`), the
+/// target texture and the blink phases.
+#[derive(Clone, Copy)]
+pub(super) struct SceneInput<'a> {
+    pub(super) snapshot: &'a TerminalSnapshot,
+    pub(super) config: &'a TerminalRenderConfig,
+    pub(super) palette: &'a Palette,
+    pub(super) raster: RasterMetrics,
+    pub(super) changed: &'a [u16],
+    pub(super) full: bool,
+    pub(super) destination: AssetId<Image>,
+    pub(super) blink: BlinkPhases,
 }
 
 /// Lays out the rows of one scene.
 struct RowPainter<'a, 'w> {
     snapshot: &'a TerminalSnapshot,
-    config: &'a TerminalRenderConfig,
+    palette: &'a Palette,
     raster: RasterMetrics,
     size: Vec2,
     full: bool,
     blink: BlinkPhases,
-    cx: &'a mut TextContext<'w>,
-    shapes: &'a mut ShapeCaches,
-    glyph_atlas: &'a mut UnifiedGlyphAtlas,
-    stats: &'a mut TerminalStats,
+    /// Shapes the runs, with the configuration for them.
+    shape: ShapeContext<'a, 'w>,
     styles: &'a mut Vec<ResolvedStyle>,
     /// The row `styles` currently holds.
     styles_row: Option<u16>,
@@ -502,7 +571,7 @@ impl RowPainter<'_, '_> {
             self.snapshot
                 .row(row)
                 .iter()
-                .map(|cell| ResolvedStyle::new(cell, &self.config.theme)),
+                .map(|cell| ResolvedStyle::new(cell, self.palette)),
         );
     }
 
@@ -511,25 +580,25 @@ impl RowPainter<'_, '_> {
     fn backgrounds(
         &mut self,
         row: u16,
-        rects: &mut Vec<(PixelGeometry, LinearRgba)>,
+        rects: &mut Vec<(Rect, LinearRgba)>,
         prev_runs: &[usize],
         current_runs: &mut Vec<usize>,
-        luminances: &mut Vec<(f32, f32, f32)>,
+        luminances: &mut Vec<BackgroundRun>,
     ) {
         let raster = self.raster;
-        let theme_background = self.config.theme.background;
+        let theme_background = self.palette.background.linear;
         if !self.full {
             // Partial repaints interleave a per-row clear with that row's runs,
             // so later rows' clears would overwrite runs merged upward; merge
             // vertically only in full rebuilds (which have no per-row clears).
             rects.push((
-                PixelGeometry {
-                    x: 0.0,
-                    y: f32::from(row) * raster.cell_size.y,
-                    width: self.size.x,
-                    height: raster.cell_size.y,
-                },
-                theme_background.to_linear(),
+                pixel_rect(
+                    0.0,
+                    f32::from(row) * raster.cell_size.y,
+                    self.size.x,
+                    raster.cell_size.y,
+                ),
+                theme_background,
             ));
         }
         self.resolve_styles(row);
@@ -544,23 +613,28 @@ impl RowPainter<'_, '_> {
             // Adjacent runs of equal luminance correct identically: merge them.
             let left = start as f32 * raster.cell_size.x;
             let right = end as f32 * raster.cell_size.x;
-            let linear = color.to_linear();
-            let run_luminance = luminance(linear);
+            let run_luminance = luminance(color);
             match luminances.last_mut() {
-                Some(last) if last.2 == run_luminance && last.1 == left => last.1 = right,
-                _ => luminances.push((left, right, run_luminance)),
+                Some(last) if last.luminance == run_luminance && last.right == left => {
+                    last.right = right;
+                }
+                _ => luminances.push(BackgroundRun {
+                    left,
+                    right,
+                    luminance: run_luminance,
+                }),
             }
             if !(self.full && color == theme_background) {
-                let geometry = PixelGeometry {
-                    x: start as f32 * raster.cell_size.x,
-                    y: f32::from(row) * raster.cell_size.y,
-                    width: (end - start) as f32 * raster.cell_size.x,
-                    height: raster.cell_size.y,
-                };
+                let geometry = pixel_rect(
+                    start as f32 * raster.cell_size.x,
+                    f32::from(row) * raster.cell_size.y,
+                    (end - start) as f32 * raster.cell_size.x,
+                    raster.cell_size.y,
+                );
                 if self.full {
-                    merge_background_rect(rects, prev_runs, current_runs, geometry, linear);
+                    merge_background_rect(rects, prev_runs, current_runs, geometry, color);
                 } else {
-                    rects.push((geometry, linear));
+                    rects.push((geometry, color));
                 }
             }
             start = end;
@@ -589,7 +663,7 @@ impl RowPainter<'_, '_> {
             let width = cell_span(cells, column);
             let style = &self.styles[column];
             let symbol = cell.symbol();
-            if style.hidden || self.blink.hides(style) {
+            if style.any(StyleFlags::HIDDEN) || self.blink.hides(style) {
                 column += width;
                 continue;
             }
@@ -601,68 +675,61 @@ impl RowPainter<'_, '_> {
                 cell_height: raster.cell_size.y as u32,
                 box_thickness: raster.box_thickness,
             };
-            if let Some(rects) = sprite_codepoint(symbol)
-                .and_then(|codepoint| sprite::block_rects(codepoint, sprite_metrics))
-                .filter(|rects| rects.len() == 1)
+            let sprite = sprite_codepoint(symbol);
+            if let Some([x0, y0, x1, y1]) =
+                sprite.and_then(|codepoint| sprite::solid_block(codepoint, sprite_metrics))
             {
                 // Opaque single-rectangle block elements are Ghostty's sprite
                 // rectangles, drawn as solid quads in the glyphs' paint order
                 // (combined quadrants overlap at odd sizes, so they are drawn
                 // from the atlas instead).
-                let foreground = style.foreground.to_linear();
-                for [x0, y0, x1, y1] in rects {
-                    placed.push(PlacedGlyph {
-                        row,
-                        texture: self.glyph_atlas.id,
-                        geometry: PixelGeometry {
-                            x: cell_x + x0 as f32,
-                            y: cell_y + y0 as f32,
-                            width: (x1 - x0) as f32,
-                            height: (y1 - y0) as f32,
-                        },
-                        uv: Vec4::ZERO,
-                        color: foreground,
-                        alpha_mask: true,
-                        solid: true,
-                    });
-                }
+                placed.push(PlacedGlyph {
+                    row,
+                    texture: self.shape.atlas.id,
+                    geometry: pixel_rect(
+                        cell_x + x0 as f32,
+                        cell_y + y0 as f32,
+                        (x1 - x0) as f32,
+                        (y1 - y0) as f32,
+                    ),
+                    uv: Vec4::ZERO,
+                    color: style.foreground,
+                    alpha_mask: true,
+                    solid: true,
+                });
             } else if symbol != " " && !symbol.is_empty() {
                 // Sprites span their cells, like Ghostty's `gridWidth`; other
                 // runs may use Ghostty's `constraintWidth`.
-                let sprite = sprite_codepoint(symbol).is_some();
+                let sprite = sprite.is_some();
                 let columns = if sprite {
                     width
                 } else {
                     visual_columns(cells, column, width)
                 };
                 let shaped = cached_shape(
-                    symbol,
-                    columns as u16,
-                    style,
-                    self.config,
-                    raster,
-                    size,
-                    self.cx,
-                    self.shapes,
-                    self.glyph_atlas,
-                    self.stats,
+                    &mut self.shape,
+                    Run {
+                        text: symbol,
+                        face: style.face(),
+                        columns: columns as u16,
+                    },
                 );
                 // Sprites are drawn in cell pixels; text shares the centered
                 // baseline and keeps its bearings, pushed in only at the
                 // texture's edges.
-                let foreground = style.foreground.to_linear();
+                let foreground = style.foreground;
                 let shift = if sprite {
                     Vec2::ZERO
                 } else {
                     Vec2::new(edge_shift(&shaped, cell_x, size.x), raster.glyph_offset)
                 };
                 for glyph in shaped.iter() {
-                    let geometry = PixelGeometry {
-                        x: cell_x + glyph.offset.x + shift.x,
-                        y: cell_y + glyph.offset.y + shift.y,
-                        width: glyph.size.x,
-                        height: glyph.size.y,
-                    };
+                    let geometry = pixel_rect(
+                        cell_x + glyph.offset.x + shift.x,
+                        cell_y + glyph.offset.y + shift.y,
+                        glyph.size.x,
+                        glyph.size.y,
+                    );
                     #[cfg(test)]
                     if self.full
                         && let Some(probe) = self.probe.as_deref_mut()
@@ -678,7 +745,6 @@ impl RowPainter<'_, '_> {
                             uv: glyph.uv,
                             geometry,
                             placed: placed.len(),
-                            pieces: Vec::new(),
                             shift: shift.x,
                         });
                     }
@@ -697,26 +763,26 @@ impl RowPainter<'_, '_> {
                 let decoration_x = column as f32 * raster.cell_size.x;
                 let decoration_width = width as f32 * raster.cell_size.x;
                 let decoration_thickness = raster.scale.round().max(1.0);
-                if style.underlined {
-                    decorations.push(solid_quad(
-                        PixelGeometry {
-                            x: decoration_x,
-                            y: cell_y + (raster.cell_size.y - 2.0 * decoration_thickness).max(0.0),
-                            width: decoration_width,
-                            height: decoration_thickness,
-                        },
+                if style.any(StyleFlags::UNDERLINED) {
+                    decorations.push(QuadInstance::solid(
+                        pixel_rect(
+                            decoration_x,
+                            cell_y + (raster.cell_size.y - 2.0 * decoration_thickness).max(0.0),
+                            decoration_width,
+                            decoration_thickness,
+                        ),
                         style.underline,
                         size,
                     ));
                 }
-                if style.crossed_out {
-                    decorations.push(solid_quad(
-                        PixelGeometry {
-                            x: decoration_x,
-                            y: cell_y + raster.cell_size.y * 0.55,
-                            width: decoration_width,
-                            height: decoration_thickness,
-                        },
+                if style.any(StyleFlags::CROSSED_OUT) {
+                    decorations.push(QuadInstance::solid(
+                        pixel_rect(
+                            decoration_x,
+                            cell_y + raster.cell_size.y * 0.55,
+                            decoration_width,
+                            decoration_thickness,
+                        ),
                         style.foreground,
                         size,
                     ));
@@ -757,12 +823,12 @@ pub(super) fn visual_columns(cells: &[TerminalCell], column: usize, span: usize)
 /// edge, where Ghostty has window padding, is pushed back in. A run wider
 /// than the texture keeps its place.
 pub(super) fn edge_shift(glyphs: &[CachedGlyph], x: f32, width: f32) -> f32 {
-    let (left, right) = glyphs.iter().filter(|g| g.ink.1 > g.ink.0).fold(
+    let (left, right) = glyphs.iter().filter(|g| !g.ink.is_empty()).fold(
         (f32::INFINITY, f32::NEG_INFINITY),
         |(l, r), g| {
             (
-                l.min(x + g.offset.x + g.ink.0),
-                r.max(x + g.offset.x + g.ink.1),
+                l.min(x + g.offset.x + g.ink.left),
+                r.max(x + g.offset.x + g.ink.right),
             )
         },
     );
@@ -777,42 +843,6 @@ pub(super) fn edge_shift(glyphs: &[CachedGlyph], x: f32, width: f32) -> f32 {
     }
 }
 
-pub(super) fn solid_quad(
-    geometry: PixelGeometry,
-    color: impl Into<LinearRgba>,
-    target: Vec2,
-) -> QuadInstance {
-    QuadInstance {
-        rect: clip_rect(snap_geometry(geometry), target),
-        // A negative final UV component lets the unified fragment shader skip the atlas sample.
-        uv: Vec4::new(0.0, 0.0, 0.0, -1.0),
-        color: color.into().to_f32_array().into(),
-        background: -1.0,
-    }
-}
-
-/// A glyph quad; `background` is the luminance of the cell background under
-/// it (coverage glyphs are blended with Ghostty's linear correction).
-pub(super) fn glyph_quad(
-    geometry: PixelGeometry,
-    uv: Vec4,
-    color: impl Into<LinearRgba>,
-    alpha_mask: bool,
-    background: f32,
-    target: Vec2,
-) -> QuadInstance {
-    let mut color = color.into().to_f32_array();
-    if !alpha_mask {
-        color[3] = -1.0;
-    }
-    QuadInstance {
-        rect: clip_rect(snap_geometry(geometry), target),
-        uv,
-        color: color.into(),
-        background,
-    }
-}
-
 /// Linear luminance of a colour, as Ghostty computes it.
 pub(super) fn luminance(color: impl Into<LinearRgba>) -> f32 {
     let linear = color.into();
@@ -822,109 +852,90 @@ pub(super) fn luminance(color: impl Into<LinearRgba>) -> f32 {
 /// Crops a glyph quad to the band it is drawn in (its row, or its cells for
 /// grid graphics), adjusting its atlas coordinates so the visible texels stay
 /// in place.
-pub(super) fn clip_glyph_to_row(
-    glyph: PixelGeometry,
-    uv: Vec4,
-    cell: PixelGeometry,
-) -> Option<(PixelGeometry, Vec4)> {
-    if glyph.width <= 0.0 || glyph.height <= 0.0 || cell.width <= 0.0 || cell.height <= 0.0 {
+pub(super) fn clip_glyph_to_row(glyph: Rect, uv: Vec4, cell: Rect) -> Option<(Rect, Vec4)> {
+    if glyph.width() <= 0.0 || glyph.height() <= 0.0 || cell.width() <= 0.0 || cell.height() <= 0.0
+    {
         return None;
     }
-    let left = glyph.x.max(cell.x);
-    let top = glyph.y.max(cell.y);
-    let right = (glyph.x + glyph.width).min(cell.x + cell.width);
-    let bottom = (glyph.y + glyph.height).min(cell.y + cell.height);
-    if right <= left || bottom <= top {
+    let clipped = glyph.intersect(cell);
+    if clipped.is_empty() {
         return None;
     }
-
     let u_span = uv.z - uv.x;
     let v_span = uv.w - uv.y;
     let clipped_uv = Vec4::new(
-        ((left - glyph.x) / glyph.width).mul_add(u_span, uv.x),
-        ((top - glyph.y) / glyph.height).mul_add(v_span, uv.y),
-        ((right - glyph.x) / glyph.width).mul_add(u_span, uv.x),
-        ((bottom - glyph.y) / glyph.height).mul_add(v_span, uv.y),
+        ((clipped.min.x - glyph.min.x) / glyph.width()).mul_add(u_span, uv.x),
+        ((clipped.min.y - glyph.min.y) / glyph.height()).mul_add(v_span, uv.y),
+        ((clipped.max.x - glyph.min.x) / glyph.width()).mul_add(u_span, uv.x),
+        ((clipped.max.y - glyph.min.y) / glyph.height()).mul_add(v_span, uv.y),
     );
-    Some((
-        PixelGeometry {
-            x: left,
-            y: top,
-            width: right - left,
-            height: bottom - top,
-        },
-        clipped_uv,
-    ))
+    Some((clipped, clipped_uv))
 }
 
-pub(super) fn snap_geometry(geometry: PixelGeometry) -> PixelGeometry {
-    let left = super::metrics::snap(geometry.x);
-    let top = super::metrics::snap(geometry.y);
-    let right = super::metrics::snap(geometry.x + geometry.width).max(left);
-    let bottom = super::metrics::snap(geometry.y + geometry.height).max(top);
-    PixelGeometry {
-        x: left,
-        y: top,
-        width: right - left,
-        height: bottom - top,
-    }
+/// Rounds a rectangle's edges to whole pixels, as the GPU rasterizes them.
+pub(super) fn snap_geometry(geometry: Rect) -> IRect {
+    let left = super::metrics::snap(geometry.min.x);
+    let top = super::metrics::snap(geometry.min.y);
+    let right = super::metrics::snap(geometry.max.x).max(left);
+    let bottom = super::metrics::snap(geometry.max.y).max(top);
+    IRect::new(left as i32, top as i32, right as i32, bottom as i32)
 }
 
-pub(super) fn clip_rect(geometry: PixelGeometry, target: Vec2) -> Vec4 {
-    let left = geometry.x / target.x * 2.0 - 1.0;
-    let right = (geometry.x + geometry.width) / target.x * 2.0 - 1.0;
-    let top = 1.0 - geometry.y / target.y * 2.0;
-    let bottom = 1.0 - (geometry.y + geometry.height) / target.y * 2.0;
+/// A whole-pixel rectangle of a `target`-sized texture in clip space, as
+/// `[left, top, right, bottom]`.
+pub(super) fn clip_rect(geometry: IRect, target: Vec2) -> Vec4 {
+    let rect = geometry.as_rect();
+    let left = rect.min.x / target.x * 2.0 - 1.0;
+    let right = rect.max.x / target.x * 2.0 - 1.0;
+    let top = 1.0 - rect.min.y / target.y * 2.0;
+    let bottom = 1.0 - rect.max.y / target.y * 2.0;
     Vec4::new(left, top, right, bottom)
 }
 
-pub(super) fn append_batch(
-    instances: &mut Vec<QuadInstance>,
-    batches: &mut Vec<DrawBatch>,
-    texture: AssetId<Image>,
-    quads: &[QuadInstance],
-) {
-    append_batch_with(instances, batches, texture, quads, false);
+/// A scene's quads in paint order and the draw batches over them. Each
+/// quad is written once; it joins the previous batch when that uses the
+/// same texture and blending.
+pub(super) struct SceneQuads {
+    pub(super) instances: Vec<QuadInstance>,
+    pub(super) batches: Vec<DrawBatch>,
 }
 
-pub(super) fn append_batch_with(
-    instances: &mut Vec<QuadInstance>,
-    batches: &mut Vec<DrawBatch>,
-    texture: AssetId<Image>,
-    quads: &[QuadInstance],
-    replace: bool,
-) {
-    if quads.is_empty() {
-        return;
+impl SceneQuads {
+    pub(super) fn with_capacity(quads: usize) -> Self {
+        Self {
+            instances: Vec::with_capacity(quads),
+            batches: Vec::new(),
+        }
     }
-    let start = instances.len() as u32;
-    let count = quads.len() as u32;
-    instances.extend_from_slice(quads);
-    if let Some(previous) = batches.last_mut()
-        && previous.texture == texture
-        && previous.replace == replace
-        && previous.start + previous.count == start
-    {
-        previous.count += count;
-    } else {
-        batches.push(DrawBatch {
-            texture,
-            start,
-            count,
-            replace,
-        });
-    }
-}
 
-pub(super) fn append_glyph_batches(
-    instances: &mut Vec<QuadInstance>,
-    batches: &mut Vec<DrawBatch>,
-    glyphs: &[(AssetId<Image>, QuadInstance)],
-) {
-    // The renderer-owned atlas makes this one contiguous run in normal operation. Preserve
-    // source order if an unusually large glyph set falls back to Bevy's source atlases; adjacent
-    // runs still coalesce without changing paint order.
-    for &(texture, glyph) in glyphs {
-        append_batch(instances, batches, texture, std::slice::from_ref(&glyph));
+    pub(super) fn push(&mut self, texture: AssetId<Image>, blend: Blend, quad: QuadInstance) {
+        let index = self.instances.len() as u32;
+        self.instances.push(quad);
+        match self.batches.last_mut() {
+            Some(batch)
+                if batch.texture == texture
+                    && batch.blend == blend
+                    && batch.start + batch.count == index =>
+            {
+                batch.count += 1;
+            }
+            _ => self.batches.push(DrawBatch {
+                texture,
+                start: index,
+                count: 1,
+                blend,
+            }),
+        }
+    }
+
+    pub(super) fn extend(
+        &mut self,
+        texture: AssetId<Image>,
+        blend: Blend,
+        quads: impl IntoIterator<Item = QuadInstance>,
+    ) {
+        for quad in quads {
+            self.push(texture, blend, quad);
+        }
     }
 }

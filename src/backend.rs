@@ -392,7 +392,7 @@ mod tests {
             u.resize((8, 2));
             u.resize((4, 2));
         });
-        assert!(measured.measured().is_none());
+        assert!(!geometry.is_current());
         assert!(!backend.set_geometry(&geometry));
         assert_eq!(backend.window_size().unwrap().pixels, Size::default());
     }

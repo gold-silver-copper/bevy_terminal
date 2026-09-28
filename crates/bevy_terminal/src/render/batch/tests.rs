@@ -1,21 +1,11 @@
 use super::*;
-use super::{
-    gpu::{append_instance_bytes, collect_batch_scenes},
-    metrics::*,
-    scene::*,
-    shaping::*,
-};
-use crate::render::TerminalSizing;
+use super::{gpu::collect_batch_scenes, metrics::*, scene::*, shaping::*};
 use crate::render::grid_for;
-use crate::scene::{GridSize, TerminalCell, TerminalStyle};
+use crate::render::{TerminalSizing, pixel_rect};
+use crate::scene::{GridSize, StyleFlags, TerminalCell, TerminalStyle};
 
 fn quad(value: f32) -> QuadInstance {
-    QuadInstance {
-        rect: Vec4::splat(value),
-        uv: Vec4::ZERO,
-        color: Vec4::ONE,
-        background: value,
-    }
+    QuadInstance::raw([value; 4], [0.0; 4], [1.0; 4], value)
 }
 
 #[test]
@@ -33,7 +23,7 @@ fn unsuccessful_atlas_insertion_preserves_packing_state() {
         y: 0,
         width: 8,
         height: 8,
-        scaled: UVec2::ZERO,
+        scaled: None,
     };
     assert!(atlas.cache(source, &images).is_none());
     assert!(
@@ -184,17 +174,24 @@ fn failed_measurement_and_shapes_retry_after_font_registration() {
             cx.failure.is_some(),
             "a probe error must invalidate measurement"
         );
+        let mut context = ShapeContext {
+            layout: RunLayout {
+                config: &config,
+                raster,
+                viewport: Vec2::splat(100.0),
+            },
+            cx: &mut cx,
+            shapes: &mut shapes,
+            atlas: &mut atlas,
+            stats: &mut stats,
+        };
         let run = cached_shape(
-            "A",
-            1,
-            &ResolvedStyle::plain(),
-            &config,
-            raster,
-            Vec2::splat(100.0),
-            &mut cx,
-            &mut shapes,
-            &mut atlas,
-            &mut stats,
+            &mut context,
+            Run {
+                text: "A",
+                face: Face::Regular,
+                columns: 1,
+            },
         );
         assert!(run.is_empty());
         assert!(
@@ -218,17 +215,24 @@ fn failed_measurement_and_shapes_retry_after_font_registration() {
     let (mut text, mut images) = resources.get_mut(app.world_mut()).unwrap();
     let mut cx = text.context(&mut images);
     let raster = refine_metrics(&config, None, raster, &mut cx);
+    let mut context = ShapeContext {
+        layout: RunLayout {
+            config: &config,
+            raster,
+            viewport: Vec2::splat(100.0),
+        },
+        cx: &mut cx,
+        shapes: &mut shapes,
+        atlas: &mut atlas,
+        stats: &mut stats,
+    };
     let run = cached_shape(
-        "A",
-        1,
-        &ResolvedStyle::plain(),
-        &config,
-        raster,
-        Vec2::splat(100.0),
-        &mut cx,
-        &mut shapes,
-        &mut atlas,
-        &mut stats,
+        &mut context,
+        Run {
+            text: "A",
+            face: Face::Regular,
+            columns: 1,
+        },
     );
     assert!(!run.is_empty());
     assert!(cx.failure.is_none());
@@ -268,9 +272,11 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         .entity_mut(entity)
         .take::<BatchMainState>()
         .unwrap();
-    assert!(state.metrics.is_some());
-    assert!(state.last_snapshot.is_some());
-    assert!(state.pending.is_some());
+    assert!(state.measure.in_use.is_some());
+    assert!(state.snapshot().is_some());
+    let output_id = state.output.id();
+    let mut queue = std::mem::take(&mut *app.world_mut().resource_mut::<SceneQueue>());
+    assert!(queue.scene(output_id).is_some());
     let missing = app.world().resource::<Assets<Font>>().reserve_handle();
     let unavailable = TerminalRenderConfig {
         font: super::super::FontFaces::regular(missing),
@@ -283,6 +289,7 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         &renderer,
         SyncInput {
             config: &unavailable,
+            measured_surface: &output.geometry.surface,
             config_changed: true,
             shaping_changed: true,
             fonts_changed: false,
@@ -291,18 +298,19 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
             texture_limit: 8192,
         },
         &mut state,
-        &mut output,
+        &mut output.geometry.measurement,
         &mut stats,
         &mut text.context(&mut images),
+        &mut queue,
     );
     assert_eq!(result, Err(TerminalStatus::ShapingFailed));
     // Apply the same invalidation boundary as the outer Bevy system.
-    state.invalidate();
+    state.invalidate(&mut queue);
     output.status = result.unwrap_err();
     assert_eq!(output.status, TerminalStatus::ShapingFailed);
-    assert!(state.metrics.is_none());
-    assert!(state.last_snapshot.is_none());
-    assert!(state.pending.is_none());
+    assert!(state.measure.in_use.is_none());
+    assert!(state.snapshot().is_none());
+    assert!(queue.scene(output_id).is_none());
 
     // A successful retry must rebuild even if the effective geometry equals
     // the old geometry and no further configuration event arrives.
@@ -311,6 +319,7 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         &renderer,
         SyncInput {
             config: &config,
+            measured_surface: &output.geometry.surface,
             config_changed: false,
             shaping_changed: false,
             fonts_changed: false,
@@ -319,14 +328,15 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
             texture_limit: 8192,
         },
         &mut state,
-        &mut output,
+        &mut output.geometry.measurement,
         &mut stats,
         &mut text.context(&mut images),
+        &mut queue,
     )
     .unwrap();
     assert!(output.measured().is_some());
-    assert!(state.metrics.is_some());
-    assert!(state.pending.as_ref().unwrap().clear);
+    assert!(state.measure.in_use.is_some());
+    assert!(queue.scene(output_id).unwrap().clear);
     assert!(stats.shape_misses > 0);
 }
 
@@ -404,8 +414,8 @@ fn replacing_surface_with_equal_revision_refreshes_retained_content() {
         .insert(TerminalRenderer::new(second));
     app.update();
     let state = app.world().get::<BatchMainState>(entity).unwrap();
-    assert_eq!(state.last_snapshot.as_ref().unwrap().row_text(0), "BBBB");
-    assert!(state.pending.as_ref().unwrap().clear);
+    assert_eq!(state.snapshot().unwrap().row_text(0), "BBBB");
+    assert!(queued(app.world(), entity).unwrap().clear);
     assert_eq!(
         app.world().get::<TerminalTexture>(entity).unwrap().image,
         handle
@@ -455,9 +465,9 @@ fn shared_content_has_independent_renderers_and_measurements() {
             .measured()
             .unwrap();
         assert_eq!(output.cell_size(), Vec2::new(width, 24.0));
-        assert_eq!(output.size, UVec2::new(width as u32 * 4, 48));
+        assert_eq!(output.size(), UVec2::new(width as u32 * 4, 48));
         let state = app.world().get::<BatchMainState>(entity).unwrap();
-        let snapshot = state.last_snapshot.as_ref().unwrap();
+        let snapshot = state.snapshot().unwrap();
         assert_eq!(snapshot.row_text(0), "AAAA");
         assert_eq!(snapshot.row_text(1), "B   ");
         assert_eq!(
@@ -515,7 +525,8 @@ fn repeated_despawns_release_owned_images_and_pending_scenes() {
         }
         collect_batch_scenes(app.world_mut(), &mut pending);
         assert!(pending.scenes.is_empty());
-        assert!(pending.live_textures.is_empty());
+        assert_eq!(pending.released_atlases.len(), 3, "their atlases are freed");
+        pending.released_atlases.clear();
         let images = app.world().resource::<Assets<Image>>();
         for id in owned.into_iter().flatten() {
             assert!(
@@ -822,11 +833,8 @@ fn font_driven_cells_wait_for_a_loading_handle_before_ready() {
             .is_none()
     );
     let state = app.world().get::<BatchMainState>(entity).unwrap();
-    assert!(state.measured_advance.is_none());
-    assert!(
-        state.last_snapshot.is_none(),
-        "no 1x1 scene may be published"
-    );
+    assert!(state.measure.advance.is_none());
+    assert!(state.snapshot().is_none(), "no 1x1 scene may be published");
 
     app.world_mut()
         .resource_mut::<Assets<Font>>()
@@ -903,10 +911,11 @@ fn ready_terminal_exposes_font_failure_and_recovers_with_the_same_image() {
         TerminalStatus::Loading
     );
     collect_batch_scenes(app.world_mut(), &mut pending);
-    assert!(
-        pending.scenes.is_empty(),
-        "old payload cannot render after a font switch"
-    );
+    // The old payload cannot render after a font switch: it is withdrawn,
+    // keeping only the atlas entries it carried.
+    let old = &pending.scenes[&image.id()];
+    assert!(old.instances.is_empty() && old.batches.is_empty());
+    assert!(!old.clear && old.submission.is_none());
     app.world_mut()
         .resource_mut::<Assets<Font>>()
         .insert(replacement.id(), Font::from_bytes(Vec::new()))
@@ -918,13 +927,7 @@ fn ready_terminal_exposes_font_failure_and_recovers_with_the_same_image() {
     assert_eq!(failed.status, TerminalStatus::FontFailed);
     assert!(failed.measured().is_none());
     assert_eq!(failed.image, image);
-    assert!(
-        app.world()
-            .get::<BatchMainState>(entity)
-            .unwrap()
-            .pending
-            .is_none()
-    );
+    assert!(queued(app.world(), entity).is_none());
 
     // Bevy 0.19 registers new asset IDs, not data replaced under an already
     // registered ID. Recover a malformed asset by selecting a fresh handle.
@@ -1014,7 +1017,7 @@ fn glyph(offset_x: f32, columns: &[u32]) -> CachedGlyph {
         Vec2::new(columns.len() as f32, 10.0),
         Vec4::ZERO,
         true,
-        columns.to_vec(),
+        super::metrics::InkSpan::of_columns(columns.iter().map(|column| *column > 0)),
     )
 }
 
@@ -1070,46 +1073,19 @@ fn symbols_before_blank_cells_may_spread_into_them() {
 
 #[test]
 fn snapping_and_clipping_keep_glyphs_that_fit_inside_their_cell() {
-    let cell = PixelGeometry {
-        x: 22.0,
-        y: 40.0,
-        width: 11.0,
-        height: 20.0,
-    };
+    let cell = pixel_rect(22.0, 40.0, 11.0, 20.0);
     // A glyph that fits mathematically survives snapping intact.
-    let glyph = PixelGeometry {
-        x: 22.0,
-        y: 40.0,
-        width: 11.0,
-        height: 20.0,
-    };
+    let glyph = pixel_rect(22.0, 40.0, 11.0, 20.0);
     let (clipped, _) = clip_glyph_to_row(glyph, Vec4::new(0.0, 0.0, 1.0, 1.0), cell).unwrap();
-    let snapped = snap_geometry(clipped);
-    assert_eq!(
-        (snapped.x, snapped.y, snapped.width, snapped.height),
-        (22.0, 40.0, 11.0, 20.0)
-    );
+    assert_eq!(snap_geometry(clipped), IRect::new(22, 40, 33, 60));
     // A glyph a pixel below the cell loses exactly that pixel row and its UVs.
-    let glyph = PixelGeometry {
-        x: 22.0,
-        y: 41.0,
-        width: 11.0,
-        height: 20.0,
-    };
+    let glyph = pixel_rect(22.0, 41.0, 11.0, 20.0);
     let (clipped, uv) = clip_glyph_to_row(glyph, Vec4::new(0.0, 0.0, 1.0, 1.0), cell).unwrap();
-    assert_eq!(clipped.height, 19.0);
+    assert_eq!(clipped.height(), 19.0);
     assert!((uv.w - 0.95).abs() < 1e-6, "{uv:?}");
     // Halves snap consistently: a rectangle at .5 keeps its size.
-    let snapped = snap_geometry(PixelGeometry {
-        x: 0.5,
-        y: -0.5,
-        width: 4.0,
-        height: 4.0,
-    });
-    assert_eq!(
-        (snapped.x, snapped.y, snapped.width, snapped.height),
-        (1.0, 0.0, 4.0, 4.0)
-    );
+    let snapped = snap_geometry(pixel_rect(0.5, -0.5, 4.0, 4.0));
+    assert_eq!(snapped, IRect::new(1, 0, 5, 4));
 }
 
 #[test]
@@ -1222,9 +1198,20 @@ fn late_consumer_observes_current_geometry_and_resizes_keep_the_image() {
     surface.update(|update| {
         update.resize((8, 3));
     });
+    // Readiness is what the last sync recorded; retained geometry is checked
+    // against the live surface.
     assert!(
-        initial.measured().is_none(),
+        !initial.geometry.is_current(),
         "a resize immediately invalidates old geometry"
+    );
+    assert_eq!(
+        app.world()
+            .get::<TerminalTexture>(entity)
+            .unwrap()
+            .measured()
+            .map(TerminalGeometry::grid),
+        Some(initial.geometry.grid()),
+        "until the next sync, the texture describes the previous grid"
     );
     app.update();
     let resized = app.world().get::<TerminalTexture>(entity).unwrap().clone();
@@ -1298,26 +1285,10 @@ fn measured_output_changes_when_only_logical_metrics_change() {
 #[test]
 fn pixel_rectangles_map_exactly_to_clip_space() {
     assert_eq!(
-        clip_rect(
-            PixelGeometry {
-                x: 0.0,
-                y: 0.0,
-                width: 800.0,
-                height: 480.0,
-            },
-            Vec2::new(800.0, 480.0),
-        ),
+        clip_rect(IRect::new(0, 0, 800, 480), Vec2::new(800.0, 480.0)),
         Vec4::new(-1.0, 1.0, 1.0, -1.0)
     );
-    let cell = clip_rect(
-        PixelGeometry {
-            x: 400.0,
-            y: 240.0,
-            width: 10.0,
-            height: 20.0,
-        },
-        Vec2::new(800.0, 480.0),
-    );
+    let cell = clip_rect(IRect::new(400, 240, 410, 260), Vec2::new(800.0, 480.0));
     assert!(cell.abs_diff_eq(Vec4::new(0.0, 0.0, 0.025, -1.0 / 12.0), 1e-6));
 }
 
@@ -1350,18 +1321,8 @@ fn physical_metrics_and_geometry_are_pixel_aligned() {
     assert!((physical.font_size - 35.2).abs() < 1e-4);
 
     assert_eq!(
-        snap_geometry(PixelGeometry {
-            x: 4.5,
-            y: 9.5,
-            width: 1.0,
-            height: 2.0,
-        }),
-        PixelGeometry {
-            x: 5.0,
-            y: 10.0,
-            width: 1.0,
-            height: 2.0,
-        }
+        snap_geometry(pixel_rect(4.5, 9.5, 1.0, 2.0)),
+        IRect::new(5, 10, 6, 12)
     );
 }
 
@@ -1397,49 +1358,21 @@ fn font_driven_cells_refit_the_font_after_physical_pixel_rounding() {
 #[test]
 fn glyph_bitmaps_are_clipped_to_their_row_band() {
     let clipped = clip_glyph_to_row(
-        PixelGeometry {
-            x: -2.0,
-            y: 3.0,
-            width: 16.0,
-            height: 20.0,
-        },
+        pixel_rect(-2.0, 3.0, 16.0, 20.0),
         Vec4::new(0.1, 0.2, 0.9, 0.8),
-        PixelGeometry {
-            x: 0.0,
-            y: 0.0,
-            width: 100.0,
-            height: 10.0,
-        },
+        pixel_rect(0.0, 0.0, 100.0, 10.0),
     )
     .expect("the glyph overlaps the row");
 
     // Ink past the row's bottom or the texture's edge is dropped; columns
     // past the glyph's own cell are kept.
-    assert_eq!(
-        clipped.0,
-        PixelGeometry {
-            x: 0.0,
-            y: 3.0,
-            width: 14.0,
-            height: 7.0,
-        }
-    );
+    assert_eq!(clipped.0, pixel_rect(0.0, 3.0, 14.0, 7.0));
     assert!(clipped.1.abs_diff_eq(Vec4::new(0.2, 0.2, 0.9, 0.41), 1e-6));
     assert!(
         clip_glyph_to_row(
-            PixelGeometry {
-                x: 20.0,
-                y: 20.0,
-                width: 5.0,
-                height: 5.0,
-            },
+            pixel_rect(20.0, 20.0, 5.0, 5.0),
             Vec4::ONE,
-            PixelGeometry {
-                x: 0.0,
-                y: 0.0,
-                width: 10.0,
-                height: 10.0,
-            },
+            pixel_rect(0.0, 0.0, 10.0, 10.0),
         )
         .is_none()
     );
@@ -1456,9 +1389,11 @@ fn glyph_batches_preserve_paint_order_and_coalesce_adjacent_atlases() {
         (atlas_b, quad(3.0)),
         (atlas_a, quad(4.0)),
     ];
-    let mut instances = Vec::new();
-    let mut batches = Vec::new();
-    append_glyph_batches(&mut instances, &mut batches, &glyphs);
+    let mut quads = SceneQuads::with_capacity(0);
+    for (texture, quad) in glyphs {
+        quads.push(texture, Blend::Alpha, quad);
+    }
+    let SceneQuads { instances, batches } = quads;
 
     assert_eq!(instances.len(), 4);
     assert_eq!(batches.len(), 3);
@@ -1468,43 +1403,38 @@ fn glyph_batches_preserve_paint_order_and_coalesce_adjacent_atlases() {
     assert_eq!((batches[1].start, batches[1].count), (2, 1));
     assert_eq!(batches[2].texture, atlas_a);
     assert_eq!((batches[2].start, batches[2].count), (3, 1));
-    assert_eq!(instances[0].rect, Vec4::splat(1.0));
-    assert_eq!(instances[1].rect, Vec4::splat(2.0));
-    assert_eq!(instances[2].rect, Vec4::splat(3.0));
-    assert_eq!(instances[3].rect, Vec4::splat(4.0));
+    assert_eq!(instances[0].rect(), [1.0; 4]);
+    assert_eq!(instances[1].rect(), [2.0; 4]);
+    assert_eq!(instances[2].rect(), [3.0; 4]);
+    assert_eq!(instances[3].rect(), [4.0; 4]);
 }
 
 #[test]
 fn replacement_batches_never_address_stale_capacity() {
     let mut images = Assets::<Image>::default();
     let atlas = images.add(Image::default()).id();
-    let mut instances = Vec::with_capacity(32);
-    let mut batches = Vec::new();
-    let first = vec![quad(1.0); 12];
-    append_batch(&mut instances, &mut batches, atlas, &first);
-    assert_eq!(batches[0].count, 12);
+    let mut quads = SceneQuads::with_capacity(32);
+    quads.extend(atlas, Blend::Alpha, vec![quad(1.0); 12]);
+    assert_eq!(quads.batches[0].count, 12);
 
-    instances.clear();
-    batches.clear();
-    let second = vec![quad(2.0); 2];
-    append_batch(&mut instances, &mut batches, atlas, &second);
-    assert_eq!(instances.len(), 2);
-    assert_eq!((batches[0].start, batches[0].count), (0, 2));
+    let mut quads = SceneQuads::with_capacity(32);
+    quads.extend(atlas, Blend::Replace, vec![quad(2.0); 2]);
+    quads.extend(atlas, Blend::Alpha, vec![quad(3.0); 3]);
+    assert_eq!(quads.instances.len(), 5);
+    assert_eq!((quads.batches[0].start, quads.batches[0].count), (0, 2));
+    assert_eq!((quads.batches[1].start, quads.batches[1].count), (2, 3));
 }
 
 #[test]
 fn empty_scene_produces_no_upload_or_draw_batch() {
     let mut images = Assets::<Image>::default();
     let atlas = images.add(Image::default()).id();
-    let mut instances = Vec::new();
-    let mut batches = Vec::new();
-    append_batch(&mut instances, &mut batches, atlas, &[]);
-    append_glyph_batches(&mut instances, &mut batches, &[]);
+    let mut quads = SceneQuads::with_capacity(0);
+    quads.extend(atlas, Blend::Alpha, []);
+    let SceneQuads { instances, batches } = quads;
     assert!(instances.is_empty());
     assert!(batches.is_empty());
-    let mut bytes = Vec::new();
-    append_instance_bytes(&instances, &mut bytes);
-    assert!(bytes.is_empty());
+    assert!(bytemuck::cast_slice::<_, u8>(&instances).is_empty());
 }
 
 #[test]
@@ -1531,7 +1461,7 @@ fn unified_atlas_copies_each_bevy_glyph_once_and_reuses_its_uv() {
         y: 1,
         width: 1,
         height: 1,
-        scaled: UVec2::ZERO,
+        scaled: None,
     };
 
     let first = atlas.cache(glyph, &images).expect("glyph should fit");
@@ -1597,10 +1527,10 @@ fn advance(app: &mut App, seconds: f32) {
 /// Consumes pending payloads the way render-world extraction would, so a
 /// later partial repaint is not upgraded to a full one.
 fn drain_pending(app: &mut App) {
-    let mut states = app.world_mut().query::<&mut BatchMainState>();
-    for mut state in states.iter_mut(app.world_mut()) {
-        state.pending = None;
-        state.submitted.store(state.generation, Ordering::Release);
+    let mut states = app.world_mut().query::<Entity>();
+    let entities: Vec<Entity> = states.iter(app.world()).collect();
+    for entity in entities {
+        take_queued(app.world_mut(), entity);
     }
 }
 
@@ -1647,8 +1577,7 @@ fn delayed_scenes_coalesce_completely_and_removed_renderers_release_state() {
         .world()
         .get::<BatchMainState>(entity)
         .unwrap()
-        .last_snapshot
-        .as_ref()
+        .snapshot()
         .unwrap();
     assert_eq!(snapshot.row_text(0), "A   ");
     assert_eq!(snapshot.row_text(1), "B   ");
@@ -1683,9 +1612,10 @@ fn delayed_scenes_coalesce_completely_and_removed_renderers_release_state() {
         .remove::<TerminalRenderer>();
     collect_batch_scenes(app.world_mut(), &mut pending);
     assert!(pending.scenes.is_empty());
-    assert!(
-        pending.live_textures.is_empty(),
-        "removed owner cannot keep bind groups alive"
+    assert_eq!(
+        pending.released_atlases.len(),
+        1,
+        "a removed owner's atlas is freed"
     );
     app.update();
     assert!(app.world().get::<BatchMainState>(entity).is_none());
@@ -1736,6 +1666,21 @@ fn blink_phases_only_rebuild_blinking_content() {
     app.update();
     let blinking = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!(blinking.changed_rows, 3, "{blinking}");
+
+    // Overwriting the only blinking cell in a partial repaint ends the
+    // full-surface rebuilds: only the cursor row flips again.
+    drain_pending(&mut app);
+    surface.update(|update| {
+        update.set_cell((0, 0), &TerminalCell::new("y"));
+    });
+    app.update();
+    let repainted = *app.world().get::<TerminalStats>(entity).unwrap();
+    assert_eq!(repainted.changed_rows, 1, "a partial repaint: {repainted}");
+    drain_pending(&mut app);
+    advance(&mut app, 0.5);
+    app.update();
+    let stopped = *app.world().get::<TerminalStats>(entity).unwrap();
+    assert_eq!(stopped.changed_rows, 1, "{stopped}");
 }
 
 #[test]
@@ -1796,38 +1741,29 @@ fn ascii_and_non_ascii_symbols_reuse_the_shape_cache() {
     assert_eq!(stats.shape_misses, 1, "{stats}");
 }
 
+/// Instances are uploaded as their bytes, so their layout must be what
+/// `gpu::instance_layout` declares: four tightly packed fields, 52 bytes.
 #[test]
-fn instance_bytes_append_whole_instances_in_order() {
-    let instances = [
-        QuadInstance {
-            rect: Vec4::new(1.0, 2.0, 3.0, 4.0),
-            uv: Vec4::new(5.0, 6.0, 7.0, 8.0),
-            color: Vec4::new(9.0, 10.0, 11.0, 12.0),
-            background: 13.0,
-        },
-        quad(42.0),
-    ];
-    let mut bytes = Vec::new();
-    append_instance_bytes(&instances, &mut bytes);
-    assert_eq!(bytes.len(), 104);
-    let floats: Vec<f32> = bytes
+fn quad_instances_are_the_shaders_52_byte_vertex_layout() {
+    let instance = QuadInstance::raw(
+        [1.0, 2.0, 3.0, 4.0],
+        [5.0, 6.0, 7.0, 8.0],
+        [9.0, 10.0, 11.0, 12.0],
+        13.0,
+    );
+    assert_eq!(size_of::<QuadInstance>(), 52);
+    let floats: Vec<f32> = bytemuck::bytes_of(&instance)
         .as_chunks::<4>()
         .0
         .iter()
         .map(|chunk| f32::from_ne_bytes(*chunk))
         .collect();
     assert_eq!(
-        &floats[..13],
-        &[
+        floats,
+        [
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0
         ]
     );
-    assert_eq!(&floats[13..17], &[42.0; 4]);
-    assert_eq!(floats[25], 42.0);
-    // Appending again extends at the previous end, as the shared staging
-    // buffer relies on.
-    append_instance_bytes(&instances[1..], &mut bytes);
-    assert_eq!(bytes.len(), 156);
 }
 
 #[test]
@@ -1872,6 +1808,7 @@ fn invalid_scale_settles_without_idle_redraws() {
             .world()
             .get::<BatchMainState>(entity)
             .unwrap()
+            .submissions
             .generation;
         for _ in 0..3 {
             // Even touching the raw component without changing its effective
@@ -1885,6 +1822,7 @@ fn invalid_scale_settles_without_idle_redraws() {
                 app.world()
                     .get::<BatchMainState>(entity)
                     .unwrap()
+                    .submissions
                     .generation,
                 generation
             );
@@ -1934,13 +1872,7 @@ fn stats_reset_when_font_starts_loading() {
                 .changed_rows,
             0
         );
-        assert!(
-            app.world()
-                .get::<BatchMainState>(entity)
-                .unwrap()
-                .pending
-                .is_none()
-        );
+        assert!(queued(app.world(), entity).is_none());
     }
 }
 
@@ -2010,7 +1942,7 @@ fn glyph_atlas_stays_small_until_actual_glyphs_are_drawn() {
     app.update();
     let state = app.world().get::<BatchMainState>(entity).unwrap();
     assert_eq!(state.glyph_atlas.id, atlas, "the atlas keeps its identity");
-    let scene = state.pending.as_ref().expect("a scene with the new glyph");
+    let scene = queued(app.world(), entity).expect("a scene with the new glyph");
     assert_eq!(scene.atlas, atlas);
     assert_eq!(scene.atlas_uploads.len(), 1, "one glyph's pixels travel");
     // The atlas texture lives in the render world; the main world grows only
@@ -2051,7 +1983,7 @@ fn cached_ink(app: &App, entity: Entity, text: &str, columns: u16) -> Rect {
     let state = app.world().get::<BatchMainState>(entity).unwrap();
     let index = state
         .shapes
-        .lookup_current(&ResolvedStyle::plain(), text, columns)
+        .lookup_current(Face::Regular, text, columns)
         .unwrap_or_else(|| panic!("{text:?} over {columns} cells is cached"));
     let data = &state.glyph_atlas.shadow;
     let mut ink: Option<Rect> = None;
@@ -2101,11 +2033,7 @@ fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
     for _ in 0..6 {
         app.update();
     }
-    let raster = app
-        .world()
-        .get::<BatchMainState>(entity)
-        .unwrap()
-        .raster_config;
+    let raster = app.world().get::<BatchMainState>(entity).unwrap().raster();
     let cell = raster.cell_size;
     assert!(raster.font_size > 20.0, "{raster:?}");
     let inside = |ink: Rect, columns: f32| {
@@ -2151,7 +2079,7 @@ fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
             .get::<BatchMainState>(entity)
             .unwrap()
             .shapes
-            .lookup_current(&ResolvedStyle::plain(), "∑", 2)
+            .lookup_current(Face::Regular, "∑", 2)
             .is_none()
     );
 
@@ -2197,24 +2125,253 @@ fn sprites_without_atlas_room_are_not_cached_empty() {
     let mut resources = SystemState::<(TextResources, ResMut<Assets<Image>>)>::new(app.world_mut());
     let (mut text, mut images) = resources.get_mut(app.world_mut()).unwrap();
     let mut cx = text.context(&mut images);
+    let mut context = ShapeContext {
+        layout: RunLayout {
+            config: &config,
+            raster,
+            viewport: Vec2::splat(100.0),
+        },
+        cx: &mut cx,
+        shapes: &mut shapes,
+        atlas: &mut atlas,
+        stats: &mut stats,
+    };
     let run = cached_shape(
-        "\u{2592}",
-        1,
-        &ResolvedStyle::plain(),
-        &config,
-        raster,
-        Vec2::splat(100.0),
-        &mut cx,
-        &mut shapes,
-        &mut atlas,
-        &mut stats,
+        &mut context,
+        Run {
+            text: "\u{2592}",
+            face: Face::Regular,
+            columns: 1,
+        },
     );
     assert!(run.is_empty());
     drop(run);
     assert!(atlas.overflowed, "the overflow triggers a rebuild");
     assert!(
         shapes
-            .lookup_current(&ResolvedStyle::plain(), "\u{2592}", 1)
+            .lookup_current(Face::Regular, "\u{2592}", 1)
             .is_none()
+    );
+}
+
+/// The renderer's components follow `TerminalRenderer` as soon as commands
+/// apply, without waiting for an update: they appear on spawn, go when the
+/// renderer is removed, and come back (with a new image) when it returns.
+#[test]
+fn renderer_components_follow_the_renderer_without_an_update() {
+    let mut app = text_app();
+    let surface = TerminalSurface::new((4, 2));
+    let entity = app
+        .world_mut()
+        .spawn(TerminalRenderer::new(surface.clone()))
+        .id();
+    let has_all = |app: &App| {
+        let entity = app.world().entity(entity);
+        [
+            entity.contains::<TerminalTexture>(),
+            entity.contains::<TerminalStats>(),
+            entity.contains::<BatchMainState>(),
+        ]
+    };
+    assert_eq!(has_all(&app), [true; 3]);
+    let first = app
+        .world()
+        .get::<TerminalTexture>(entity)
+        .unwrap()
+        .image
+        .clone();
+    assert_eq!(
+        app.world().get::<TerminalTexture>(entity).unwrap().status,
+        TerminalStatus::Loading
+    );
+    for _ in 0..3 {
+        app.update();
+    }
+    app.world_mut()
+        .entity_mut(entity)
+        .remove::<TerminalRenderer>();
+    assert_eq!(has_all(&app), [false; 3]);
+    app.world_mut()
+        .entity_mut(entity)
+        .insert(TerminalRenderer::new(surface));
+    assert_eq!(has_all(&app), [true; 3]);
+    let second = &app.world().get::<TerminalTexture>(entity).unwrap().image;
+    assert_ne!(&first, second);
+    // Despawning a terminal releases its components with the entity.
+    app.world_mut().despawn(entity);
+    app.update();
+}
+
+/// A scene the render world took but did not draw is withdrawn when its
+/// terminal switches surfaces; the replacing scene still carries the atlas
+/// entries the withdrawn one brought, since the glyphs stay cached.
+#[test]
+fn withdrawn_scenes_hand_their_atlas_entries_to_the_next_scene() {
+    let mut app = text_app();
+    let first = TerminalSurface::new((4, 1));
+    write_text(&first, "AB");
+    let entity = app.world_mut().spawn(TerminalRenderer::new(first)).id();
+    for _ in 0..4 {
+        app.update();
+    }
+    let output = app
+        .world()
+        .get::<BatchMainState>(entity)
+        .unwrap()
+        .output
+        .id();
+    let mut pending = PendingBatchScenes::default();
+    collect_batch_scenes(app.world_mut(), &mut pending);
+    let carried = pending.scenes[&output].atlas_uploads.len();
+    assert!(carried >= 2, "the first scene brings A and B");
+
+    // The same text on another surface: the glyphs are cached, so the new
+    // scene brings no entries of its own.
+    let second = TerminalSurface::new((4, 1));
+    write_text(&second, "AB");
+    app.world_mut()
+        .entity_mut(entity)
+        .insert(TerminalRenderer::new(second));
+    app.update();
+    assert!(
+        queued(app.world(), entity)
+            .unwrap()
+            .atlas_uploads
+            .is_empty()
+    );
+    collect_batch_scenes(app.world_mut(), &mut pending);
+    let scene = &pending.scenes[&output];
+    assert!(scene.clear && !scene.instances.is_empty());
+    assert_eq!(scene.atlas_uploads.len(), carried);
+}
+
+/// Readiness is recorded by the sync, so `Changed<TerminalTexture>` fires
+/// exactly when geometry or status change: not for content, and once for a
+/// resize, after which `measured()` describes the new grid.
+#[test]
+fn texture_changes_track_geometry_not_content() {
+    #[derive(Resource, Default)]
+    struct Changes(usize);
+    let mut app = text_app();
+    app.init_resource::<Changes>().add_systems(
+        Update,
+        (|changed: Query<(), Changed<TerminalTexture>>, mut count: ResMut<Changes>| {
+            count.0 += changed.iter().count();
+        })
+        .after(super::super::TerminalSystems::Sync),
+    );
+    let surface = TerminalSurface::new((4, 2));
+    let entity = app
+        .world_mut()
+        .spawn(TerminalRenderer::new(surface.clone()))
+        .id();
+    for _ in 0..4 {
+        app.update();
+    }
+    let texture = |app: &App| app.world().get::<TerminalTexture>(entity).unwrap().clone();
+    assert_eq!(
+        texture(&app).measured().unwrap().grid(),
+        GridSize::new(4, 2)
+    );
+    app.world_mut().resource_mut::<Changes>().0 = 0;
+    write_text(&surface, "text");
+    app.update();
+    assert_eq!(
+        app.world().resource::<Changes>().0,
+        0,
+        "content is not geometry"
+    );
+    surface.update(|update| {
+        update.resize((6, 3));
+    });
+    app.update();
+    app.update();
+    assert_eq!(
+        app.world().resource::<Changes>().0,
+        1,
+        "one change per resize"
+    );
+    assert_eq!(
+        texture(&app).measured().unwrap().grid(),
+        GridSize::new(6, 3)
+    );
+    assert!(texture(&app).measured().unwrap().is_current());
+}
+
+/// Failures are typed until logged, with the messages they always had.
+#[test]
+fn shaping_failures_format_only_when_logged() {
+    let font = FontSource::from("mono");
+    let failure = ShapingFailure::Advance {
+        font: font.clone(),
+        error: super::metrics::AdvanceError::Invalid(0.0),
+    };
+    assert_eq!(
+        failure.to_string(),
+        "advance measurement for Family(\"mono\"): font produced invalid advance 0"
+    );
+    assert_eq!(
+        ShapingFailure::Layout {
+            font,
+            error: bevy::text::TextError::NoSuchFont
+        }
+        .to_string(),
+        "layout for Family(\"mono\"): font not found"
+    );
+    assert_ne!(
+        failure,
+        ShapingFailure::Advance {
+            font: FontSource::from("mono"),
+            error: super::metrics::AdvanceError::NotRegistered,
+        }
+    );
+}
+
+/// A scene built for a grid the surface no longer has (a producer resized
+/// it after `TerminalSystems::Sync`) is withdrawn at extraction and does not
+/// draw; the next sync repaints the new grid.
+#[test]
+fn scenes_for_a_resized_surface_are_withdrawn_at_extraction() {
+    let mut app = text_app();
+    let surface = TerminalSurface::new((4, 2));
+    let entity = app
+        .world_mut()
+        .spawn(TerminalRenderer::new(surface.clone()))
+        .id();
+    for _ in 0..4 {
+        app.update();
+    }
+    let output = app
+        .world()
+        .get::<BatchMainState>(entity)
+        .unwrap()
+        .output
+        .id();
+    let mut pending = PendingBatchScenes::default();
+    collect_batch_scenes(app.world_mut(), &mut pending);
+    pending.scenes.clear();
+
+    write_text(&surface, "AB");
+    app.update();
+    // Resized after the sync that built the scene, before extraction.
+    surface.update(|update| {
+        update.resize((6, 3));
+    });
+    collect_batch_scenes(app.world_mut(), &mut pending);
+    let stale = &pending.scenes[&output];
+    assert!(stale.instances.is_empty() && !stale.clear && stale.submission.is_none());
+
+    app.update();
+    collect_batch_scenes(app.world_mut(), &mut pending);
+    let current = &pending.scenes[&output];
+    assert!(current.clear && !current.instances.is_empty());
+    assert_eq!(
+        current.destination_size,
+        app.world()
+            .get::<TerminalTexture>(entity)
+            .unwrap()
+            .measured()
+            .unwrap()
+            .size()
     );
 }

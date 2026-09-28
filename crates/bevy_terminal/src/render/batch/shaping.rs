@@ -1,9 +1,9 @@
 //! Glyph rasterization, shape lookup, and atlas storage.
 use super::constraint::{Align, Constraint, GlyphSize, Size};
-use super::metrics::{GlyphBox, column_coverage};
+use super::metrics::{GlyphBox, InkSpan, inked_columns};
 use super::sprite::{self, Sprite};
 use super::{
-    GLYPH_ATLAS_SIZE, GLYPH_FORMAT, RasterMetrics, ResolvedStyle, TerminalRenderConfig,
+    Face, GLYPH_ATLAS_SIZE, GLYPH_FORMAT, RasterMetrics, ShapingFailure, TerminalRenderConfig,
     TerminalStats, TextContext, text_font,
 };
 use bevy::{
@@ -32,17 +32,48 @@ pub(super) struct ShapedRun {
     pub(super) advance: f32,
 }
 
-/// Shapes and rasterizes `text` in `style` at the physical metrics; the
+/// How runs are laid out: the configuration, the physical raster metrics,
+/// and the bounds Bevy's text pipeline lays them out in.
+#[derive(Clone, Copy)]
+pub(super) struct RunLayout<'a> {
+    pub(super) config: &'a TerminalRenderConfig,
+    pub(super) raster: RasterMetrics,
+    pub(super) viewport: Vec2,
+}
+
+/// A run to shape: a grapheme cluster in one face, drawn over `columns`
+/// cells (which decides how a symbol is constrained).
+#[derive(Clone, Copy)]
+pub(super) struct Run<'t> {
+    pub(super) text: &'t str,
+    pub(super) face: Face,
+    pub(super) columns: u16,
+}
+
+/// What shaping a run needs besides the run: its layout, Bevy's text
+/// resources, and the terminal's shape cache, atlas and statistics.
+pub(super) struct ShapeContext<'a, 'w> {
+    pub(super) layout: RunLayout<'a>,
+    pub(super) cx: &'a mut TextContext<'w>,
+    pub(super) shapes: &'a mut ShapeCaches,
+    pub(super) atlas: &'a mut UnifiedGlyphAtlas,
+    pub(super) stats: &'a mut TerminalStats,
+}
+
+/// Shapes and rasterizes `text` in `face` at the physical metrics; the
 /// layout's glyphs are positioned inside a line box `raster.cell_size.y` tall.
 pub(super) fn shape_run(
     text: &str,
-    style: &ResolvedStyle,
-    config: &TerminalRenderConfig,
-    raster: RasterMetrics,
-    viewport: Vec2,
+    face: Face,
+    layout: RunLayout<'_>,
     cx: &mut TextContext<'_>,
 ) -> Option<ShapedRun> {
-    let font = text_font(&config.font, raster.font_size, style);
+    let RunLayout {
+        config,
+        raster,
+        viewport,
+    } = layout;
+    let font = text_font(&config.font, raster.font_size, face);
     let mut computed = ComputedTextBlock::default();
     let mut layout = TextLayoutInfo::default();
     let shape_result = cx.text_pipeline.update_buffer(
@@ -67,7 +98,10 @@ pub(super) fn shape_run(
         20.0,
     );
     let shape_result = shape_result
-        .map_err(|error| ("layout", error))
+        .map_err(|error| ShapingFailure::Layout {
+            font: font.font.clone(),
+            error,
+        })
         .and_then(|()| {
             cx.text_pipeline
                 .update_text_layout_info(
@@ -80,11 +114,13 @@ pub(super) fn shape_run(
                     Justify::Left,
                     config.raster.hinting,
                 )
-                .map_err(|error| ("rasterization", error))
+                .map_err(|error| ShapingFailure::Rasterization {
+                    font: font.font.clone(),
+                    error,
+                })
         });
-    if let Err((phase, error)) = shape_result {
-        cx.failure
-            .get_or_insert_with(|| format!("{phase} for {:?}: {error}", font.font));
+    if let Err(failure) = shape_result {
+        cx.failure.get_or_insert(failure);
         return None;
     }
     let line = computed.buffer().lines().next()?;
@@ -180,28 +216,19 @@ pub(super) struct CachedGlyph {
     pub(super) size: Vec2,
     pub(super) uv: Vec4,
     pub(super) alpha_mask: bool,
-    /// Horizontal extent `[left, right)` of the bitmap's inked columns,
-    /// relative to the bitmap; empty for a transparent bitmap.
-    pub(super) ink: (f32, f32),
+    /// The bitmap's inked columns.
+    pub(super) ink: InkSpan,
 }
 
 impl CachedGlyph {
-    /// A cached glyph; `columns` is the coverage (sum of alpha) of each
-    /// bitmap column, from which its inked extent is kept.
     pub(super) fn new(
         texture: AssetId<Image>,
         offset: Vec2,
         size: Vec2,
         uv: Vec4,
         alpha_mask: bool,
-        columns: Vec<u32>,
+        ink: InkSpan,
     ) -> Self {
-        let left = columns.iter().position(|c| *c > 0);
-        let right = columns.iter().rposition(|c| *c > 0);
-        let ink = match (left, right) {
-            (Some(left), Some(right)) => (left as f32, right as f32 + 1.0),
-            _ => (0.0, 0.0),
-        };
         Self {
             texture,
             offset,
@@ -220,8 +247,8 @@ pub(super) struct SourceGlyph {
     pub(super) y: u32,
     pub(super) width: u32,
     pub(super) height: u32,
-    /// The size the glyph is resampled to; zero for an unscaled copy.
-    pub(super) scaled: UVec2,
+    /// The size the glyph is resampled to; `None` for a plain copy.
+    pub(super) scaled: Option<UVec2>,
 }
 
 /// The RGBA8 pixels of a Bevy atlas glyph.
@@ -401,31 +428,30 @@ impl UnifiedGlyphAtlas {
     }
 
     /// Resamples a Bevy atlas glyph to `scaled` pixels into the atlas,
-    /// returning its UV rectangle and column coverage.
+    /// returning its UV rectangle and inked columns.
     pub(super) fn cache_scaled(
         &mut self,
         source: SourceGlyph,
         scaled: UVec2,
         images: &Assets<Image>,
-    ) -> Option<(Vec4, Vec<u32>)> {
-        let key = SourceGlyph { scaled, ..source };
+    ) -> Option<(Vec4, InkSpan)> {
+        let key = SourceGlyph {
+            scaled: Some(scaled),
+            ..source
+        };
         let pixels = resample(
             &source_pixels(source, images)?,
             UVec2::new(source.width, source.height),
             scaled,
         );
-        let columns = (0..scaled.x as usize)
-            .map(|x| {
-                (0..scaled.y as usize)
-                    .map(|y| u32::from(pixels[(y * scaled.x as usize + x) * 4 + 3]))
-                    .sum()
-            })
-            .collect();
+        let ink = InkSpan::of_columns((0..scaled.x as usize).map(|x| {
+            (0..scaled.y as usize).any(|y| pixels[(y * scaled.x as usize + x) * 4 + 3] > 0)
+        }));
         let uv = match self.glyphs.get(&AtlasKey::Source(key)) {
             Some(uv) => *uv,
             None => self.insert(AtlasKey::Source(key), scaled, pixels)?,
         };
-        Some((uv, columns))
+        Some((uv, ink))
     }
 
     /// Adds a sprite's coverage to the atlas, returning its UV rectangle.
@@ -442,11 +468,11 @@ impl UnifiedGlyphAtlas {
         if let Some(uv) = self.glyphs.get(&key) {
             return Some(*uv);
         }
-        let pixels: Vec<u8> = sprite
-            .alpha
-            .iter()
-            .flat_map(|alpha| [255, 255, 255, *alpha])
-            .collect();
+        // White texels carrying the coverage in alpha.
+        let mut pixels = Vec::with_capacity(sprite.alpha.len() * 4);
+        for &alpha in &sprite.alpha {
+            pixels.extend_from_slice(&[255, 255, 255, alpha]);
+        }
         self.insert(key, sprite.size, pixels)
     }
 
@@ -527,7 +553,7 @@ pub(super) struct ShapeCaches {
     pub(super) entries: Vec<Vec<CachedGlyph>>,
     retained_bytes: usize,
     narrow: [StyleShapes; 4],
-    wide: HashMap<(u16, usize), HashMap<String, usize>>,
+    wide: HashMap<(u16, Face), HashMap<String, usize>>,
     /// The previous working set: when the cache fills, it is retired rather
     /// than dropped, and runs still in use are promoted back on their next
     /// lookup, so a working set larger than one generation does not start
@@ -571,38 +597,23 @@ pub(super) fn ascii_key(text: &str) -> Option<u8> {
 }
 
 impl ShapeCaches {
-    fn style_index(style: &ResolvedStyle) -> usize {
-        usize::from(style.bold) + 2 * usize::from(style.italic)
-    }
-
     /// The index of the cached run, promoting it from the retired
     /// generation when only that holds it.
-    pub(super) fn lookup(
-        &mut self,
-        style: &ResolvedStyle,
-        text: &str,
-        columns: u16,
-    ) -> Option<usize> {
-        if let Some(index) = self.lookup_current(style, text, columns) {
+    pub(super) fn lookup(&mut self, face: Face, text: &str, columns: u16) -> Option<usize> {
+        if let Some(index) = self.lookup_current(face, text, columns) {
             return Some(index);
         }
         let retired = self.retired.as_mut()?;
-        let index = retired.lookup_current(style, text, columns)?;
+        let index = retired.lookup_current(face, text, columns)?;
         let glyphs = retired.entries[index].clone();
-        self.insert_entry(style, text, columns, glyphs)
+        self.insert_entry(face, text, columns, glyphs)
     }
 
-    pub(super) fn lookup_current(
-        &self,
-        style: &ResolvedStyle,
-        text: &str,
-        columns: u16,
-    ) -> Option<usize> {
-        let index = Self::style_index(style);
+    pub(super) fn lookup_current(&self, face: Face, text: &str, columns: u16) -> Option<usize> {
         let shapes = if columns == 1 {
-            &self.narrow[index]
+            &self.narrow[face.index()]
         } else {
-            return self.wide.get(&(columns, index))?.get(text).copied();
+            return self.wide.get(&(columns, face))?.get(text).copied();
         };
         match ascii_key(text) {
             Some(byte) => {
@@ -615,7 +626,7 @@ impl ShapeCaches {
 
     pub(super) fn insert(
         &mut self,
-        style: &ResolvedStyle,
+        face: Face,
         text: &str,
         columns: u16,
         glyphs: Vec<CachedGlyph>,
@@ -624,7 +635,7 @@ impl ShapeCaches {
             return Cow::Owned(glyphs);
         }
         let index = self
-            .insert_entry(style, text, columns, glyphs)
+            .insert_entry(face, text, columns, glyphs)
             .expect("a run within the byte limit is cached");
         Cow::Borrowed(&self.entries[index])
     }
@@ -635,7 +646,7 @@ impl ShapeCaches {
 
     fn insert_entry(
         &mut self,
-        style: &ResolvedStyle,
+        face: Face,
         text: &str,
         columns: u16,
         glyphs: Vec<CachedGlyph>,
@@ -656,15 +667,14 @@ impl ShapeCaches {
         self.retained_bytes += bytes;
         let index = self.entries.len();
         self.entries.push(glyphs);
-        let style_index = Self::style_index(style);
         if columns != 1 {
             self.wide
-                .entry((columns, style_index))
+                .entry((columns, face))
                 .or_default()
                 .insert(text.to_owned(), index);
             return Some(index);
         }
-        let shapes = &mut self.narrow[style_index];
+        let shapes = &mut self.narrow[face.index()];
         match ascii_key(text) {
             Some(byte) => shapes.ascii[usize::from(byte)] = index as u32,
             None => {
@@ -738,19 +748,20 @@ struct Stretch {
 /// target box by the constraint's alignment and snapped to whole pixels.
 /// Stretched glyphs are rasterized at the larger of their two scales and
 /// resampled to the target box when copied to the atlas.
-#[allow(clippy::too_many_arguments)]
 fn fit_run(
-    text: &str,
-    style: &ResolvedStyle,
-    config: &TerminalRenderConfig,
-    raster: RasterMetrics,
-    viewport: Vec2,
+    target_run: Run<'_>,
+    layout: RunLayout<'_>,
     cx: &mut TextContext<'_>,
     run: ShapedRun,
     translate: Vec2,
     constraint: Constraint,
-    columns: u16,
 ) -> Result<Fitted, ShapedRun> {
+    let Run {
+        text,
+        face,
+        columns,
+    } = target_run;
+    let raster = layout.raster;
     let color = constraint == Constraint::EMOJI;
     let measure = |run: &ShapedRun, images: &Assets<Image>| {
         if color {
@@ -798,7 +809,11 @@ fn fit_run(
                 break;
             }
             request.font_size = next;
-            let Some(rescaled) = shape_run(text, style, config, request, viewport, cx) else {
+            let request = RunLayout {
+                raster: request,
+                ..layout
+            };
+            let Some(rescaled) = shape_run(text, face, request, cx) else {
                 return Err(run);
             };
             let Some(rescaled_box) = measure(&rescaled, cx.images) else {
@@ -848,20 +863,25 @@ fn fit_run(
 /// the face's advance, as Ghostty draws it. Emoji, Nerd Fonts icons and other
 /// symbols follow Ghostty's constraints (see [`constraint_for`] and
 /// [`fit_run`]) against the primary face's box.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn cached_shape<'a>(
-    text: &str,
-    columns: u16,
-    style: &ResolvedStyle,
-    config: &TerminalRenderConfig,
-    raster: RasterMetrics,
-    viewport: Vec2,
-    cx: &mut TextContext<'_>,
-    shapes: &'a mut ShapeCaches,
-    glyph_atlas: &mut UnifiedGlyphAtlas,
-    stats: &mut TerminalStats,
-) -> Cow<'a, [CachedGlyph]> {
-    if let Some(index) = shapes.lookup(style, text, columns) {
+pub(super) fn cached_shape<'s>(
+    context: &'s mut ShapeContext<'_, '_>,
+    target_run: Run<'_>,
+) -> Cow<'s, [CachedGlyph]> {
+    let ShapeContext {
+        layout,
+        cx,
+        shapes,
+        atlas: glyph_atlas,
+        stats,
+    } = context;
+    let (layout, shapes) = (*layout, &mut **shapes);
+    let RunLayout { config, raster, .. } = layout;
+    let Run {
+        text,
+        face,
+        columns,
+    } = target_run;
+    if let Some(index) = shapes.lookup(face, text, columns) {
         return Cow::Borrowed(&shapes.entries[index]);
     }
     stats.shape_misses = stats.shape_misses.saturating_add(1);
@@ -878,7 +898,7 @@ pub(super) fn cached_shape<'a>(
             box_thickness: raster.box_thickness,
         };
         let Some(drawn) = sprite::draw(codepoint, cell.x, cell.y, metrics) else {
-            return shapes.insert(style, text, columns, Vec::new());
+            return shapes.insert(face, text, columns, Vec::new());
         };
         let Some(uv) = glyph_atlas.cache_sprite(codepoint, cell, &drawn) else {
             // No room: not cached, so the rebuild after an atlas overflow
@@ -886,50 +906,41 @@ pub(super) fn cached_shape<'a>(
             debug!("bevy_terminal: no atlas space for sprite {text:?}");
             return Cow::Owned(Vec::new());
         };
-        let glyphs = Some(drawn)
-            .map(|drawn| {
-                let columns = (0..drawn.size.x as usize)
-                    .map(|x| {
-                        (0..drawn.size.y as usize)
-                            .map(|y| u32::from(drawn.alpha[y * drawn.size.x as usize + x]))
-                            .sum()
-                    })
-                    .collect();
-                vec![CachedGlyph::new(
-                    glyph_atlas.id,
-                    drawn.offset.as_vec2(),
-                    drawn.size.as_vec2(),
-                    uv,
-                    true,
-                    columns,
-                )]
-            })
-            .unwrap_or_default();
-        return shapes.insert(style, text, columns, glyphs);
+        let width = drawn.size.x as usize;
+        let ink = InkSpan::of_columns(
+            (0..width).map(|x| (0..drawn.size.y as usize).any(|y| drawn.alpha[y * width + x] > 0)),
+        );
+        let glyph = CachedGlyph::new(
+            glyph_atlas.id,
+            drawn.offset.as_vec2(),
+            drawn.size.as_vec2(),
+            uv,
+            true,
+            ink,
+        );
+        return shapes.insert(face, text, columns, vec![glyph]);
     }
-    let Some(layout) = shape_run(text, style, config, raster, viewport, cx) else {
+    let Some(shaped) = shape_run(text, face, layout, cx) else {
         return Cow::Borrowed(&[]);
     };
     // Each independently shaped cell otherwise centers its own fallback face
     // in the line. Ordinary runs share the configured primary face's baseline.
     // This is an integer translation, so rasterization phase is unchanged.
-    let translate = Vec2::new(0.0, raster.baseline - layout.baseline);
+    let translate = Vec2::new(0.0, raster.baseline - shaped.baseline);
     // Text is centered in cells wider than the face; constraints position
     // their glyphs themselves.
     let centered = Vec2::new(raster.face_dx, 0.0);
-    let (layout, translate, stretch) = match constraint_for(text, &layout) {
-        Some(constraint) => match fit_run(
-            text, style, config, raster, viewport, cx, layout, translate, constraint, columns,
-        ) {
+    let (shaped, translate, stretch) = match constraint_for(text, &shaped) {
+        Some(constraint) => match fit_run(target_run, layout, cx, shaped, translate, constraint) {
             Ok(fitted) => (fitted.run, fitted.translate, fitted.stretch),
-            Err(layout) => {
+            Err(shaped) => {
                 debug!("bevy_terminal: {text:?} could not be measured; drawn unconstrained");
-                (layout, translate + centered, None)
+                (shaped, translate + centered, None)
             }
         },
-        None => (layout, translate + centered, None),
+        None => (shaped, translate + centered, None),
     };
-    let cached = layout
+    let cached = shaped
         .glyphs
         .into_iter()
         .map(|glyph| {
@@ -946,7 +957,7 @@ pub(super) fn cached_shape<'a>(
                 y: rect.min.y as u32,
                 width: size.x as u32,
                 height: size.y as u32,
-                scaled: UVec2::ZERO,
+                scaled: None,
             };
             // Atlas texels must land on physical pixel boundaries. Bevy's layout positions
             // can retain fractional shaping offsets even though the glyph bitmap is an
@@ -969,19 +980,19 @@ pub(super) fn cached_shape<'a>(
                     height: crop.height() as u32,
                     ..source
                 };
-                if let Some((uv, columns)) = glyph_atlas.cache_scaled(cropped, scaled, cx.images) {
+                if let Some((uv, ink)) = glyph_atlas.cache_scaled(cropped, scaled, cx.images) {
                     return Some(Some(CachedGlyph::new(
                         glyph_atlas.id,
                         measured.min + translate + min,
                         scaled.as_vec2(),
                         uv,
                         glyph.atlas_info.is_alpha_mask,
-                        columns,
+                        ink,
                     )));
                 }
                 debug!("bevy_terminal: no atlas space to stretch {text:?}; drawn as rasterized");
             }
-            let columns = column_coverage(cx.images.get(glyph.atlas_info.texture)?, rect);
+            let ink = inked_columns(cx.images.get(glyph.atlas_info.texture)?, rect);
             let source_uv = Vec4::new(
                 rect.min.x / atlas_size.width as f32,
                 rect.min.y / atlas_size.height as f32,
@@ -997,17 +1008,19 @@ pub(super) fn cached_shape<'a>(
                 size,
                 uv,
                 glyph.atlas_info.is_alpha_mask,
-                columns,
+                ink,
             )))
         })
         .collect::<Option<Vec<_>>>()
         .map(|glyphs| glyphs.into_iter().flatten().collect::<Vec<_>>());
     let Some(cached) = cached else {
         cx.failure
-            .get_or_insert_with(|| format!("glyph atlas unavailable for {:?}", config.font));
+            .get_or_insert_with(|| ShapingFailure::AtlasUnavailable {
+                fonts: Box::new(config.font.clone()),
+            });
         return Cow::Borrowed(&[]);
     };
-    shapes.insert(style, text, columns, cached)
+    shapes.insert(face, text, columns, cached)
 }
 
 #[cfg(test)]
@@ -1044,19 +1057,19 @@ mod tests {
 
     #[test]
     fn cache_retires_full_working_sets_and_leaves_oversized_runs_uncached() {
-        let style = ResolvedStyle::plain();
+        let style = Face::Regular;
         let mut shapes = ShapeCaches::default();
         let fill = |shapes: &mut ShapeCaches, prefix: &str| {
             for index in 0..MAX_SHAPE_ENTRIES {
                 assert!(matches!(
-                    shapes.insert(&style, &format!("{prefix}-{index}"), 1, Vec::new()),
+                    shapes.insert(style, &format!("{prefix}-{index}"), 1, Vec::new()),
                     Cow::Borrowed(_)
                 ));
             }
         };
         fill(&mut shapes, "first");
         assert!(matches!(
-            shapes.insert(&style, "overflow", 1, Vec::new()),
+            shapes.insert(style, "overflow", 1, Vec::new()),
             Cow::Borrowed(_)
         ));
         assert_eq!(
@@ -1064,22 +1077,22 @@ mod tests {
             1,
             "a full cache starts a new generation"
         );
-        assert_eq!(shapes.lookup(&style, "overflow", 1), Some(0));
+        assert_eq!(shapes.lookup(style, "overflow", 1), Some(0));
         // The retired generation still answers, and its run is promoted.
-        assert_eq!(shapes.lookup(&style, "first-0", 1), Some(1));
-        assert_eq!(shapes.lookup(&style, "first-0", 1), Some(1));
+        assert_eq!(shapes.lookup(style, "first-0", 1), Some(1));
+        assert_eq!(shapes.lookup(style, "first-0", 1), Some(1));
         assert_eq!(shapes.entries.len(), 2);
         // A second retirement drops the oldest generation.
         fill(&mut shapes, "second");
         assert!(
-            shapes.lookup(&style, "first-0", 1).is_some(),
+            shapes.lookup(style, "first-0", 1).is_some(),
             "promoted runs survive"
         );
-        assert!(shapes.lookup(&style, "first-1", 1).is_none());
+        assert!(shapes.lookup(style, "first-1", 1).is_none());
 
         let oversized = "x".repeat(MAX_SHAPE_BYTES + 1);
         let before = shapes.entries.len();
-        let excess = shapes.insert(&style, &oversized, 1, Vec::new());
+        let excess = shapes.insert(style, &oversized, 1, Vec::new());
         assert!(matches!(excess, Cow::Owned(_)), "the run still renders");
         drop(excess);
         assert_eq!(
@@ -1088,6 +1101,6 @@ mod tests {
             "an oversized run preserves the working set"
         );
         shapes.clear();
-        assert!(shapes.lookup(&style, "second-0", 1).is_none());
+        assert!(shapes.lookup(style, "second-0", 1).is_none());
     }
 }

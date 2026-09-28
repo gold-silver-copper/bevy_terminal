@@ -1578,6 +1578,7 @@ version = "0.7.7"
 dependencies = [
  "bevy",
  "bitflags 2.13.1",
+ "bytemuck",
  "skrifa 0.42.1",
 ]
 

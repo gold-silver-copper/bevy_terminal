@@ -1,7 +1,7 @@
 //! Font measurement and effective raster geometry.
 use super::constraint::Metrics as FaceMetrics;
-use super::shaping::shape_run;
-use super::{ResolvedStyle, TerminalRenderConfig, TextContext};
+use super::shaping::{RunLayout, shape_run};
+use super::{Face, TerminalRenderConfig, TextContext};
 use crate::render::{FontFaces, TerminalSizing};
 use bevy::{
     prelude::*,
@@ -17,6 +17,27 @@ pub(crate) const PROBE_FONT_SIZE: f32 = 64.0;
 /// Font size used while [`TerminalSizing::FitCellWidth`] has not been measured yet.
 const UNMEASURED_FONT_SIZE: f32 = 16.0;
 
+/// Why the regular font's advance could not be measured.
+#[derive(Debug, PartialEq)]
+pub(in crate::render) enum AdvanceError {
+    /// The font asset is not registered with the font context yet.
+    NotRegistered,
+    /// Bevy could not lay the probe run out.
+    Layout(bevy::text::TextError),
+    /// The font produced a non-finite or non-positive advance.
+    Invalid(f32),
+}
+
+impl std::fmt::Display for AdvanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRegistered => f.write_str("font asset has not registered"),
+            Self::Layout(error) => write!(f, "{error}"),
+            Self::Invalid(advance) => write!(f, "font produced invalid advance {advance}"),
+        }
+    }
+}
+
 /// Measures the average advance of the regular font at [`PROBE_FONT_SIZE`] by
 /// shaping a run of `0` glyphs, preserving the reason measurement failed.
 pub(in crate::render) fn measure_advance(
@@ -25,7 +46,7 @@ pub(in crate::render) fn measure_advance(
     text_pipeline: &mut TextPipeline,
     font_cx: &mut FontCx,
     layout_cx: &mut LayoutCx,
-) -> Result<f32, String> {
+) -> Result<f32, AdvanceError> {
     // A font asset is only usable once Bevy has registered it with the font
     // context (which assigns its alias); measuring before that would shape a
     // fallback font. Report "not yet" so the caller retries next frame.
@@ -34,7 +55,7 @@ pub(in crate::render) fn measure_advance(
             .get(handle.id())
             .is_none_or(|font| font.alias.is_empty())
     {
-        return Err("font asset has not registered".into());
+        return Err(AdvanceError::NotRegistered);
     }
     let font = TextFont {
         font: faces.regular.clone(),
@@ -64,12 +85,12 @@ pub(in crate::render) fn measure_advance(
             Vec2::new(f32::MAX, f32::MAX),
             20.0,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(AdvanceError::Layout)?;
     let advance = measure.max.x / PROBE_GLYPHS as f32;
     if advance.is_finite() && advance > 0.0 {
         Ok(advance)
     } else {
-        Err(format!("font produced invalid advance {advance}"))
+        Err(AdvanceError::Invalid(advance))
     }
 }
 
@@ -346,12 +367,14 @@ pub(super) fn refine_metrics(
     let mut regular = None;
     for _ in 0..FIT_ROUNDS {
         text_box = None;
-        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
-            let mut style = ResolvedStyle::plain();
-            style.bold = bold;
-            style.italic = italic;
-            if let Some(run) = shape_run("0", &style, config, raster, Vec2::splat(4096.0), cx) {
-                if !bold && !italic {
+        for face in Face::ALL {
+            let layout = RunLayout {
+                config,
+                raster,
+                viewport: Vec2::splat(4096.0),
+            };
+            if let Some(run) = shape_run("0", face, layout, cx) {
+                if face == Face::Regular {
                     raster.baseline = run.baseline;
                     regular = Some((run.ascent, run.descent, run.advance));
                 }
@@ -412,12 +435,13 @@ pub(super) fn refine_metrics(
     raster
 }
 
-/// Sum of alpha over each column of an atlas glyph (all `u32::MAX` when the
-/// atlas has no CPU data, so every column counts as inked).
-pub(super) fn column_coverage(image: &Image, rect: Rect) -> Vec<u32> {
+/// The inked columns of an atlas glyph (every column when the atlas has no
+/// CPU data).
+pub(super) fn inked_columns(image: &Image, rect: Rect) -> InkSpan {
     let width = rect.size().x.max(0.0) as usize;
     let Some(data) = image.data.as_ref() else {
-        return vec![u32::MAX; width];
+        // Unreadable pixels count as ink.
+        return InkSpan::of_columns((0..width).map(|_| true));
     };
     let atlas_width = image.texture_descriptor.size.width as usize;
     let (x0, y0, y1) = (
@@ -425,14 +449,40 @@ pub(super) fn column_coverage(image: &Image, rect: Rect) -> Vec<u32> {
         rect.min.y as usize,
         rect.max.y as usize,
     );
-    (0..width)
-        .map(|x| {
-            (y0..y1)
-                .map(|y| {
-                    data.get((y * atlas_width + x0 + x) * 4 + 3)
-                        .map_or(0, |alpha| u32::from(*alpha))
-                })
-                .sum()
+    InkSpan::of_columns((0..width).map(|x| {
+        (y0..y1).any(|y| {
+            data.get((y * atlas_width + x0 + x) * 4 + 3)
+                .is_some_and(|alpha| *alpha > 0)
         })
-        .collect()
+    }))
+}
+
+/// The horizontal extent `[left, right)` of a bitmap's inked columns,
+/// relative to the bitmap; empty for a transparent bitmap.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct InkSpan {
+    pub(super) left: f32,
+    pub(super) right: f32,
+}
+
+impl InkSpan {
+    /// The span of the columns, left to right, that hold ink.
+    pub(super) fn of_columns(inked: impl IntoIterator<Item = bool>) -> Self {
+        let mut first = None;
+        let mut last = 0;
+        for (column, inked) in inked.into_iter().enumerate() {
+            if inked {
+                first.get_or_insert(column);
+                last = column;
+            }
+        }
+        first.map_or_else(Self::default, |first| Self {
+            left: first as f32,
+            right: last as f32 + 1.0,
+        })
+    }
+
+    pub(super) fn is_empty(self) -> bool {
+        self.right <= self.left
+    }
 }

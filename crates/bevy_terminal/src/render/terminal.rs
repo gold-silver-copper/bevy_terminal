@@ -65,8 +65,9 @@ pub enum TerminalStatus {
 /// The image is `Rgba8UnormSrgb` (display-ready, straight alpha) and its
 /// handle is stable for the terminal's lifetime.
 ///
-/// Attached to every [`TerminalRenderer`] entity by [`super::TerminalPlugin`] on the first
-/// update after it is spawned. [`Self::measured`] exposes geometry once the selected
+/// Attached to every [`TerminalRenderer`] entity by [`super::TerminalPlugin`] as soon as
+/// the renderer is added (when the spawning commands apply), and removed with it.
+/// [`Self::measured`] exposes geometry once the selected
 /// fonts and cell metrics have been measured. The image handle
 /// stays the same for the lifetime of the terminal: resizes reallocate the
 /// image in place.
@@ -80,12 +81,19 @@ pub struct TerminalTexture {
 }
 
 impl TerminalTexture {
-    /// Returns authoritative geometry, or `None` while loading, failed, or
-    /// waiting for a shared surface resize to be measured.
+    /// Returns the measured geometry, or `None` while loading or failed.
+    ///
+    /// Readiness is recorded by the renderer when it syncs
+    /// ([`super::TerminalSystems::Sync`]), so this is a plain field check and
+    /// the component changes (for `Changed<TerminalTexture>`) only when the
+    /// geometry or status does. It describes the surface as of the last sync:
+    /// a producer that resizes the surface after `Sync` sees the previous
+    /// geometry here until the next one. [`TerminalGeometry::is_current`]
+    /// and [`TerminalGeometry::matches_surface`] check retained geometry
+    /// against the live surface.
     #[must_use]
     pub fn measured(&self) -> Option<&TerminalGeometry> {
-        (self.status == TerminalStatus::Ready && self.geometry.is_current())
-            .then_some(&self.geometry)
+        (self.status == TerminalStatus::Ready).then_some(&self.geometry)
     }
 }
 
@@ -99,6 +107,13 @@ impl TerminalTexture {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerminalGeometry {
     pub(super) surface: crate::surface::WeakSurface,
+    pub(super) measurement: Measurement,
+}
+
+/// The measured values of a [`TerminalGeometry`], without the surface
+/// identity: plain data the sync system updates without cloning handles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Measurement {
     pub(super) resize_generation: u64,
     pub(super) grid: GridSize,
     pub(super) size: UVec2,
@@ -107,55 +122,62 @@ pub struct TerminalGeometry {
     pub(super) raster_scale: f32,
 }
 
+impl Measurement {
+    /// Logical presentation dimensions.
+    pub(super) fn logical_size(&self) -> Vec2 {
+        self.size.as_vec2() / self.raster_scale
+    }
+}
+
 impl TerminalGeometry {
     /// Measured dimensions in cells.
     #[must_use]
     pub const fn grid(&self) -> GridSize {
-        self.grid
+        self.measurement.grid
     }
 
     /// Physical image dimensions in pixels.
     #[must_use]
     pub const fn size(&self) -> UVec2 {
-        self.size
+        self.measurement.size
     }
 
     /// Logical presentation dimensions.
     #[must_use]
     pub fn logical_size(&self) -> Vec2 {
-        self.size.as_vec2() / self.raster_scale
+        self.measurement.logical_size()
     }
 
     /// Physical pixels per logical pixel.
     #[must_use]
     pub const fn raster_scale(&self) -> f32 {
-        self.raster_scale
+        self.measurement.raster_scale
     }
 
     /// Effective logical cell dimensions, after physical-pixel snapping.
     #[must_use]
     pub fn cell_size(&self) -> Vec2 {
-        self.physical_cell_size / self.raster_scale
+        self.measurement.physical_cell_size / self.measurement.raster_scale
     }
 
     /// Effective logical font size.
     #[must_use]
     pub fn font_size(&self) -> f32 {
-        self.physical_font_size / self.raster_scale
+        self.measurement.physical_font_size / self.measurement.raster_scale
     }
 
     /// Physical font size glyphs are rasterized at; exact, unlike
     /// `font_size() * raster_scale()`.
     #[must_use]
     pub const fn physical_font_size(&self) -> f32 {
-        self.physical_font_size
+        self.measurement.physical_font_size
     }
 
     /// Physical cell size in whole pixels; exact, unlike
     /// `cell_size() * raster_scale()`. `size()` is the grid times this.
     #[must_use]
     pub const fn physical_cell_size(&self) -> Vec2 {
-        self.physical_cell_size
+        self.measurement.physical_cell_size
     }
 
     /// Grid fitting the available logical space, bounded by surface limits.
@@ -174,7 +196,7 @@ impl TerminalGeometry {
     /// Whether the source surface has retained its measured grid generation.
     #[must_use]
     pub fn is_current(&self) -> bool {
-        self.surface.is_current(self.resize_generation)
+        self.surface.is_current(self.measurement.resize_generation)
     }
 }
 

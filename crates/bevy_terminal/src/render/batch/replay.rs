@@ -92,33 +92,38 @@ impl Canvas {
             for instance in
                 &scene.instances[batch.start as usize..(batch.start + batch.count) as usize]
             {
-                self.draw(instance, texture, batch.replace);
+                self.draw(instance, texture, batch.blend == Blend::Replace);
             }
         }
     }
 
     fn draw(&mut self, quad: &QuadInstance, atlas: Option<(&[u8], u32, u32)>, replace: bool) {
+        let (rect, uv, color) = (
+            Vec4::from_array(quad.rect()),
+            Vec4::from_array(quad.uv()),
+            Vec4::from_array(quad.color()),
+        );
         let size = self.size.as_vec2();
-        let x0 = ((quad.rect.x + 1.0) * 0.5 * size.x).round();
-        let x1 = ((quad.rect.z + 1.0) * 0.5 * size.x).round();
-        let y0 = ((1.0 - quad.rect.y) * 0.5 * size.y).round();
-        let y1 = ((1.0 - quad.rect.w) * 0.5 * size.y).round();
-        let solid = quad.uv.w < 0.0;
+        let x0 = ((rect.x + 1.0) * 0.5 * size.x).round();
+        let x1 = ((rect.z + 1.0) * 0.5 * size.x).round();
+        let y0 = ((1.0 - rect.y) * 0.5 * size.y).round();
+        let y1 = ((1.0 - rect.w) * 0.5 * size.y).round();
+        let solid = uv.w < 0.0;
         for y in y0.max(0.0) as u32..y1.min(size.y) as u32 {
             for x in x0.max(0.0) as u32..x1.min(size.x) as u32 {
                 let source = if solid {
-                    quad.color
+                    color
                 } else {
                     let (data, width, height) = atlas.expect("glyph atlas");
-                    let u = quad.uv.x + (x as f32 + 0.5 - x0) / (x1 - x0) * (quad.uv.z - quad.uv.x);
-                    let v = quad.uv.y + (y as f32 + 0.5 - y0) / (y1 - y0) * (quad.uv.w - quad.uv.y);
+                    let u = uv.x + (x as f32 + 0.5 - x0) / (x1 - x0) * (uv.z - uv.x);
+                    let v = uv.y + (y as f32 + 0.5 - y0) / (y1 - y0) * (uv.w - uv.y);
                     let tx = ((u * width as f32).floor() as u32).min(width - 1);
                     let ty = ((v * height as f32).floor() as u32).min(height - 1);
                     let offset = ((ty * width + tx) * 4) as usize;
                     let sample = decode(data[offset..offset + 4].try_into().unwrap());
-                    if quad.color.w >= 0.0 {
-                        let coverage = corrected(sample.w, quad.color.truncate(), quad.background);
-                        quad.color.truncate().extend(quad.color.w * coverage)
+                    if color.w >= 0.0 {
+                        let coverage = corrected(sample.w, color.truncate(), quad.background());
+                        color.truncate().extend(color.w * coverage)
                     } else {
                         sample
                     }
@@ -263,16 +268,9 @@ impl Replay {
     /// Runs one update and replays its scene (acknowledging it as the GPU would).
     pub(super) fn step(&mut self) {
         self.app.update();
-        let mut state = self
-            .app
-            .world_mut()
-            .get_mut::<BatchMainState>(self.entity)
-            .unwrap();
-        let Some(scene) = state.pending.take() else {
+        let Some(scene) = take_queued(self.app.world_mut(), self.entity) else {
             return;
         };
-        let generation = state.generation;
-        state.submitted.store(generation, Ordering::Release);
         if scene.destination_size != self.canvas.size {
             assert!(scene.clear, "a resized texture starts with a full scene");
             self.canvas = Canvas::new(scene.destination_size);
@@ -295,34 +293,39 @@ impl Replay {
         let (mut text, mut images, mut states) = system.get_mut(self.app.world_mut()).unwrap();
         let (mut state, config) = states.get_mut(self.entity).unwrap();
         let config = config.clone();
-        let snapshot = state.last_snapshot.clone().expect("retained snapshot");
+        let snapshot = state.snapshot().cloned().expect("retained snapshot");
         let rows: Vec<u16> = (0..snapshot.size().height).collect();
         let destination = state.output.id();
-        let blink = state.blink;
+        let blink = state.retained.as_ref().unwrap().blink;
+        let raster = state.raster();
         let BatchMainState {
-            raster_config,
+            palette,
             shapes,
             glyph_atlas,
             ..
         } = &mut *state;
         let mut scratch = SceneScratch::default();
-        let mut reach = Vec::new();
+        let mut row_states = RowStates::default();
         let mut stats = TerminalStats::default();
         let mut cx = text.context(&mut images);
-        let scene = build_scene(
-            &snapshot,
-            &config,
-            *raster_config,
-            &rows,
-            true,
+        let input = SceneInput {
+            snapshot: &snapshot,
+            config: &config,
+            palette,
+            raster,
+            changed: &rows,
+            full: true,
             destination,
+            blink,
+        };
+        let scene = build_scene(
+            input,
             &mut cx,
             shapes,
             glyph_atlas,
             &mut scratch,
-            &mut reach,
+            &mut row_states,
             &mut stats,
-            blink,
         );
         assert!(cx.failure.is_none());
         self.atlas.upload(&scene);
@@ -396,7 +399,8 @@ fn overflowing_ink_reaches_neighbours_and_partial_repaints_match_full_scenes() {
         .world()
         .get::<BatchMainState>(replay.entity)
         .unwrap()
-        .reach[3];
+        .rows()
+        .reach(3);
     assert!(
         reach.up >= 1 && reach.down >= 1,
         "the stacked marks and the Arabic descenders leave the row: {reach:?}"
@@ -437,7 +441,8 @@ fn overflowing_ink_reaches_neighbours_and_partial_repaints_match_full_scenes() {
         .world()
         .get::<BatchMainState>(replay.entity)
         .unwrap()
-        .reach[3];
+        .rows()
+        .reach(3);
     assert!(
         reach.up >= 2,
         "ten stacked marks reach two rows up: {reach:?}"
@@ -506,9 +511,9 @@ fn rows_without_overflow_repaint_only_themselves() {
         .unwrap();
     assert!(
         state
-            .reach
-            .iter()
-            .all(|reach| *reach == RowReach::default())
+            .rows()
+            .reaches()
+            .all(|reach| reach == super::scene::RowReach::default())
     );
 }
 
@@ -520,12 +525,7 @@ fn overflowing_coverage_is_corrected_against_each_background_it_covers() {
     replay.write(1, " Z\u{302}\u{303}\u{304}\u{306}\u{307} ", own);
     replay.write(2, "   ", above);
     replay.app.update();
-    let state = replay
-        .app
-        .world()
-        .get::<BatchMainState>(replay.entity)
-        .unwrap();
-    let scene = state.pending.as_ref().expect("a scene");
+    let scene = queued(replay.app.world(), replay.entity).expect("a scene");
     let luminance = |style: TerminalStyle| {
         super::scene::luminance(
             crate::render::TerminalTheme::default().background(style.background),
@@ -534,12 +534,12 @@ fn overflowing_coverage_is_corrected_against_each_background_it_covers() {
     let backgrounds: Vec<f32> = scene
         .batches
         .iter()
-        .filter(|batch| !batch.replace)
+        .filter(|batch| batch.blend == Blend::Alpha)
         .flat_map(|batch| {
             &scene.instances[batch.start as usize..(batch.start + batch.count) as usize]
         })
-        .filter(|quad| quad.uv.w >= 0.0 && quad.color.w >= 0.0)
-        .map(|quad| quad.background)
+        .filter(|quad| !quad.is_solid() && !quad.is_color())
+        .map(|quad| quad.background())
         .collect();
     assert!(
         backgrounds
@@ -640,7 +640,7 @@ fn wide_and_translucent_block_elements_cover_their_cells_once() {
         .world()
         .get::<BatchMainState>(replay.entity)
         .unwrap()
-        .raster_config
+        .raster()
         .cell_size
         .as_uvec2();
     let pixel = |x: u32, y: u32| replay.canvas.pixels[(y * replay.canvas.size.x + x) as usize];
@@ -674,12 +674,13 @@ fn unextracted_scenes_drop_entries_from_before_an_atlas_clear() {
     // overflow rebuild does, and the next scene carries every entry.
     replay.app.update();
     {
+        let queued = queued(replay.app.world(), replay.entity);
+        assert!(!queued.unwrap().atlas_uploads.is_empty());
         let mut state = replay
             .app
             .world_mut()
             .get_mut::<BatchMainState>(replay.entity)
             .unwrap();
-        assert!(!state.pending.as_ref().unwrap().atlas_uploads.is_empty());
         state.shapes.clear();
         state.glyph_atlas.clear();
     }
@@ -687,12 +688,7 @@ fn unextracted_scenes_drop_entries_from_before_an_atlas_clear() {
     for _ in 0..4 {
         replay.app.update();
     }
-    let state = replay
-        .app
-        .world()
-        .get::<BatchMainState>(replay.entity)
-        .unwrap();
-    let scene = state.pending.as_ref().expect("a pending scene");
+    let scene = queued(replay.app.world(), replay.entity).expect("a pending scene");
     assert!(scene.atlas_fresh);
     // Entries from before the clear would overlap the new ones.
     let uploads = &scene.atlas_uploads;

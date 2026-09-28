@@ -55,11 +55,14 @@ fn setup(mut commands: Commands) {
 }
 ```
 
-The plugin attaches `TerminalTexture` and `TerminalStats`. Read output after
-`TerminalSystems::Sync`. `texture.measured()` returns validated geometry only
-when the selected fonts and cell metrics are usable and its source surface has
-not been resized since measurement. Status exposes loading, invalid sizing,
-font/shaping failures, missing text resources, and device texture limits.
+The plugin attaches `TerminalTexture` and `TerminalStats` as soon as a
+`TerminalRenderer` is added. Read output after `TerminalSystems::Sync`.
+`texture.measured()` returns the geometry once the selected fonts and cell
+metrics are usable; it is recorded by the sync, so `Changed<TerminalTexture>`
+fires only when geometry or status change. It describes the surface as of the
+last `Sync`: a surface resized after `Sync` reads as its previous geometry
+until the next one. Status exposes loading, invalid sizing, font/shaping
+failures, missing text resources, and device texture limits.
 
 `TerminalGeometry` provides:
 
@@ -73,8 +76,9 @@ font/shaping failures, missing text resources, and device texture limits.
 - `is_current()` and `matches_surface(...)`: source/generation validation.
 
 Readiness is persistent, so late consumers need no event history. Retain the
-last useful application layout while new geometry is unavailable. Geometry
-validation rejects old grid measurements immediately after shared resizing.
+last useful application layout while new geometry is unavailable. `is_current()`
+and `matches_surface(...)` check retained geometry against the live surface,
+rejecting old grid measurements immediately after a shared resize.
 
 The image handle is stable throughout the renderer's lifetime, including
 resizes. Output uses `Rgba8UnormSrgb`, straight alpha, and nearest sampling.
