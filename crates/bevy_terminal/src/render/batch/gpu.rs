@@ -4,7 +4,7 @@ use super::{
     TARGET_FORMAT,
 };
 use bevy::{
-    asset::{embedded_asset, load_embedded_asset},
+    asset::{load_internal_asset, uuid_handle},
     platform::collections::HashMap,
     prelude::*,
     render::{
@@ -25,12 +25,18 @@ use bevy::{
         renderer::{RenderContext, RenderDevice, RenderQueue},
         texture::GpuImage,
     },
+    shader::Shader,
 };
 use std::sync::atomic::Ordering;
 
-/// Embeds the terminal shader (`batch.wgsl`) in the app's assets.
-pub(super) fn embed_shader(app: &mut App) {
-    embedded_asset!(app, "batch.wgsl");
+/// The terminal shader, `batch.wgsl`.
+const BATCH_SHADER: Handle<Shader> = uuid_handle!("3db953c8-0f3f-4124-9a1c-6aa749bb0655");
+
+/// Adds the terminal shader to the app's shaders directly, as Bevy adds its
+/// internal ones. Loading it through the asset server would take frames, and
+/// the pipelines (so a new terminal's first scenes) would wait for it.
+pub(super) fn load_shader(app: &mut App) {
+    load_internal_asset!(app, BATCH_SHADER, "batch.wgsl", Shader::from_wgsl);
 }
 
 pub(super) fn extract_batch_scenes(
@@ -102,7 +108,6 @@ fn instance_layout() -> VertexBufferLayout {
 pub(super) fn init_batch_pipelines(
     mut commands: Commands,
     device: Res<RenderDevice>,
-    asset_server: Res<AssetServer>,
     pipeline_cache: Res<PipelineCache>,
 ) {
     let layout = BindGroupLayoutDescriptor::new(
@@ -115,7 +120,7 @@ pub(super) fn init_batch_pipelines(
             ),
         ),
     );
-    let shader = load_embedded_asset!(asset_server.as_ref(), "batch.wgsl");
+    let shader = BATCH_SHADER;
     let pipeline = |blend| RenderPipelineDescriptor {
         label: Some("bevy_terminal batch pipeline".into()),
         layout: vec![layout.clone()],

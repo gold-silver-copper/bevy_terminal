@@ -8,7 +8,7 @@ mod nerd_font;
 mod scene;
 mod shaping;
 mod sprite;
-use gpu::{embed_shader, extract_batch_scenes, init_batch_pipelines, render_batch_scenes};
+use gpu::{extract_batch_scenes, init_batch_pipelines, load_shader, render_batch_scenes};
 use metrics::{
     LogicalMetrics, RasterMetrics, measure_advance, physical_config, refine_metrics,
     resolve_metrics,
@@ -76,7 +76,7 @@ impl Plugin for TerminalPlugin {
         if app.get_sub_app(RenderApp).is_none() {
             return;
         }
-        embed_shader(app);
+        load_shader(app);
         app.sub_app_mut(RenderApp)
             .init_resource::<PendingBatchScenes>()
             .add_systems(RenderStartup, init_batch_pipelines)
