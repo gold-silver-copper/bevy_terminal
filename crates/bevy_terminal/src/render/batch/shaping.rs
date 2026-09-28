@@ -211,8 +211,8 @@ pub(super) struct SourceGlyph {
     pub(super) y: u32,
     pub(super) width: u32,
     pub(super) height: u32,
-    /// The size the glyph is resampled to; zero for an unscaled copy.
-    pub(super) scaled: UVec2,
+    /// The size the glyph is resampled to; `None` for a plain copy.
+    pub(super) scaled: Option<UVec2>,
 }
 
 /// The RGBA8 pixels of a Bevy atlas glyph.
@@ -399,7 +399,10 @@ impl UnifiedGlyphAtlas {
         scaled: UVec2,
         images: &Assets<Image>,
     ) -> Option<(Vec4, InkSpan)> {
-        let key = SourceGlyph { scaled, ..source };
+        let key = SourceGlyph {
+            scaled: Some(scaled),
+            ..source
+        };
         let pixels = resample(
             &source_pixels(source, images)?,
             UVec2::new(source.width, source.height),
@@ -910,7 +913,7 @@ pub(super) fn cached_shape<'a>(
                 y: rect.min.y as u32,
                 width: size.x as u32,
                 height: size.y as u32,
-                scaled: UVec2::ZERO,
+                scaled: None,
             };
             // Atlas texels must land on physical pixel boundaries. Bevy's layout positions
             // can retain fractional shaping offsets even though the glyph bitmap is an

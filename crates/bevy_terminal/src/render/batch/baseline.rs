@@ -93,8 +93,8 @@ fn step(
     };
     out.extend_from_slice(&(scene.instances.len() as u32).to_le_bytes());
     for instance in &scene.instances {
-        let values = [instance.rect, instance.uv, instance.color];
-        for value in values.as_flattened().iter().chain([&instance.background]) {
+        let values = [instance.rect(), instance.uv(), instance.color()];
+        for value in values.as_flattened().iter().chain([&instance.background()]) {
             out.extend_from_slice(&value.to_bits().to_le_bytes());
         }
     }
@@ -102,7 +102,7 @@ fn step(
     for batch in &scene.batches {
         out.extend_from_slice(&batch.start.to_le_bytes());
         out.extend_from_slice(&batch.count.to_le_bytes());
-        out.push(u8::from(batch.replace));
+        out.push(u8::from(batch.blend == Blend::Replace));
         out.push(u8::from(batch.texture == scene.atlas));
     }
     out.extend_from_slice(&(scene.atlas_uploads.len() as u32).to_le_bytes());

@@ -92,16 +92,16 @@ impl Canvas {
             for instance in
                 &scene.instances[batch.start as usize..(batch.start + batch.count) as usize]
             {
-                self.draw(instance, texture, batch.replace);
+                self.draw(instance, texture, batch.blend == Blend::Replace);
             }
         }
     }
 
     fn draw(&mut self, quad: &QuadInstance, atlas: Option<(&[u8], u32, u32)>, replace: bool) {
         let (rect, uv, color) = (
-            Vec4::from_array(quad.rect),
-            Vec4::from_array(quad.uv),
-            Vec4::from_array(quad.color),
+            Vec4::from_array(quad.rect()),
+            Vec4::from_array(quad.uv()),
+            Vec4::from_array(quad.color()),
         );
         let size = self.size.as_vec2();
         let x0 = ((rect.x + 1.0) * 0.5 * size.x).round();
@@ -122,7 +122,7 @@ impl Canvas {
                     let offset = ((ty * width + tx) * 4) as usize;
                     let sample = decode(data[offset..offset + 4].try_into().unwrap());
                     if color.w >= 0.0 {
-                        let coverage = corrected(sample.w, color.truncate(), quad.background);
+                        let coverage = corrected(sample.w, color.truncate(), quad.background());
                         color.truncate().extend(color.w * coverage)
                     } else {
                         sample
@@ -531,12 +531,12 @@ fn overflowing_coverage_is_corrected_against_each_background_it_covers() {
     let backgrounds: Vec<f32> = scene
         .batches
         .iter()
-        .filter(|batch| !batch.replace)
+        .filter(|batch| batch.blend == Blend::Alpha)
         .flat_map(|batch| {
             &scene.instances[batch.start as usize..(batch.start + batch.count) as usize]
         })
-        .filter(|quad| quad.uv[3] >= 0.0 && quad.color[3] >= 0.0)
-        .map(|quad| quad.background)
+        .filter(|quad| !quad.is_solid() && !quad.is_color())
+        .map(|quad| quad.background())
         .collect();
     assert!(
         backgrounds

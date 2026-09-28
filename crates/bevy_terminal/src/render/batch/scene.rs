@@ -1,11 +1,12 @@
 //! CPU scene construction, glyph fitting, and quad geometry.
 use super::super::pixel_rect;
+use super::quad::Ink;
 use super::shaping::{
     CachedGlyph, ShapeCaches, UnifiedGlyphAtlas, cached_shape, is_powerline, is_symbol,
 };
 use super::sprite::{self, sprite_codepoint};
 use super::{
-    BatchScene, BlinkPhases, DrawBatch, Palette, QuadInstance, RasterMetrics, ResolvedStyle,
+    BatchScene, Blend, BlinkPhases, DrawBatch, Palette, QuadInstance, RasterMetrics, ResolvedStyle,
     TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext, cell_span,
     cursor_should_be_visible, terminal_pixel_size,
 };
@@ -331,10 +332,10 @@ pub(super) fn build_scene(
         SceneQuads::with_capacity(background_rects.len() + placed.len() + decorations.len() + 1);
     quads.extend(
         primary_atlas,
-        true,
+        Blend::Replace,
         background_rects
             .iter()
-            .map(|&(geometry, color)| solid_quad(geometry, color, size)),
+            .map(|&(geometry, color)| QuadInstance::solid(geometry, color, size)),
     );
     let background_quads = quads.instances.len();
 
@@ -375,14 +376,18 @@ pub(super) fn build_scene(
                 continue;
             };
             if glyph.solid {
-                quads.push(glyph.texture, false, solid_quad(piece, glyph.color, size));
+                quads.push(
+                    glyph.texture,
+                    Blend::Alpha,
+                    QuadInstance::solid(piece, glyph.color, size),
+                );
                 continue;
             }
             if !glyph.alpha_mask {
                 quads.push(
                     glyph.texture,
-                    false,
-                    glyph_quad(piece, uv, glyph.color, false, -1.0, size),
+                    Blend::Alpha,
+                    QuadInstance::glyph(piece, uv, glyph.color, Ink::Color, size),
                 );
                 continue;
             }
@@ -396,8 +401,8 @@ pub(super) fn build_scene(
             {
                 quads.push(
                     glyph.texture,
-                    false,
-                    glyph_quad(piece, uv, glyph.color, true, background, size),
+                    Blend::Alpha,
+                    QuadInstance::glyph(piece, uv, glyph.color, Ink::Coverage { background }, size),
                 );
                 continue;
             }
@@ -412,8 +417,14 @@ pub(super) fn build_scene(
                 if let Some((part, uv)) = clip_glyph_to_row(piece, uv, run) {
                     quads.push(
                         glyph.texture,
-                        false,
-                        glyph_quad(part, uv, glyph.color, true, background, size),
+                        Blend::Alpha,
+                        QuadInstance::glyph(
+                            part,
+                            uv,
+                            glyph.color,
+                            Ink::Coverage { background },
+                            size,
+                        ),
                     );
                 }
             }
@@ -421,7 +432,7 @@ pub(super) fn build_scene(
         #[cfg(test)]
         if let Some(pieces) = emitted.get_mut(placed_index) {
             pieces.extend(quads.instances[pieces_before..].iter().map(|quad| {
-                let [left, top, right, bottom] = quad.rect;
+                let [left, top, right, bottom] = quad.rect();
                 pixel_rect(
                     (left + 1.0) / 2.0 * size.x,
                     (1.0 - top) / 2.0 * size.y,
@@ -444,7 +455,7 @@ pub(super) fn build_scene(
         }
     }
 
-    quads.extend(primary_atlas, false, decorations.iter().copied());
+    quads.extend(primary_atlas, Blend::Alpha, decorations.iter().copied());
     let mut solid_quads = background_quads + decorations.len();
 
     if cursor_should_be_visible(snapshot)
@@ -471,8 +482,8 @@ pub(super) fn build_scene(
         solid_quads += 1;
         quads.push(
             primary_atlas,
-            false,
-            solid_quad(
+            Blend::Alpha,
+            QuadInstance::solid(
                 pixel_rect(
                     f32::from(position.x) * raster.cell_size.x + x,
                     f32::from(position.y) * raster.cell_size.y + y,
@@ -732,7 +743,7 @@ impl RowPainter<'_, '_> {
                 let decoration_width = width as f32 * raster.cell_size.x;
                 let decoration_thickness = raster.scale.round().max(1.0);
                 if style.any(StyleFlags::UNDERLINED) {
-                    decorations.push(solid_quad(
+                    decorations.push(QuadInstance::solid(
                         pixel_rect(
                             decoration_x,
                             cell_y + (raster.cell_size.y - 2.0 * decoration_thickness).max(0.0),
@@ -744,7 +755,7 @@ impl RowPainter<'_, '_> {
                     ));
                 }
                 if style.any(StyleFlags::CROSSED_OUT) {
-                    decorations.push(solid_quad(
+                    decorations.push(QuadInstance::solid(
                         pixel_rect(
                             decoration_x,
                             cell_y + raster.cell_size.y * 0.55,
@@ -808,42 +819,6 @@ pub(super) fn edge_shift(glyphs: &[CachedGlyph], x: f32, width: f32) -> f32 {
         super::metrics::snap(width - right)
     } else {
         0.0
-    }
-}
-
-pub(super) fn solid_quad(
-    geometry: Rect,
-    color: impl Into<LinearRgba>,
-    target: Vec2,
-) -> QuadInstance {
-    QuadInstance {
-        rect: clip_rect(snap_geometry(geometry), target).to_array(),
-        // A negative final UV component lets the unified fragment shader skip the atlas sample.
-        uv: [0.0, 0.0, 0.0, -1.0],
-        color: color.into().to_f32_array(),
-        background: -1.0,
-    }
-}
-
-/// A glyph quad; `background` is the luminance of the cell background under
-/// it (coverage glyphs are blended with Ghostty's linear correction).
-pub(super) fn glyph_quad(
-    geometry: Rect,
-    uv: Vec4,
-    color: impl Into<LinearRgba>,
-    alpha_mask: bool,
-    background: f32,
-    target: Vec2,
-) -> QuadInstance {
-    let mut color = color.into().to_f32_array();
-    if !alpha_mask {
-        color[3] = -1.0;
-    }
-    QuadInstance {
-        rect: clip_rect(snap_geometry(geometry), target).to_array(),
-        uv: uv.to_array(),
-        color,
-        background,
     }
 }
 
@@ -912,13 +887,13 @@ impl SceneQuads {
         }
     }
 
-    pub(super) fn push(&mut self, texture: AssetId<Image>, replace: bool, quad: QuadInstance) {
+    pub(super) fn push(&mut self, texture: AssetId<Image>, blend: Blend, quad: QuadInstance) {
         let index = self.instances.len() as u32;
         self.instances.push(quad);
         match self.batches.last_mut() {
             Some(batch)
                 if batch.texture == texture
-                    && batch.replace == replace
+                    && batch.blend == blend
                     && batch.start + batch.count == index =>
             {
                 batch.count += 1;
@@ -927,7 +902,7 @@ impl SceneQuads {
                 texture,
                 start: index,
                 count: 1,
-                replace,
+                blend,
             }),
         }
     }
@@ -935,11 +910,11 @@ impl SceneQuads {
     pub(super) fn extend(
         &mut self,
         texture: AssetId<Image>,
-        replace: bool,
+        blend: Blend,
         quads: impl IntoIterator<Item = QuadInstance>,
     ) {
         for quad in quads {
-            self.push(texture, replace, quad);
+            self.push(texture, blend, quad);
         }
     }
 }

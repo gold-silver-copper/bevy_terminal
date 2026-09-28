@@ -5,12 +5,7 @@ use crate::render::{TerminalSizing, pixel_rect};
 use crate::scene::{GridSize, StyleFlags, TerminalCell, TerminalStyle};
 
 fn quad(value: f32) -> QuadInstance {
-    QuadInstance {
-        rect: [value; 4],
-        uv: [0.0; 4],
-        color: [1.0; 4],
-        background: value,
-    }
+    QuadInstance::raw([value; 4], [0.0; 4], [1.0; 4], value)
 }
 
 #[test]
@@ -28,7 +23,7 @@ fn unsuccessful_atlas_insertion_preserves_packing_state() {
         y: 0,
         width: 8,
         height: 8,
-        scaled: UVec2::ZERO,
+        scaled: None,
     };
     assert!(atlas.cache(source, &images).is_none());
     assert!(
@@ -1382,7 +1377,7 @@ fn glyph_batches_preserve_paint_order_and_coalesce_adjacent_atlases() {
     ];
     let mut quads = SceneQuads::with_capacity(0);
     for (texture, quad) in glyphs {
-        quads.push(texture, false, quad);
+        quads.push(texture, Blend::Alpha, quad);
     }
     let SceneQuads { instances, batches } = quads;
 
@@ -1394,10 +1389,10 @@ fn glyph_batches_preserve_paint_order_and_coalesce_adjacent_atlases() {
     assert_eq!((batches[1].start, batches[1].count), (2, 1));
     assert_eq!(batches[2].texture, atlas_a);
     assert_eq!((batches[2].start, batches[2].count), (3, 1));
-    assert_eq!(instances[0].rect, [1.0; 4]);
-    assert_eq!(instances[1].rect, [2.0; 4]);
-    assert_eq!(instances[2].rect, [3.0; 4]);
-    assert_eq!(instances[3].rect, [4.0; 4]);
+    assert_eq!(instances[0].rect(), [1.0; 4]);
+    assert_eq!(instances[1].rect(), [2.0; 4]);
+    assert_eq!(instances[2].rect(), [3.0; 4]);
+    assert_eq!(instances[3].rect(), [4.0; 4]);
 }
 
 #[test]
@@ -1405,12 +1400,12 @@ fn replacement_batches_never_address_stale_capacity() {
     let mut images = Assets::<Image>::default();
     let atlas = images.add(Image::default()).id();
     let mut quads = SceneQuads::with_capacity(32);
-    quads.extend(atlas, false, vec![quad(1.0); 12]);
+    quads.extend(atlas, Blend::Alpha, vec![quad(1.0); 12]);
     assert_eq!(quads.batches[0].count, 12);
 
     let mut quads = SceneQuads::with_capacity(32);
-    quads.extend(atlas, true, vec![quad(2.0); 2]);
-    quads.extend(atlas, false, vec![quad(3.0); 3]);
+    quads.extend(atlas, Blend::Replace, vec![quad(2.0); 2]);
+    quads.extend(atlas, Blend::Alpha, vec![quad(3.0); 3]);
     assert_eq!(quads.instances.len(), 5);
     assert_eq!((quads.batches[0].start, quads.batches[0].count), (0, 2));
     assert_eq!((quads.batches[1].start, quads.batches[1].count), (2, 3));
@@ -1421,7 +1416,7 @@ fn empty_scene_produces_no_upload_or_draw_batch() {
     let mut images = Assets::<Image>::default();
     let atlas = images.add(Image::default()).id();
     let mut quads = SceneQuads::with_capacity(0);
-    quads.extend(atlas, false, []);
+    quads.extend(atlas, Blend::Alpha, []);
     let SceneQuads { instances, batches } = quads;
     assert!(instances.is_empty());
     assert!(batches.is_empty());
@@ -1452,7 +1447,7 @@ fn unified_atlas_copies_each_bevy_glyph_once_and_reuses_its_uv() {
         y: 1,
         width: 1,
         height: 1,
-        scaled: UVec2::ZERO,
+        scaled: None,
     };
 
     let first = atlas.cache(glyph, &images).expect("glyph should fit");
@@ -1736,12 +1731,12 @@ fn ascii_and_non_ascii_symbols_reuse_the_shape_cache() {
 /// `gpu::instance_layout` declares: four tightly packed fields, 52 bytes.
 #[test]
 fn quad_instances_are_the_shaders_52_byte_vertex_layout() {
-    let instance = QuadInstance {
-        rect: [1.0, 2.0, 3.0, 4.0],
-        uv: [5.0, 6.0, 7.0, 8.0],
-        color: [9.0, 10.0, 11.0, 12.0],
-        background: 13.0,
-    };
+    let instance = QuadInstance::raw(
+        [1.0, 2.0, 3.0, 4.0],
+        [5.0, 6.0, 7.0, 8.0],
+        [9.0, 10.0, 11.0, 12.0],
+        13.0,
+    );
     assert_eq!(size_of::<QuadInstance>(), 52);
     let floats: Vec<f32> = bytemuck::bytes_of(&instance)
         .as_chunks::<4>()

@@ -5,6 +5,7 @@ mod gpu;
 pub(super) mod metrics;
 #[rustfmt::skip]
 mod nerd_font;
+mod quad;
 mod scene;
 mod shaping;
 mod sprite;
@@ -13,6 +14,7 @@ use metrics::{
     LogicalMetrics, RasterMetrics, measure_advance, physical_config, refine_metrics,
     resolve_metrics,
 };
+use quad::QuadInstance;
 use scene::{RowStates, SceneScratch, build_scene};
 use shaping::{AtlasUpload, ShapeCaches, UnifiedGlyphAtlas};
 
@@ -401,27 +403,18 @@ struct DrawBatch {
     texture: AssetId<Image>,
     start: u32,
     count: u32,
-    /// Replace the destination instead of alpha-blending over it. Used for
-    /// cell backgrounds so a translucent theme background does not accumulate
-    /// over stale texels when only some rows are repainted.
-    replace: bool,
+    blend: Blend,
 }
 
-/// One quad as the shader reads it (`batch.wgsl`'s `VertexInput`): 52
-/// tightly packed bytes, uploaded as they are. Built by `solid_quad` and
-/// `glyph_quad`.
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-struct QuadInstance {
-    /// Clip-space `[left, top, right, bottom]`.
-    rect: [f32; 4],
-    /// Atlas `[u0, v0, u1, v1]`; a negative `v1` marks a solid quad.
-    uv: [f32; 4],
-    /// Linear colour; a negative alpha marks a colour glyph.
-    color: [f32; 4],
-    /// Linear luminance of the cell background under a coverage glyph, for
-    /// Ghostty's linear-corrected blending; negative for no correction.
-    background: f32,
+/// How a draw batch writes its target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Blend {
+    /// Alpha-blend over the target.
+    Alpha,
+    /// Replace the destination. Used for cell backgrounds so a translucent
+    /// theme background does not accumulate over stale texels when only some
+    /// rows are repainted.
+    Replace,
 }
 
 struct BatchScene {

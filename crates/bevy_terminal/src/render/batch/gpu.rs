@@ -1,7 +1,7 @@
 //! Extraction, resource lifetimes, pipelines and drawing.
 use super::{
-    BatchScene, GLYPH_ATLAS_SIZE, GLYPH_FORMAT, PendingBatchScenes, QuadInstance, SceneQueue,
-    TARGET_FORMAT,
+    BatchScene, Blend, GLYPH_ATLAS_SIZE, GLYPH_FORMAT, PendingBatchScenes, QuadInstance,
+    SceneQueue, TARGET_FORMAT,
 };
 use bevy::{
     asset::{load_internal_asset, uuid_handle},
@@ -476,7 +476,7 @@ pub(super) fn render_batch_scenes(
                     0,
                     *vertex_buffer.slice((slice.offset * size_of::<QuadInstance>()) as u64..),
                 );
-                let mut current_replace = None;
+                let mut current_blend = None;
                 for batch in &scene.batches {
                     let start = (batch.start as usize).max(slice.instances.start);
                     let end =
@@ -484,12 +484,11 @@ pub(super) fn render_batch_scenes(
                     if start >= end {
                         continue;
                     }
-                    if current_replace != Some(batch.replace) {
-                        current_replace = Some(batch.replace);
-                        pass.set_pipeline(if batch.replace {
-                            replace_pipeline
-                        } else {
-                            alpha_pipeline
+                    if current_blend != Some(batch.blend) {
+                        current_blend = Some(batch.blend);
+                        pass.set_pipeline(match batch.blend {
+                            Blend::Alpha => alpha_pipeline,
+                            Blend::Replace => replace_pipeline,
                         });
                     }
                     let bind_group = if batch.texture == scene.atlas {
