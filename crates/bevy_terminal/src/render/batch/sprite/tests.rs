@@ -5,7 +5,8 @@
 //!
 //! Rectangle-built glyphs must match exactly. Anti-aliased paths come from a
 //! different rasterizer (z2d in Ghostty), so their edges may differ by a
-//! bounded amount while their shape must agree.
+//! bounded amount while their shape must agree. Shades are dithered instead
+//! of Ghostty's uniform translucency and are checked on their own.
 
 use super::*;
 use bevy::math::{IVec2, UVec2};
@@ -35,6 +36,11 @@ fn uses_paths(codepoint: u32) -> bool {
             | 0x1cc30..=0x1cc3f
             | 0x1ce00..=0x1ce0c
     )
+}
+
+/// Whether `codepoint` is a shade that deliberately differs from Ghostty.
+fn dithered(codepoint: u32) -> bool {
+    matches!(codepoint, 0x2591..=0x2593)
 }
 
 fn reference(block: u32, (width, height, thickness): (u32, u32, u32)) -> Option<(u32, Vec<u8>)> {
@@ -80,7 +86,7 @@ fn sprites_match_ghostty_reference_atlases() {
         for block in blocks {
             let (atlas_width, expected) = reference(block, (width, height, thickness))
                 .unwrap_or_else(|| panic!("reference atlas for U+{block:X}"));
-            for codepoint in (block..block + 0x100).filter(|cp| is_sprite(*cp)) {
+            for codepoint in (block..block + 0x100).filter(|cp| is_sprite(*cp) && !dithered(*cp)) {
                 compared += 1;
                 let index = codepoint - block;
                 let tile = UVec2::new(index % 16, index / 16) * stride;
@@ -136,7 +142,7 @@ fn sprites_match_ghostty_reference_atlases() {
             }
         }
     }
-    assert_eq!(compared, 4 * 872, "every sprite at every size");
+    assert_eq!(compared, 4 * 869, "every undithered sprite at every size");
     assert!(
         exact_failures.is_empty(),
         "{} exact failures:\n{}",
@@ -186,11 +192,117 @@ fn solid_blocks_are_exactly_the_single_rectangle_sprites() {
                     }
                     assert!(opaque, "U+{codepoint:04X}");
                 }
-                // Shades are translucent; combined quadrants are unions.
+                // Shades are dithered; combined quadrants are unions.
                 None => assert!(
                     matches!(codepoint, 0x2591..=0x2593 | 0x2599..=0x259c | 0x259e | 0x259f),
                     "U+{codepoint:04X}"
                 ),
+            }
+        }
+    }
+}
+
+/// The inked pixels of `codepoint` drawn in one `width` × `height` cell.
+fn ink(codepoint: u32, width: u32, height: u32) -> Vec<bool> {
+    let metrics = Metrics {
+        cell_width: width,
+        cell_height: height,
+        box_thickness: 1,
+    };
+    let sprite = draw(codepoint, width, height, metrics).expect("shade");
+    assert!(
+        sprite
+            .alpha
+            .iter()
+            .all(|alpha| *alpha == 0 || *alpha == 255),
+        "U+{codepoint:04X} dots are opaque"
+    );
+    let mut ink = vec![false; (width * height) as usize];
+    for y in 0..sprite.size.y {
+        for x in 0..sprite.size.x {
+            let cell = sprite.offset + IVec2::new(x as i32, y as i32);
+            assert!(
+                cell.x >= 0 && cell.y >= 0,
+                "U+{codepoint:04X} stays in the cell"
+            );
+            assert!((cell.x as u32) < width && (cell.y as u32) < height);
+            ink[(cell.y as u32 * width + cell.x as u32) as usize] =
+                sprite.alpha[(y * sprite.size.x + x) as usize] == 255;
+        }
+    }
+    ink
+}
+
+const SHADE_CELLS: [(u32, u32); 6] = [(8, 16), (9, 17), (11, 21), (14, 31), (18, 36), (28, 62)];
+
+#[test]
+fn shades_are_opaque_dots_at_their_density() {
+    for (width, height) in SHADE_CELLS {
+        for (codepoint, density) in [(0x2591, 0.25), (0x2592, 0.5), (0x2593, 0.75)] {
+            let ink = ink(codepoint, width, height);
+            let inked = ink.iter().filter(|inked| **inked).count() as f64 / ink.len() as f64;
+            assert!(
+                (inked - density).abs() <= 0.06,
+                "U+{codepoint:04X} at {width}x{height}: {inked:.3} inked, expected {density}"
+            );
+        }
+        // Light and dark shades are each other's negative.
+        let light = ink(0x2591, width, height);
+        let dark = ink(0x2593, width, height);
+        assert!(
+            light.iter().zip(&dark).all(|(l, d)| l != d),
+            "{width}x{height}"
+        );
+    }
+}
+
+/// Every pattern period fits the cell a whole number of times, so the
+/// checkerboard keeps alternating across the edges between cells.
+#[test]
+fn shades_tile_across_cells() {
+    for (width, height) in SHADE_CELLS {
+        let ink = ink(0x2592, width, height);
+        let at = |x: u32, y: u32| ink[(y * width + x) as usize];
+        for y in 0..height {
+            assert_ne!(at(width - 1, y), at(0, y), "{width}x{height} row {y}");
+        }
+        for x in 0..width {
+            assert_ne!(at(x, height - 1), at(x, 0), "{width}x{height} column {x}");
+        }
+    }
+}
+
+/// The legacy-computing medium shades are parts of `▒`, dot for dot.
+#[test]
+fn legacy_medium_shades_match_the_medium_shade() {
+    for (width, height) in SHADE_CELLS {
+        let medium = ink(0x2592, width, height);
+        // Halves round as `block` rounds them.
+        let half = |size: u32| (f64::from(size) / 2.0).round() as u32;
+        let (half_width, half_height) = (half(width), half(height));
+        for (codepoint, inside) in [
+            (
+                0x1fb8c,
+                Box::new(move |x: u32, _| x < half_width) as Box<dyn Fn(u32, u32) -> bool>,
+            ),
+            (0x1fb8d, Box::new(move |x: u32, _| x >= width - half_width)),
+            (0x1fb8e, Box::new(move |_, y: u32| y < half_height)),
+            (
+                0x1fb8f,
+                Box::new(move |_, y: u32| y >= height - half_height),
+            ),
+            (0x1fb90, Box::new(|_, _| true)),
+        ] {
+            let ink = ink(codepoint, width, height);
+            for y in 0..height {
+                for x in 0..width {
+                    let index = (y * width + x) as usize;
+                    let expected = inside(x, y) && medium[index];
+                    assert_eq!(
+                        ink[index], expected,
+                        "U+{codepoint:04X} at ({x},{y}) in {width}x{height}"
+                    );
+                }
             }
         }
     }

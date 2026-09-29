@@ -5,16 +5,41 @@
 //! (non-zero winding for non-overlapping contours); strokes are filled
 //! outlines with butt caps and miter joins. The canvas keeps a quarter-cell
 //! margin on each side so drawings may overshoot the cell, as in Ghostty.
+//!
+//! Unlike Ghostty, which fills shades with uniform translucency, shades are
+//! dithered: opaque dots in the classic VGA `░▒▓` patterns, scaled to the
+//! cell so they tile seamlessly across neighbouring cells.
 
 use bevy::math::{DVec2, IVec2, UVec2};
 
-/// Alpha of a shaded fill.
+/// Ink density of a fill: solid, or one of the three dithered shades.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Shade {
-    Light = 0x40,
-    Medium = 0x80,
-    Dark = 0xc0,
-    On = 0xff,
+    /// A quarter of the dots, as the VGA `░` (`0x22`/`0x88` rows).
+    Light,
+    /// Half of the dots in a checkerboard, as the VGA `▒` (`0x55`/`0xaa`).
+    Medium,
+    /// Three quarters of the dots, as the VGA `▓` (`0xdd`/`0x77`).
+    Dark,
+    /// Every pixel.
+    On,
+}
+
+/// Dot columns per cell of the shade patterns: the VGA glyph width, which
+/// holds a whole number of every pattern's horizontal periods.
+const DOT_COLUMNS: u32 = 8;
+
+impl Shade {
+    /// Whether the dot at `column`, `row` of the shade grid is inked.
+    fn inks(self, column: u32, row: u32) -> bool {
+        let light = (column + 2 * (row % 2)) % 4 == 2;
+        match self {
+            Shade::Light => light,
+            Shade::Medium => (column + row) % 2 == 1,
+            Shade::Dark => !light,
+            Shade::On => true,
+        }
+    }
 }
 
 /// A path of straight and cubic segments in cell pixels.
@@ -151,13 +176,36 @@ impl Canvas {
         }
     }
 
-    /// Sets the pixels of the rectangle between two corners.
+    /// Sets the pixels of the rectangle between two corners that `shade`
+    /// inks, leaving the others as they are.
     pub(crate) fn box_(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, shade: Shade) {
         for y in y0.min(y1)..y0.max(y1) {
             for x in x0.min(x1)..x0.max(x1) {
-                self.pixel(x, y, shade as u8);
+                if self.inks(shade, x, y) {
+                    self.pixel(x, y, 0xff);
+                }
             }
         }
+    }
+
+    /// Whether `shade` inks the pixel at `x`, `y` (cell coordinates).
+    ///
+    /// The dots divide the cell into [`DOT_COLUMNS`] columns and an even
+    /// number of rows chosen to keep them about square, so every pattern
+    /// period fits the cell a whole number of times and the dots of adjoining
+    /// cells continue each other.
+    fn inks(&self, shade: Shade, x: i32, y: i32) -> bool {
+        if shade == Shade::On {
+            return true;
+        }
+        let pairs = (DOT_COLUMNS / 2 * self.height + self.width / 2) / self.width;
+        let rows = 2 * pairs.max(1);
+        let dot = |position: i32, size: u32, count: u32| {
+            (i64::from(position) * i64::from(count))
+                .div_euclid(i64::from(size))
+                .rem_euclid(i64::from(count)) as u32
+        };
+        shade.inks(dot(x, self.width, DOT_COLUMNS), dot(y, self.height, rows))
     }
 
     /// Coverage of `path` in canvas pixels, clamped to one.
@@ -185,13 +233,19 @@ impl Canvas {
         coverage
     }
 
-    /// Composites coverage over the canvas.
+    /// Composites coverage over the canvas where `shade` inks.
     fn composite(&mut self, coverage: &[f32], shade: Shade) {
-        let alpha = f32::from(shade as u8) / 255.0;
-        for (pixel, coverage) in self.pixels.iter_mut().zip(coverage) {
-            let source = coverage * alpha;
+        let stride = self.stride() as usize;
+        let padding = self.padding.as_ivec2();
+        for (index, coverage) in coverage.iter().enumerate() {
+            let x = (index % stride) as i32 - padding.x;
+            let y = (index / stride) as i32 - padding.y;
+            if !self.inks(shade, x, y) {
+                continue;
+            }
+            let pixel = &mut self.pixels[index];
             let destination = f32::from(*pixel) / 255.0;
-            *pixel = ((source + destination * (1.0 - source)) * 255.0).round() as u8;
+            *pixel = ((coverage + destination * (1.0 - coverage)) * 255.0).round() as u8;
         }
     }
 
