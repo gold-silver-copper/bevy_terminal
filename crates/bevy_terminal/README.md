@@ -155,7 +155,10 @@ elements and shades (U+2580–259F), Braille (U+2800–28FF), `◢◣◤◥◸�
 geometric Powerline glyphs (U+E0B0–E0BF, E0D2, E0D4), branch drawing
 (U+F5D0–F60D) and Symbols for Legacy Computing (U+1FB00–1FBEF and its
 supplement). Their lines use the font's underline thickness, as in Ghostty. A
-wide cell holding one is drawn as a single cell spanning its columns.
+wide cell holding one is drawn as a single cell spanning its columns. Unlike
+Ghostty's translucent fills, shades (`░▒▓` and the legacy medium shades) are
+dithered: opaque dots in the classic VGA patterns, scaled to the cell so they
+tile seamlessly.
 
 The crate is MIT licensed; the test fonts under `assets/fonts` are bundled
 under their own licenses (OFL 1.1) and are used only by tests.

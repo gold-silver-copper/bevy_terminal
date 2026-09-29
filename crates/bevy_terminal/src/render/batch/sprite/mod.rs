@@ -8,7 +8,9 @@
 //! contributors.
 //!
 //! Glyphs are drawn at the exact cell size from the grid metrics, so they
-//! tile without seams whatever the font's own outlines look like.
+//! tile without seams whatever the font's own outlines look like. Shades
+//! depart from Ghostty: they are dithered rather than translucent (see
+//! [`canvas::Shade`]).
 
 mod box_drawing;
 mod canvas;
