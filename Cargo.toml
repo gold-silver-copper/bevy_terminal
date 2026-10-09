@@ -48,17 +48,17 @@ timings = ["bevy_terminal/timings"]
 [dependencies]
 bevy_terminal = { version = "0.8.1", path = "crates/bevy_terminal", default-features = false }
 # Only for the `Component` derive on `RatatuiTerminal`; the version is pinned by `bevy_terminal`.
-bevy = { version = "0.19", default-features = false }
+bevy = { version = "0.20", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["std", "underline-color"] }
 
 [dev-dependencies]
 # Deterministic font collections for the glyph fidelity oracle.
-fontique = { version = "0.9", default-features = false }
+fontique = { version = "0.11", default-features = false }
 # Raw font metrics (line gap, cap height) for the oracle's face box.
-skrifa = { version = "0.42", default-features = false, features = ["std"] }
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
 ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets"] }
-bevy = { version = "0.19", default-features = false, features = ["2d", "3d", "ui", "system_font_discovery"] }
-bevy_image_export = { version = "0.17.0", git = "https://github.com/paulkre/bevy_image_export", tag = "v0.17.0" }
+bevy = { version = "0.20", default-features = false, features = ["2d", "3d", "ui", "system_font_discovery"] }
+bevy_image_export = { version = "0.17.0", git = "https://github.com/gold-silver-copper/bevy_image_export", branch = "bevy-0.20" }
 # Okhsv -> sRGB gamut math for the `colors_rgb` example port; upstream Ratatui
 # uses the same crate for that example.
 palette = "0.7"

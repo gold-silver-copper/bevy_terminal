@@ -96,7 +96,7 @@ impl Plugin for TerminalPlugin {
 /// [`TerminalRenderer`] is removed or the entity despawned), and has the
 /// render world drop its scene and free its atlas.
 fn release_terminal(
-    remove: On<Remove, TerminalRenderer>,
+    remove: On<Remove<TerminalRenderer>>,
     states: Query<&BatchMainState>,
     mut queue: ResMut<SceneQueue>,
     mut commands: Commands,
@@ -190,7 +190,7 @@ impl TextResources<'_> {
 /// Gives a terminal its texture, statistics and renderer state as soon as
 /// its [`TerminalRenderer`] is added.
 fn initialize_terminal(
-    add: On<Add, TerminalRenderer>,
+    add: On<Add<TerminalRenderer>>,
     terminals: Query<(&TerminalRenderer, &TerminalRenderConfig)>,
     mut images: ResMut<Assets<Image>>,
     device: Option<Res<RenderDevice>>,

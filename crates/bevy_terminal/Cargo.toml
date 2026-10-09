@@ -22,7 +22,7 @@ timings = []
 
 [dependencies]
 bitflags = "2"
-bevy = { version = "0.19", default-features = false, features = [
+bevy = { version = "0.20", default-features = false, features = [
     "std",
     "async_executor",
     "multi_threaded",
@@ -34,14 +34,14 @@ bevy = { version = "0.19", default-features = false, features = [
 ] }
 
 # Font line metrics (ascent, descent, leading) for font-driven cell heights.
-skrifa = { version = "0.42", default-features = false, features = ["std"] }
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # Already in the graph through bevy_render; derives `Pod` for GPU instances.
 bytemuck = { version = "1.5", features = ["derive"] }
 
 [dev-dependencies]
-bevy = { version = "0.19", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
+bevy = { version = "0.20", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
 # Host-independent font collections for the glyph placement probe.
-fontique = { version = "0.9", default-features = false }
+fontique = { version = "0.11", default-features = false }
 unicode-segmentation = "1.13"
 # Decodes Ghostty's reference sprite atlases.
 png = "0.18"

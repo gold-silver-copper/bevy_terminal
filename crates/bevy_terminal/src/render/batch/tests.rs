@@ -677,7 +677,10 @@ fn resizing_keeps_the_texture_handle_without_modifying_application_layout() {
         app.update();
     }
     let texture = app.world().get::<TerminalTexture>(entity).unwrap().clone();
-    assert_eq!(texture.geometry.size(), UVec2::new(40, 40));
+    // 20 px is a minimum row height that grows to the resolved font's line box.
+    let cell_height = texture.geometry.size().y / 2;
+    assert!(cell_height >= 20, "{cell_height}");
+    assert_eq!(texture.geometry.size(), UVec2::new(40, 2 * cell_height));
     let node = app.world().get::<Node>(entity).unwrap();
     assert_eq!(node.width, Val::Auto);
     assert_eq!(node.height, Val::Auto);
@@ -692,14 +695,14 @@ fn resizing_keeps_the_texture_handle_without_modifying_application_layout() {
     app.update();
     let resized = app.world().get::<TerminalTexture>(entity).unwrap();
     assert_eq!(resized.image, texture.image, "handle must stay stable");
-    assert_eq!(resized.geometry.size(), UVec2::new(80, 60));
+    assert_eq!(resized.geometry.size(), UVec2::new(80, 3 * cell_height));
     let image = app
         .world()
         .resource::<Assets<Image>>()
         .get(&texture.image)
         .expect("the image was reallocated in place");
     assert_eq!(image.width(), 80);
-    assert_eq!(image.height(), 60);
+    assert_eq!(image.height(), 3 * cell_height);
     let node = app.world().get::<Node>(entity).unwrap();
     assert_eq!(node.width, Val::Auto);
     assert_eq!(node.height, Val::Auto);
@@ -710,7 +713,7 @@ fn resizing_keeps_the_texture_handle_without_modifying_application_layout() {
     app.update();
     let shrunk = app.world().get::<TerminalTexture>(entity).unwrap();
     assert_eq!(shrunk.image, texture.image);
-    assert_eq!(shrunk.geometry.size(), UVec2::new(20, 20));
+    assert_eq!(shrunk.geometry.size(), UVec2::new(20, cell_height));
 }
 
 #[test]
@@ -2301,7 +2304,7 @@ fn texture_changes_track_geometry_not_content() {
 /// Failures are typed until logged, with the messages they always had.
 #[test]
 fn shaping_failures_format_only_when_logged() {
-    let font = FontSource::from("mono");
+    let font = FontSource::family("mono");
     let failure = ShapingFailure::Advance {
         font: font.clone(),
         error: super::metrics::AdvanceError::Invalid(0.0),

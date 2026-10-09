@@ -6,7 +6,8 @@ use crate::render::{FontFaces, TerminalSizing};
 use bevy::{
     prelude::*,
     text::{
-        ComputedTextBlock, FontCx, FontSource, LayoutCx, LetterSpacing, LineHeight, TextPipeline,
+        ComputedTextBlock, FontCx, FontSource, LayoutCx, LetterSpacing, LineHeight, RemSize,
+        TextElement, TextPipeline,
     },
 };
 
@@ -71,11 +72,13 @@ pub(in crate::render) fn measure_advance(
             std::iter::once((
                 Entity::PLACEHOLDER,
                 0,
-                probe.as_str(),
-                &font,
-                Color::WHITE,
-                LineHeight::Px(PROBE_FONT_SIZE),
-                LetterSpacing::default(),
+                TextElement::Text {
+                    text: probe.as_str(),
+                    font: &font,
+                    color: Color::WHITE,
+                    line_height: LineHeight::Px(PROBE_FONT_SIZE),
+                    letter_spacing: LetterSpacing::default(),
+                },
             )),
             1.0,
             &TextLayout::new(Justify::Left, LineBreak::NoWrap),
@@ -83,7 +86,7 @@ pub(in crate::render) fn measure_advance(
             font_cx,
             layout_cx,
             Vec2::new(f32::MAX, f32::MAX),
-            20.0,
+            RemSize::default(),
         )
         .map_err(AdvanceError::Layout)?;
     let advance = measure.max.x / PROBE_GLYPHS as f32;

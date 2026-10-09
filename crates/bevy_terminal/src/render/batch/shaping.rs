@@ -9,7 +9,10 @@ use super::{
 use bevy::{
     platform::collections::HashMap,
     prelude::*,
-    text::{ComputedTextBlock, LetterSpacing, LineBreak, LineHeight, TextBounds, TextLayoutInfo},
+    text::{
+        ComputedTextBlock, LetterSpacing, LineBreak, LineHeight, RemSize, TextBounds, TextElement,
+        TextLayoutInfo,
+    },
 };
 use std::borrow::Cow;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -81,11 +84,13 @@ pub(super) fn shape_run(
         std::iter::once((
             Entity::PLACEHOLDER,
             0,
-            text,
-            &font,
-            Color::WHITE,
-            LineHeight::Px(raster.cell_size.y),
-            LetterSpacing::default(),
+            TextElement::Text {
+                text,
+                font: &font,
+                color: Color::WHITE,
+                line_height: LineHeight::Px(raster.cell_size.y),
+                letter_spacing: LetterSpacing::default(),
+            },
         )),
         LineBreak::NoWrap,
         Justify::Left,
@@ -95,7 +100,7 @@ pub(super) fn shape_run(
         cx.font_cx,
         cx.layout_cx,
         viewport,
-        20.0,
+        RemSize::default(),
     );
     let shape_result = shape_result
         .map_err(|error| ShapingFailure::Layout {
