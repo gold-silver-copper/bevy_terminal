@@ -11,7 +11,7 @@ publish = false
 consumer-windowed = ["bevy_ratatui/windowed"]
 
 [dependencies]
-bevy = { version = "0.19", default-features = false, features = ["bevy_ui"] }
+bevy = { version = "0.20", default-features = false, features = ["bevy_ui"] }
 bevy_terminal_ratatui = { path = "../..", default-features = false }
 # Compile against the real consumer's trait, without starting its native terminal.
 bevy_ratatui = { path = "../../../bevy_ratatui", default-features = false, features = ["std", "crossterm"] }

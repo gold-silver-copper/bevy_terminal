@@ -21,7 +21,7 @@ use bevy::{
     prelude::*,
     text::{
         ComputedTextBlock, FontAtlasSet, FontCx, FontStyle, FontWeight, LayoutCx, LetterSpacing,
-        LineHeight, ScaleCx, TextBounds, TextLayoutInfo, TextPipeline,
+        LineHeight, RemSize, ScaleCx, TextBounds, TextElement, TextLayoutInfo, TextPipeline,
     },
 };
 use bevy_terminal_ratatui::prelude::{StyleFlags, TerminalCell, TerminalRenderConfig};
@@ -143,11 +143,13 @@ impl Rasterizer<'_> {
                 std::iter::once((
                     Entity::PLACEHOLDER,
                     0,
-                    cell.symbol(),
-                    &font,
-                    Color::WHITE,
-                    LineHeight::Px(line_height),
-                    LetterSpacing::default(),
+                    TextElement::Text {
+                        text: cell.symbol(),
+                        font: &font,
+                        color: Color::WHITE,
+                        line_height: LineHeight::Px(line_height),
+                        letter_spacing: LetterSpacing::default(),
+                    },
                 )),
                 LineBreak::NoWrap,
                 Justify::Left,
@@ -157,7 +159,7 @@ impl Rasterizer<'_> {
                 &mut self.font_cx,
                 &mut self.layout_cx,
                 Vec2::splat(4096.0),
-                20.0,
+                RemSize::default(),
             )
             .map_err(|e| e.to_string())?;
         let mut layout = TextLayoutInfo::default();
@@ -950,7 +952,7 @@ mod tests {
         ))
         .init_asset::<Image>();
         let mut config = TerminalRenderConfig::default();
-        config.font.bold = Some(bevy::text::FontSource::Monospace);
+        config.font.bold = Some(bevy::text::FontSource::monospace());
         let mut state = bevy::ecs::system::SystemState::<Rasterizer>::new(app.world_mut());
         let mut rasterizer = state.get_mut(app.world_mut()).unwrap();
         assert!(

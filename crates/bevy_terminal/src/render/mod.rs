@@ -152,7 +152,7 @@ impl FontFaces {
 
 impl Default for FontFaces {
     fn default() -> Self {
-        Self::regular(FontSource::Monospace)
+        Self::regular(FontSource::monospace())
     }
 }
 

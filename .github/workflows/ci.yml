@@ -72,8 +72,8 @@ jobs:
       - name: Checkout pinned consumer
         uses: actions/checkout@v4
         with:
-          repository: ratatui/bevy_ratatui
-          ref: f1118a98ab8aaacbed8f9a03e1f278871f39e84e
+          repository: gold-silver-copper/bevy_ratatui
+          ref: 675e9144f5cfc2c49667e44cace48bef0543dace
           path: bevy_ratatui
       - uses: dtolnay/rust-toolchain@stable
       - name: Install windowed build dependencies
