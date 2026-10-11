@@ -165,16 +165,7 @@ fn fill(surface: &TerminalSurface) {
 }
 
 /// The bundled families and their regular, bold, italic and bold italic faces.
-pub(super) const BUNDLED: [(&str, [&str; 4]); 6] = [
-    (
-        "iosevka-fixed",
-        [
-            "IosevkaFixed-Regular.ttf",
-            "IosevkaFixed-Bold.ttf",
-            "IosevkaFixed-Italic.ttf",
-            "IosevkaFixed-BoldItalic.ttf",
-        ],
-    ),
+pub(super) const BUNDLED: [(&str, [&str; 4]); 4] = [
     (
         "jetbrains-mono",
         [
@@ -211,24 +202,12 @@ pub(super) const BUNDLED: [(&str, [&str; 4]); 6] = [
             "DejaVuSansMono-BoldOblique.ttf",
         ],
     ),
-    (
-        "source-code-pro",
-        [
-            "SourceCodePro-Regular.ttf",
-            "SourceCodePro-Bold.ttf",
-            "SourceCodePro-It.ttf",
-            "SourceCodePro-BoldIt.ttf",
-        ],
-    ),
 ];
 
-/// A bundled font file, from the crate's own fonts or the repository's.
+/// A bundled font file from the crate's `assets/fonts`.
 pub(super) fn asset(path: &str) -> Vec<u8> {
-    let crate_fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/");
-    let repository_fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/");
-    std::fs::read(format!("{crate_fonts}{path}"))
-        .or_else(|_| std::fs::read(format!("{repository_fonts}{path}")))
-        .unwrap_or_else(|error| panic!("{path}: {error}"))
+    let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/");
+    std::fs::read(format!("{fonts}{path}")).unwrap_or_else(|error| panic!("{path}: {error}"))
 }
 
 /// Replaces the host collection with bundled fallbacks so the probe does not
@@ -486,7 +465,7 @@ fn run(case: &ProbeCase) -> ProbeResult {
 fn glyph_ink_is_clipped_only_at_the_texture_edges() {
     let cases = [
         ("cascadia-mono", 24.0, 2.0, 0.85),
-        ("iosevka-fixed", 18.0, 1.0, 1.0),
+        ("jetbrains-mono", 18.0, 1.0, 1.0),
         ("hack", 24.0, 1.0, 1.0),
     ];
     for (family, font_size, scale, line_height) in cases {
