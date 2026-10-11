@@ -120,28 +120,83 @@ impl TerminalColor {
     pub const WHITE: Self = Self::Indexed(15);
 }
 
-bitflags::bitflags! {
-    /// Compact text attributes. The bit positions match Ratatui's modifiers.
-    #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-    pub struct StyleFlags: u16 {
-        /// Bold font weight.
-        const BOLD = 1 << 0;
-        /// Reduced contrast.
-        const DIM = 1 << 1;
-        /// Italic font style.
-        const ITALIC = 1 << 2;
-        /// Underline decoration.
-        const UNDERLINED = 1 << 3;
-        /// Slow text blink.
-        const SLOW_BLINK = 1 << 4;
-        /// Rapid text blink.
-        const RAPID_BLINK = 1 << 5;
-        /// Swap foreground and background.
-        const REVERSED = 1 << 6;
-        /// Hide foreground content.
-        const HIDDEN = 1 << 7;
-        /// Strike-through decoration.
-        const CROSSED_OUT = 1 << 8;
+/// Compact text attributes. The bit positions match Ratatui's modifiers.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct StyleFlags(u16);
+
+impl StyleFlags {
+    /// Bold font weight.
+    pub const BOLD: Self = Self(1 << 0);
+    /// Reduced contrast.
+    pub const DIM: Self = Self(1 << 1);
+    /// Italic font style.
+    pub const ITALIC: Self = Self(1 << 2);
+    /// Underline decoration.
+    pub const UNDERLINED: Self = Self(1 << 3);
+    /// Slow text blink.
+    pub const SLOW_BLINK: Self = Self(1 << 4);
+    /// Rapid text blink.
+    pub const RAPID_BLINK: Self = Self(1 << 5);
+    /// Swap foreground and background.
+    pub const REVERSED: Self = Self(1 << 6);
+    /// Hide foreground content.
+    pub const HIDDEN: Self = Self(1 << 7);
+    /// Strike-through decoration.
+    pub const CROSSED_OUT: Self = Self(1 << 8);
+    const ALL: u16 = (1 << 9) - 1;
+
+    /// No attributes.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// The raw bits.
+    #[must_use]
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
+    /// Flags from raw bits, dropping unknown ones.
+    #[must_use]
+    pub const fn from_bits_truncate(bits: u16) -> Self {
+        Self(bits & Self::ALL)
+    }
+
+    /// Whether every flag in `other` is set.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Whether any flag in `other` is set.
+    #[must_use]
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    /// Both sets of flags.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Sets the flags in `other`.
+    pub const fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+
+    /// Clears the flags in `other`.
+    pub const fn remove(&mut self, other: Self) {
+        self.0 &= !other.0;
+    }
+}
+
+impl std::ops::BitOr for StyleFlags {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        self.union(other)
     }
 }
 
@@ -570,7 +625,7 @@ mod tests {
         flags.remove(StyleFlags::BOLD);
         assert_eq!(flags, StyleFlags::ITALIC);
         flags.insert(StyleFlags::HIDDEN);
-        assert_eq!(format!("{flags:?}"), "StyleFlags(ITALIC | HIDDEN)");
+        assert!(flags.intersects(StyleFlags::HIDDEN | StyleFlags::DIM));
         assert_eq!(StyleFlags::from_bits_truncate(0xffff).bits(), 0x1ff);
     }
 

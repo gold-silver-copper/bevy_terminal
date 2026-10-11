@@ -1,4 +1,15 @@
 #![doc = include_str!("../README.md")]
+// Library code must not panic; tests may.
+#![cfg_attr(
+    not(test),
+    forbid(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::unreachable
+    )
+)]
 
 pub mod render;
 pub mod scene;

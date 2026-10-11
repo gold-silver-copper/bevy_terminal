@@ -1768,7 +1768,6 @@ name = "bevy_terminal"
 version = "0.8.1"
 dependencies = [
  "bevy",
- "bitflags 2.13.1",
  "bytemuck",
  "fontique",
  "skrifa",

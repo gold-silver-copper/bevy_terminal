@@ -30,7 +30,6 @@ system_fonts = ["bevy/system_font_discovery"]
 timings = []
 
 [dependencies]
-bitflags = "2"
 bevy = { version = "0.20", default-features = false, features = [
     "std",
     "async_executor",
