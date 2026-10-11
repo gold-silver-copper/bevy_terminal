@@ -165,10 +165,10 @@ fn failed_measurement_and_shapes_retry_after_font_registration() {
     let mut atlas = UnifiedGlyphAtlas::default();
     let mut shapes = ShapeCaches::default();
     let mut stats = TerminalStats::default();
-    let mut resources = SystemState::<(TextResources, ResMut<Assets<Image>>)>::new(app.world_mut());
+    let mut resources = SystemState::<TextResources>::new(app.world_mut());
     {
-        let (mut text, mut images) = resources.get_mut(app.world_mut()).unwrap();
-        let mut cx = text.context(&mut images);
+        let mut text = resources.get_mut(app.world_mut()).unwrap();
+        let mut cx = text.context();
         refine_metrics(&config, None, raster, &mut cx);
         assert!(
             cx.failure.is_some(),
@@ -212,8 +212,8 @@ fn failed_measurement_and_shapes_retry_after_font_registration() {
     for _ in 0..3 {
         app.update();
     }
-    let (mut text, mut images) = resources.get_mut(app.world_mut()).unwrap();
-    let mut cx = text.context(&mut images);
+    let mut text = resources.get_mut(app.world_mut()).unwrap();
+    let mut cx = text.context();
     let raster = refine_metrics(&config, None, raster, &mut cx);
     let mut context = ShapeContext {
         layout: RunLayout {
@@ -282,8 +282,8 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         font: super::super::FontFaces::regular(missing),
         ..config.clone()
     };
-    let mut resources = SystemState::<(TextResources, ResMut<Assets<Image>>)>::new(app.world_mut());
-    let (mut text, mut images) = resources.get_mut(app.world_mut()).unwrap();
+    let mut resources = SystemState::<TextResources>::new(app.world_mut());
+    let mut text = resources.get_mut(app.world_mut()).unwrap();
     let mut stats = TerminalStats::default();
     let result = sync_batch_terminal(
         &renderer,
@@ -300,14 +300,15 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         &mut state,
         &mut output.geometry.measurement,
         &mut stats,
-        &mut text.context(&mut images),
+        &mut text,
         &mut queue,
     );
-    assert_eq!(result, Err(TerminalStatus::ShapingFailed));
+    assert!(matches!(
+        result,
+        Err(SyncError::Shaping(ShapingFailure::Advance { .. }))
+    ));
     // Apply the same invalidation boundary as the outer Bevy system.
     state.invalidate(&mut queue);
-    output.status = result.unwrap_err();
-    assert_eq!(output.status, TerminalStatus::ShapingFailed);
     assert!(state.measure.in_use.is_none());
     assert!(state.snapshot().is_none());
     assert!(queue.scene(output_id).is_none());
@@ -330,7 +331,7 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         &mut state,
         &mut output.geometry.measurement,
         &mut stats,
-        &mut text.context(&mut images),
+        &mut text,
         &mut queue,
     )
     .unwrap();
@@ -338,6 +339,53 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
     assert!(state.measure.in_use.is_some());
     assert!(queue.scene(output_id).unwrap().clear);
     assert!(stats.shape_misses > 0);
+}
+
+#[test]
+fn the_output_image_is_resized_against_its_real_size() {
+    let mut app = text_app();
+    let font = app
+        .world_mut()
+        .resource_mut::<Assets<Font>>()
+        .add(Font::from_bytes(
+            include_bytes!("../../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")
+                .to_vec(),
+        ));
+    let surface = TerminalSurface::new((4, 2));
+    write_text(&surface, "test");
+    let entity = app
+        .world_mut()
+        .spawn((
+            TerminalRenderer::new(surface.clone()),
+            TerminalRenderConfig {
+                font: super::super::FontFaces::regular(font),
+                sizing: TerminalSizing::font(20.0),
+                ..default()
+            },
+        ))
+        .id();
+    for _ in 0..3 {
+        app.update();
+    }
+    let texture = app.world().get::<TerminalTexture>(entity).unwrap().clone();
+    let size = texture.geometry.size();
+    let image_size = |app: &App| {
+        app.world()
+            .resource::<Assets<Image>>()
+            .get(texture.image.id())
+            .unwrap()
+            .size()
+    };
+    assert_eq!(image_size(&app), size);
+    // The image is left at another size than the published one, as a scene
+    // that failed after resizing it once did; the next scene restores it.
+    app.world_mut()
+        .resource_mut::<Assets<Image>>()
+        .insert(texture.image.id(), make_target_image(size + UVec2::ONE))
+        .unwrap();
+    write_text(&surface, "more");
+    app.update();
+    assert_eq!(image_size(&app), size);
 }
 
 #[test]
@@ -1657,7 +1705,7 @@ fn blink_phases_only_rebuild_blinking_content() {
     let cursor_only = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!(cursor_only.changed_rows, 1, "{cursor_only}");
 
-    // A SLOW_BLINK cell restores the full-surface phase rebuild.
+    // A SLOW_BLINK cell's row repaints on a phase flip too, and no other.
     surface.update(|update| {
         let mut cell = TerminalCell::new("x");
         cell.style = TerminalStyle::new().with(StyleFlags::SLOW_BLINK);
@@ -1668,10 +1716,10 @@ fn blink_phases_only_rebuild_blinking_content() {
     advance(&mut app, 0.5);
     app.update();
     let blinking = *app.world().get::<TerminalStats>(entity).unwrap();
-    assert_eq!(blinking.changed_rows, 3, "{blinking}");
+    assert_eq!(blinking.changed_rows, 2, "{blinking}");
 
-    // Overwriting the only blinking cell in a partial repaint ends the
-    // full-surface rebuilds: only the cursor row flips again.
+    // Overwriting the only blinking cell in a partial repaint ends its
+    // rebuilds: only the cursor row flips again.
     drain_pending(&mut app);
     surface.update(|update| {
         update.set_cell((0, 0), &TerminalCell::new("y"));
@@ -2125,9 +2173,9 @@ fn sprites_without_atlas_room_are_not_cached_empty() {
     };
     let mut shapes = ShapeCaches::default();
     let mut stats = TerminalStats::default();
-    let mut resources = SystemState::<(TextResources, ResMut<Assets<Image>>)>::new(app.world_mut());
-    let (mut text, mut images) = resources.get_mut(app.world_mut()).unwrap();
-    let mut cx = text.context(&mut images);
+    let mut resources = SystemState::<TextResources>::new(app.world_mut());
+    let mut text = resources.get_mut(app.world_mut()).unwrap();
+    let mut cx = text.context();
     let mut context = ShapeContext {
         layout: RunLayout {
             config: &config,

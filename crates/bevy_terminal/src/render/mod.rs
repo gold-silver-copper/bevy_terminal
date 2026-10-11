@@ -380,11 +380,11 @@ fn cursor_should_be_visible(snapshot: &TerminalSnapshot) -> bool {
     snapshot.cursor_visible() && position.x < size.width && position.y < size.height
 }
 
-fn blink_hidden(elapsed: f32, frequency_hz: Option<f32>) -> bool {
+fn blink_hidden(elapsed: f64, frequency_hz: Option<f32>) -> bool {
     frequency_hz.is_some_and(|frequency_hz| {
         frequency_hz.is_finite()
             && frequency_hz > 0.0
-            && (elapsed * frequency_hz * 2.0).floor() as u64 % 2 == 1
+            && (elapsed * f64::from(frequency_hz) * 2.0).floor() as u64 % 2 == 1
     })
 }
 
