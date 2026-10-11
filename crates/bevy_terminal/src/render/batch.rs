@@ -209,7 +209,7 @@ fn initialize_terminal(
             }
         };
         let raster_config = physical_config(metrics, raster_scale);
-        let requested = terminal_pixel_size(terminal.surface().size(), &raster_config);
+        let requested = terminal_pixel_size(terminal.surface().info().size, &raster_config);
         let size = if requested.max_element() <= limit {
             requested
         } else {
@@ -224,7 +224,7 @@ fn initialize_terminal(
                     surface: terminal.surface().downgrade(),
                     measurement: Measurement {
                         resize_generation: terminal.surface().info().resize_generation,
-                        grid: terminal.surface().size(),
+                        grid: terminal.surface().info().size,
                         size,
                         raster_scale,
                         physical_cell_size: raster_config.cell_size,
@@ -971,7 +971,7 @@ fn sync_batch_terminal(
     }
     let metrics = resolve_metrics(config, measure.advance);
     let requested = physical_config(metrics, raster_scale);
-    if terminal_pixel_size(surface.size(), &requested).max_element() > texture_limit
+    if terminal_pixel_size(surface.info().size, &requested).max_element() > texture_limit
         || requested.font_size > texture_limit as f32
     {
         return Err(TerminalStatus::TextureTooLarge);
@@ -1011,7 +1011,7 @@ fn sync_batch_terminal(
             .is_some_and(cursor_should_be_visible);
     let blink_changed = text_blink_changed || cursor_blink_changed;
     if retained.snapshot.as_ref().is_some_and(|snapshot| {
-        snapshot.revision() == surface.revision()
+        snapshot.revision() == surface.info().revision
             && !config_changed
             && !text_assets_changed
             && !blink_changed

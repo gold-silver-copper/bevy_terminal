@@ -55,7 +55,7 @@ fn present(mut terminals: Query<(&TerminalTexture, &mut ImageNode, &mut Node)>) 
     for (texture, mut image, mut node) in &mut terminals {
         let Some(geometry) = texture.measured() else { continue; };
         let size = geometry.logical_size();
-        if image.image != texture.image { image.image = texture.image.clone(); }
+        if image.image != *texture.image() { image.image = texture.image().clone(); }
         if node.width != px(size.x) { node.width = px(size.x); }
         if node.height != px(size.y) { node.height = px(size.y); }
     }
@@ -101,7 +101,7 @@ replacement geometry is unavailable.
 Applications choose available space and when to resize. Read `texture.measured()`
 and adopt it with `backend.set_geometry(geometry)`, which rejects stale or foreign
 measurements and updates Ratatui pixel dimensions even when the grid stays the same.
-Compute `geometry.grid_for(available_logical_size)` and use the wrapper's
+Compute `grid_for(available_logical_size, geometry.cell_size())` and use the wrapper's
 `resize_grid` when dimensions change. With a raw backend, resize it and call
 `Terminal::autoresize()` for fullscreen/inline viewports. Fixed viewports require
 an explicit `Terminal::resize()` for the application-owned area. Compare sizes

@@ -104,7 +104,7 @@ fn export_when_ready(
         let row_bytes = size.x as usize * 4;
         let stride = row_bytes.next_multiple_of(256);
         commands
-            .spawn(Readback::texture(texture.image.clone()))
+            .spawn(Readback::texture(texture.image().clone()))
             .observe(
                 move |done: On<ReadbackComplete>,
                       mut commands: Commands,

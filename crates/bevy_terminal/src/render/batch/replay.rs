@@ -522,10 +522,9 @@ fn overflowing_coverage_is_corrected_against_each_background_it_covers() {
     replay.write(2, "   ", above);
     replay.app.update();
     let scene = queued(replay.app.world(), replay.entity).expect("a scene");
+    let theme = crate::render::TerminalTheme::default();
     let luminance = |style: TerminalStyle| {
-        super::scene::luminance(
-            crate::render::TerminalTheme::default().background(style.background),
-        )
+        super::scene::luminance(theme.resolve(style.background, theme.background))
     };
     let backgrounds: Vec<f32> = scene
         .batches

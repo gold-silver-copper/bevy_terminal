@@ -439,11 +439,11 @@ mod tests {
     fn surface_redraw_publishes_the_replacement_as_one_revision() {
         let example = find("popup").expect("popup is in the catalog");
         let surface = draw_surface(example);
-        let before = surface.revision();
+        let before = surface.info().revision;
         let mut state = ExampleState::new(example.slug);
         state.toggled = false;
         redraw_interactive_surface(&surface, example, &state);
-        assert_eq!(surface.revision(), before + 1);
+        assert_eq!(surface.info().revision, before + 1);
     }
 
     #[test]

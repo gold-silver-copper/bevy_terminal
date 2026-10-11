@@ -43,7 +43,7 @@ image copy. It does not test GPU completion, window events, or input forwarding.
    entity's `TerminalTexture`. Use `texture.measured()` before fitting. The returned geometry
    has `cell_size()` and `logical_size()` in logical pixels, `size()` in physical
    pixels, and `raster_scale()` converting between them. Compute
-   `geometry.grid_for(available_logical_size)`, resize the backend when the grid
+   `grid_for(available_logical_size, geometry.cell_size())`, resize the backend when the grid
    changes, then call the context's `autoresize()` to synchronize Ratatui's
    buffers. Fullscreen and inline viewports support this path; fixed viewports
    require an explicit `Terminal::resize` for their application-owned area.
