@@ -1014,14 +1014,14 @@ fn late_family_registration_invalidates_previously_shaped_fallbacks() {
 }
 
 fn glyph(offset_x: f32, columns: &[u32]) -> CachedGlyph {
-    CachedGlyph::new(
-        AssetId::default(),
-        Vec2::new(offset_x, 0.0),
-        Vec2::new(columns.len() as f32, 10.0),
-        Vec4::ZERO,
-        true,
-        super::metrics::InkSpan::of_columns(columns.iter().map(|column| *column > 0)),
-    )
+    CachedGlyph {
+        texture: AssetId::default(),
+        offset: Vec2::new(offset_x, 0.0),
+        size: Vec2::new(columns.len() as f32, 10.0),
+        uv: Vec4::ZERO,
+        alpha_mask: true,
+        ink: super::metrics::InkSpan::of_columns(columns.iter().map(|column| *column > 0)),
+    }
 }
 
 #[test]

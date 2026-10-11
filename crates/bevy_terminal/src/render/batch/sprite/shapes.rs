@@ -2,9 +2,9 @@
 //! drawing (Ghostty's `sprite/draw/{block,geometric_shapes,braille,
 //! powerline,branch}.zig`).
 
-use super::box_drawing::{arc, diagonal_falling, diagonal_rising};
+use super::box_drawing::{Style, arc, diagonal_falling, diagonal_rising, lines};
 use super::canvas::{Canvas, Path, Shade};
-use super::{Corner, Edge, Fraction, Horizontal, Metrics, Thickness, Vertical};
+use super::{Corner, Edge, Horizontal, Metrics, Vertical, fill_grid, grid_cell};
 use bevy::math::DVec2;
 
 /// A block of `width` × `height` cell fractions aligned in the cell.
@@ -58,29 +58,18 @@ fn block_rect(
     [x as i32, y as i32, (x + w) as i32, (y + h) as i32]
 }
 
-/// The quadrants (top-left, top-right, bottom-left, bottom-right) each of
-/// U+2596–259F fills.
-const QUADRANTS: [[bool; 4]; 10] = [
-    [false, false, true, false],
-    [false, false, false, true],
-    [true, false, false, false],
-    [true, false, true, true],
-    [true, false, false, true],
-    [true, true, true, false],
-    [true, true, false, true],
-    [false, true, false, false],
-    [false, true, true, false],
-    [false, true, true, true],
-];
-
-/// The rectangle of quadrant `index` (top-left, top-right, bottom-left,
-/// bottom-right). Complementary rounding makes quadrants overlap at odd
-/// cell sizes.
-fn quadrant(metrics: Metrics, index: usize) -> [i32; 4] {
-    let (z, h, f) = (Fraction::ZERO, Fraction::HALF, Fraction::ONE);
-    let (x0, x1, y0, y1) = [(z, h, z, h), (h, f, z, h), (z, h, h, f), (h, f, h, f)][index];
-    let (w, ht) = (metrics.cell_width, metrics.cell_height);
-    [x0.min(w), y0.min(ht), x1.max(w), y1.max(ht)]
+/// The quadrants each of U+2596–259F fills, as bits (top-left, top-right,
+/// bottom-left, bottom-right from the lowest). Complementary rounding makes
+/// quadrants overlap at odd cell sizes.
+fn quadrants(codepoint: u32) -> u32 {
+    const QUADRANTS: [u32; 10] = [
+        0b0100, 0b1000, 0b0001, 0b1101, 0b1001, 0b0111, 0b1011, 0b0010, 0b0110, 0b1110,
+    ];
+    codepoint
+        .checked_sub(0x2596)
+        .and_then(|index| QUADRANTS.get(index as usize))
+        .copied()
+        .unwrap_or(0)
 }
 
 /// The single opaque rectangle `[x0, y0, x1, y1]` (cell pixels) of a block
@@ -99,13 +88,11 @@ pub(crate) fn solid_block(codepoint: u32, metrics: Metrics) -> Option<[i32; 4]> 
         0x2594 => rect(UPPER, 1.0, eighth(1)),
         0x2595 => rect(RIGHT, eighth(1), 1.0),
         0x2596..=0x259f => {
-            let on = QUADRANTS[(codepoint - 0x2596) as usize];
-            let mut filled = (0..4).filter(|&index| on[index]);
-            let index = filled.next()?;
-            if filled.next().is_some() {
+            let bits = quadrants(codepoint);
+            if bits.count_ones() != 1 {
                 return None;
             }
-            quadrant(metrics, index)
+            grid_cell(metrics, bits.trailing_zeros(), 2)
         }
         _ => return None,
     })
@@ -117,16 +104,11 @@ pub(super) fn block_element(codepoint: u32, canvas: &mut Canvas, metrics: Metric
         0x2591 => full(metrics, canvas, Shade::Light),
         0x2592 => full(metrics, canvas, Shade::Medium),
         0x2593 => full(metrics, canvas, Shade::Dark),
-        0x2596..=0x259f => {
-            let on = QUADRANTS[(codepoint - 0x2596) as usize];
-            for index in (0..4).filter(|&index| on[index]) {
-                let [x0, y0, x1, y1] = quadrant(metrics, index);
+        0x2596..=0x259f => fill_grid(metrics, canvas, quadrants(codepoint), 2),
+        _ => {
+            if let Some([x0, y0, x1, y1]) = solid_block(codepoint, metrics) {
                 canvas.box_(x0, y0, x1, y1, Shade::On);
             }
-        }
-        _ => {
-            let [x0, y0, x1, y1] = solid_block(codepoint, metrics).expect("block element");
-            canvas.box_(x0, y0, x1, y1, Shade::On);
         }
     }
 }
@@ -162,8 +144,7 @@ fn corner_triangle_outline(metrics: Metrics, canvas: &mut Canvas, corner: Corner
         .line_to(b.x, b.y)
         .line_to(c.x, c.y)
         .close();
-    let thick = f64::from(Thickness::Light.pixels(metrics.box_thickness));
-    canvas.inner_stroke_path(&path, thick, Shade::On);
+    canvas.inner_stroke_path(&path, f64::from(metrics.box_thickness), Shade::On);
 }
 
 /// `◢◣◤◥` and `◸◹◺◿`.
@@ -176,14 +157,15 @@ pub(super) fn geometric(codepoint: u32, canvas: &mut Canvas, metrics: Metrics) {
         0x25f8 => corner_triangle_outline(metrics, canvas, Corner::TopLeft),
         0x25f9 => corner_triangle_outline(metrics, canvas, Corner::TopRight),
         0x25fa => corner_triangle_outline(metrics, canvas, Corner::BottomLeft),
-        0x25ff => corner_triangle_outline(metrics, canvas, Corner::BottomRight),
-        _ => unreachable!("geometric sprite {codepoint:x}"),
+        // U+25FF.
+        _ => corner_triangle_outline(metrics, canvas, Corner::BottomRight),
     }
 }
 
 /// Braille, U+2800–28FF: square dots on a 2 × 4 grid, spacing and margins
 /// distributed so every cell size keeps the pattern even.
-pub(super) fn braille(codepoint: u32, canvas: &mut Canvas, width: u32, height: u32) {
+pub(super) fn braille(codepoint: u32, canvas: &mut Canvas, metrics: Metrics) {
+    let (width, height) = (metrics.cell_width, metrics.cell_height);
     let mut w = (width / 4).min(height / 8) as i32;
     let mut x_spacing = (width / 4) as i32;
     let mut y_spacing = (height / 8) as i32;
@@ -228,8 +210,6 @@ pub(super) fn braille(codepoint: u32, canvas: &mut Canvas, width: u32, height: u
     if x_left >= 2 && y_left >= 4 {
         w += 1;
     }
-    let x = [x_margin, x_margin + w + x_spacing];
-    let y: [i32; 4] = std::array::from_fn(|i| y_margin + i as i32 * (w + y_spacing));
     // Bits: dots 1–3 left, 4–6 right, 7 left bottom, 8 right bottom.
     let dots = [
         (0, 0),
@@ -243,22 +223,21 @@ pub(super) fn braille(codepoint: u32, canvas: &mut Canvas, width: u32, height: u
     ];
     for (bit, (column, row)) in dots.into_iter().enumerate() {
         if codepoint & (1 << bit) != 0 {
-            canvas.box_(x[column], y[row], x[column] + w, y[row] + w, Shade::On);
+            let x = x_margin + column * (w + x_spacing);
+            let y = y_margin + row * (w + y_spacing);
+            canvas.box_(x, y, x + w, y + w, Shade::On);
         }
     }
 }
 
 /// The geometric Powerline glyphs, U+E0B0–E0BF, E0D2 and E0D4.
-pub(super) fn powerline(
-    codepoint: u32,
-    canvas: &mut Canvas,
-    width: u32,
-    height: u32,
-    metrics: Metrics,
-) {
-    let (w, h) = (f64::from(width), f64::from(height));
+pub(super) fn powerline(codepoint: u32, canvas: &mut Canvas, metrics: Metrics) {
+    let (w, h) = (
+        f64::from(metrics.cell_width),
+        f64::from(metrics.cell_height),
+    );
     let point = DVec2::new;
-    let thin = f64::from(Thickness::Light.pixels(metrics.box_thickness));
+    let thin = f64::from(metrics.box_thickness);
     // Coefficient approximating a circular arc with a cubic curve.
     let c = (std::f64::consts::SQRT_2 - 1.0) * 4.0 / 3.0;
     let radius = w.min(h / 2.0);
@@ -308,7 +287,8 @@ pub(super) fn powerline(
                 canvas.flip_horizontal();
             }
         }
-        0xe0d2 | 0xe0d4 => {
+        // U+E0D2 and U+E0D4.
+        _ => {
             let thick = f64::from(metrics.box_thickness);
             let mut top = Path::default();
             top.move_to(0.0, 0.0)
@@ -329,39 +309,15 @@ pub(super) fn powerline(
                 canvas.flip_horizontal();
             }
         }
-        _ => unreachable!("powerline sprite {codepoint:x}"),
-    }
-}
-
-/// A centered light line along the cell.
-fn line_middle(metrics: Metrics, canvas: &mut Canvas, horizontal: bool) {
-    let thick = Thickness::Light.pixels(metrics.box_thickness);
-    if horizontal {
-        let y = metrics.cell_height.saturating_sub(thick) / 2;
-        canvas.box_(
-            0,
-            y as i32,
-            metrics.cell_width as i32,
-            (y + thick) as i32,
-            Shade::On,
-        );
-    } else {
-        let x = metrics.cell_width.saturating_sub(thick) / 2;
-        canvas.box_(
-            x as i32,
-            0,
-            (x + thick) as i32,
-            metrics.cell_height as i32,
-            Shade::On,
-        );
     }
 }
 
 /// Branch drawing, U+F5D0–F60D (git graph lines, arcs and nodes).
 pub(super) fn branch(codepoint: u32, canvas: &mut Canvas, metrics: Metrics) {
     use Corner::{BottomLeft as BL, BottomRight as BR, TopLeft as TL, TopRight as TR};
-    let horizontal = |canvas: &mut Canvas| line_middle(metrics, canvas, true);
-    let vertical = |canvas: &mut Canvas| line_middle(metrics, canvas, false);
+    use Style::{Light as L, None as N};
+    let horizontal = |canvas: &mut Canvas| lines(metrics, canvas, [N, L, N, L]);
+    let vertical = |canvas: &mut Canvas| lines(metrics, canvas, [L, N, L, N]);
     let arcs = |canvas: &mut Canvas, corners: &[Corner]| {
         for corner in corners {
             arc(metrics, canvas, *corner);
@@ -446,44 +402,23 @@ pub(super) fn branch(codepoint: u32, canvas: &mut Canvas, metrics: Metrics) {
             horizontal(canvas);
             arcs(canvas, &[TR, BL]);
         }
-        0xf5ee..=0xf60d => {
-            // Nodes: filled on even codepoints; lines to the edges below.
-            let index = codepoint - 0xf5ee;
-            let filled = index.is_multiple_of(2);
-            // [up, right, down, left] for each pair of codepoints.
-            let edges: [[bool; 4]; 16] = [
-                [false, false, false, false],
-                [false, true, false, false],
-                [false, false, false, true],
-                [false, true, false, true],
-                [false, false, true, false],
-                [true, false, false, false],
-                [true, false, true, false],
-                [false, true, true, false],
-                [false, false, true, true],
-                [true, true, false, false],
-                [true, false, false, true],
-                [true, true, true, false],
-                [true, false, true, true],
-                [false, true, true, true],
-                [true, true, false, true],
-                [true, true, true, true],
-            ];
-            branch_node(metrics, canvas, edges[(index / 2) as usize], filled);
+        // Nodes U+F5EE–F60D: filled on even codepoints, with lines to the
+        // edges (bits up, right, down, left from the lowest) of each pair.
+        _ => {
+            const EDGES: [u32; 16] = [0, 2, 8, 10, 4, 1, 5, 6, 12, 3, 9, 7, 13, 14, 11, 15];
+            let index = codepoint.saturating_sub(0xf5ee);
+            let edges = EDGES.get((index / 2) as usize).copied().unwrap_or(0);
+            branch_node(metrics, canvas, edges, index.is_multiple_of(2));
         }
-        _ => unreachable!("branch sprite {codepoint:x}"),
     }
 }
 
-/// A circle, filled or outlined, with lines to the chosen `[up, right,
-/// down, left]` edges, centered on the box-drawing lines.
-fn branch_node(
-    metrics: Metrics,
-    canvas: &mut Canvas,
-    [up, right, down, left]: [bool; 4],
-    filled: bool,
-) {
-    let thick_px = Thickness::Light.pixels(metrics.box_thickness);
+/// A circle, filled or outlined, with lines to the edges set in `edges`
+/// (bits up, right, down, left from the lowest), centered on the
+/// box-drawing lines.
+fn branch_node(metrics: Metrics, canvas: &mut Canvas, edges: u32, filled: bool) {
+    let [up, right, down, left] = std::array::from_fn(|bit| edges & (1 << bit) != 0);
+    let thick_px = metrics.box_thickness;
     let (width, height) = (
         f64::from(metrics.cell_width),
         f64::from(metrics.cell_height),
@@ -534,19 +469,12 @@ fn branch_node(
             Shade::On,
         );
     }
-    let mut path = Path::default();
-    if filled {
-        path.circle(DVec2::new(cx, cy), r);
-        canvas.fill_path(&path, Shade::On);
-    } else {
-        path.circle(DVec2::new(cx, cy), r - thick / 2.0);
-        canvas.stroke_path(&path, thick, Shade::On);
-    }
+    canvas.circle(DVec2::new(cx, cy), r, (!filled).then_some(thick));
 }
 
 /// A light line from the center line fading out towards `to`.
 fn fading_line(metrics: Metrics, canvas: &mut Canvas, to: Edge) {
-    let thick = Thickness::Light.pixels(metrics.box_thickness);
+    let thick = metrics.box_thickness;
     let (width, height) = (metrics.cell_width, metrics.cell_height);
     let h_top = height.saturating_sub(thick) / 2;
     let v_left = width.saturating_sub(thick) / 2;

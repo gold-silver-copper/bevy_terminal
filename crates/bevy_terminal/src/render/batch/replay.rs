@@ -6,7 +6,7 @@
 //! linear light and an 8-bit sRGB target, so each draw rounds once as it does
 //! on the GPU. It is a reference for scene *equivalence*, not for GPU pixels.
 
-use super::probe::{BUNDLED, ProbeFont, isolate_fonts, load_faces};
+use super::probe::{isolate_fonts, load_faces};
 use super::*;
 use crate::render::{BlinkConfig, CursorConfig, RasterConfig, TerminalSizing};
 use crate::scene::{TerminalCell, TerminalColor, TerminalStyle};
@@ -216,11 +216,7 @@ impl Replay {
         ))
         .init_asset::<Image>();
         isolate_fonts(&mut app);
-        let (dir, files) = BUNDLED
-            .iter()
-            .find(|(dir, _)| *dir == family)
-            .expect("bundled family");
-        let faces = load_faces(&mut app, &ProbeFont::Bundled(dir, *files));
+        let faces = load_faces(&mut app, family);
         let surface = TerminalSurface::new(grid);
         let entity = app
             .world_mut()

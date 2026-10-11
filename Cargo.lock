@@ -1771,7 +1771,6 @@ dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
  "fontique",
- "png",
  "skrifa",
  "unicode-segmentation",
  "unicode-width",

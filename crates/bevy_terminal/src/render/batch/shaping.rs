@@ -225,24 +225,13 @@ pub(super) struct CachedGlyph {
     pub(super) ink: InkSpan,
 }
 
-impl CachedGlyph {
-    pub(super) fn new(
-        texture: AssetId<Image>,
-        offset: Vec2,
-        size: Vec2,
-        uv: Vec4,
-        alpha_mask: bool,
-        ink: InkSpan,
-    ) -> Self {
-        Self {
-            texture,
-            offset,
-            size,
-            uv,
-            alpha_mask,
-            ink,
-        }
-    }
+/// The inked columns of a `size` bitmap whose texel `index` (row by row)
+/// has the alpha `alpha(index)`.
+fn ink_of(size: UVec2, alpha: impl Fn(usize) -> Option<u8>) -> InkSpan {
+    let (width, height) = (size.x as usize, size.y as usize);
+    InkSpan::of_columns(
+        (0..width).map(|x| (0..height).any(|y| alpha(y * width + x).is_some_and(|a| a > 0))),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -310,15 +299,18 @@ pub(super) fn resample(pixels: &[u8], from: UVec2, to: UVec2) -> Vec<u8> {
             ]
         })
         .collect();
+    // Adds `pixel` weighted by `weight` to `sum`.
+    let add = |sum: &mut [f32; 4], pixel: Option<&[f32; 4]>, weight: f32| {
+        for (sum, channel) in sum.iter_mut().zip(pixel.into_iter().flatten()) {
+            *sum += channel * weight;
+        }
+    };
     let mut horizontal = vec![[0.0f32; 4]; (to.x * from.y) as usize];
-    for y in 0..from.y as usize {
-        for (x, taps) in columns.iter().enumerate() {
-            let out = &mut horizontal[y * to.x as usize + x];
+    let source_rows = premultiplied.chunks(from.x.max(1) as usize);
+    for (source, row) in source_rows.zip(horizontal.chunks_mut(to.x.max(1) as usize)) {
+        for (out, taps) in row.iter_mut().zip(&columns) {
             for &(j, w) in taps {
-                let p = premultiplied[y * from.x as usize + j];
-                for c in 0..4 {
-                    out[c] += p[c] * w;
-                }
+                add(out, source.get(j), w);
             }
         }
     }
@@ -327,10 +319,7 @@ pub(super) fn resample(pixels: &[u8], from: UVec2, to: UVec2) -> Vec<u8> {
         for x in 0..to.x as usize {
             let mut sum = [0.0f32; 4];
             for &(j, w) in taps {
-                let p = horizontal[j * to.x as usize + x];
-                for c in 0..4 {
-                    sum[c] += p[c] * w;
-                }
+                add(&mut sum, horizontal.get(j * to.x as usize + x), w);
             }
             let a = sum[3].clamp(0.0, 1.0);
             let unpremultiply = |v: f32| {
@@ -449,9 +438,7 @@ impl UnifiedGlyphAtlas {
             UVec2::new(source.width, source.height),
             scaled,
         );
-        let ink = InkSpan::of_columns((0..scaled.x as usize).map(|x| {
-            (0..scaled.y as usize).any(|y| pixels[(y * scaled.x as usize + x) * 4 + 3] > 0)
-        }));
+        let ink = ink_of(scaled, |index| pixels.get(index * 4 + 3).copied());
         let uv = match self.glyphs.get(&AtlasKey::Source(key)) {
             Some(uv) => *uv,
             None => self.insert(AtlasKey::Source(key), scaled, pixels)?,
@@ -610,23 +597,27 @@ impl ShapeCaches {
         }
         let retired = self.retired.as_mut()?;
         let index = retired.lookup_current(face, text, columns)?;
-        let glyphs = retired.entries[index].clone();
-        self.insert_entry(face, text, columns, glyphs)
+        let glyphs = retired.entries.get(index)?.clone();
+        Some(self.insert_entry(face, text, columns, glyphs))
     }
 
     pub(super) fn lookup_current(&self, face: Face, text: &str, columns: u16) -> Option<usize> {
-        let shapes = if columns == 1 {
-            &self.narrow[face.index()]
-        } else {
+        if columns != 1 {
             return self.wide.get(&(columns, face))?.get(text).copied();
-        };
+        }
+        let shapes = self.narrow.get(face.index())?;
         match ascii_key(text) {
             Some(byte) => {
-                let index = shapes.ascii[usize::from(byte)];
+                let index = *shapes.ascii.get(usize::from(byte))?;
                 (index != ASCII_UNCACHED).then_some(index as usize)
             }
             None => shapes.other.get(text).copied(),
         }
+    }
+
+    /// The glyphs of the run at `index`.
+    pub(super) fn entry(&self, index: usize) -> &[CachedGlyph] {
+        self.entries.get(index).map_or(&[], Vec::as_slice)
     }
 
     pub(super) fn insert(
@@ -639,28 +630,25 @@ impl ShapeCaches {
         if Self::bytes(text, &glyphs) > MAX_SHAPE_BYTES {
             return Cow::Owned(glyphs);
         }
-        let index = self
-            .insert_entry(face, text, columns, glyphs)
-            .expect("a run within the byte limit is cached");
-        Cow::Borrowed(&self.entries[index])
+        let index = self.insert_entry(face, text, columns, glyphs);
+        Cow::Borrowed(self.entry(index))
     }
 
     fn bytes(text: &str, glyphs: &[CachedGlyph]) -> usize {
         text.len() + size_of_val(glyphs)
     }
 
+    /// Caches a run within the byte limit, returning its index.
     fn insert_entry(
         &mut self,
         face: Face,
         text: &str,
         columns: u16,
         glyphs: Vec<CachedGlyph>,
-    ) -> Option<usize> {
+    ) -> usize {
         let bytes = Self::bytes(text, &glyphs);
-        if bytes > MAX_SHAPE_BYTES {
-            return None;
-        }
-        if self.entries.len() >= MAX_SHAPE_ENTRIES || bytes > MAX_SHAPE_BYTES - self.retained_bytes
+        if self.entries.len() >= MAX_SHAPE_ENTRIES
+            || bytes > MAX_SHAPE_BYTES.saturating_sub(self.retained_bytes)
         {
             // Scene construction has already consumed earlier borrowed runs.
             // Retire every lookup table with the entries so no index goes
@@ -677,16 +665,15 @@ impl ShapeCaches {
                 .entry((columns, face))
                 .or_default()
                 .insert(text.to_owned(), index);
-            return Some(index);
-        }
-        let shapes = &mut self.narrow[face.index()];
-        match ascii_key(text) {
-            Some(byte) => shapes.ascii[usize::from(byte)] = index as u32,
-            None => {
-                shapes.other.insert(text.to_owned(), index);
+        } else if let Some(shapes) = self.narrow.get_mut(face.index()) {
+            match ascii_key(text).and_then(|byte| shapes.ascii.get_mut(usize::from(byte))) {
+                Some(slot) => *slot = index as u32,
+                None => {
+                    shapes.other.insert(text.to_owned(), index);
+                }
             }
         }
-        Some(index)
+        index
     }
 
     /// Drops both generations (their atlas entries are gone).
@@ -887,7 +874,7 @@ pub(super) fn cached_shape<'s>(
         columns,
     } = target_run;
     if let Some(index) = shapes.lookup(face, text, columns) {
-        return Cow::Borrowed(&shapes.entries[index]);
+        return Cow::Borrowed(shapes.entry(index));
     }
     stats.shape_misses = stats.shape_misses.saturating_add(1);
     if let Some(codepoint) = sprite::sprite_codepoint(text) {
@@ -902,7 +889,7 @@ pub(super) fn cached_shape<'s>(
             cell_height: cell.y,
             box_thickness: raster.box_thickness,
         };
-        let Some(drawn) = sprite::draw(codepoint, cell.x, cell.y, metrics) else {
+        let Some(drawn) = sprite::draw(codepoint, metrics) else {
             return shapes.insert(face, text, columns, Vec::new());
         };
         let Some(uv) = glyph_atlas.cache_sprite(codepoint, cell, &drawn) else {
@@ -911,18 +898,14 @@ pub(super) fn cached_shape<'s>(
             debug!("bevy_terminal: no atlas space for sprite {text:?}");
             return Cow::Owned(Vec::new());
         };
-        let width = drawn.size.x as usize;
-        let ink = InkSpan::of_columns(
-            (0..width).map(|x| (0..drawn.size.y as usize).any(|y| drawn.alpha[y * width + x] > 0)),
-        );
-        let glyph = CachedGlyph::new(
-            glyph_atlas.id,
-            drawn.offset.as_vec2(),
-            drawn.size.as_vec2(),
+        let glyph = CachedGlyph {
+            texture: glyph_atlas.id,
+            offset: drawn.offset.as_vec2(),
+            size: drawn.size.as_vec2(),
             uv,
-            true,
-            ink,
-        );
+            alpha_mask: true,
+            ink: ink_of(drawn.size, |index| drawn.alpha.get(index).copied()),
+        };
         return shapes.insert(face, text, columns, vec![glyph]);
     }
     let Some(shaped) = shape_run(text, face, layout, cx) else {
@@ -945,86 +928,86 @@ pub(super) fn cached_shape<'s>(
         },
         None => (shaped, translate + centered, None),
     };
-    let cached = shaped
-        .glyphs
-        .into_iter()
-        .map(|glyph| {
-            let atlas_size = cx
-                .images
-                .get(glyph.atlas_info.texture)?
-                .texture_descriptor
-                .size;
-            let rect = glyph.atlas_info.rect;
-            let size = rect.size();
-            let source = SourceGlyph {
-                texture: glyph.atlas_info.texture,
-                x: rect.min.x as u32,
-                y: rect.min.y as u32,
-                width: size.x as u32,
-                height: size.y as u32,
-                scaled: None,
-            };
-            // Atlas texels must land on physical pixel boundaries. Bevy's layout positions
-            // can retain fractional shaping offsets even though the glyph bitmap is an
-            // integer-sized raster image.
-            let position = (glyph.position - size * 0.5).map(super::metrics::snap);
-            if let Some(Stretch { factors, measured }) = stretch {
-                // Resample the part of the bitmap inside the measured box so
-                // its ink maps exactly onto the target box.
-                let crop = Rect::from_corners(position, position + size).intersect(measured);
-                if crop.is_empty() {
-                    return Some(None);
-                }
-                let min = ((crop.min - measured.min) * factors).round();
-                let max = ((crop.max - measured.min) * factors).round();
-                let scaled = (max - min).max(Vec2::ONE).as_uvec2();
-                let cropped = SourceGlyph {
-                    x: source.x + (crop.min.x - position.x) as u32,
-                    y: source.y + (crop.min.y - position.y) as u32,
-                    width: crop.width() as u32,
-                    height: crop.height() as u32,
-                    ..source
-                };
-                if let Some((uv, ink)) = glyph_atlas.cache_scaled(cropped, scaled, cx.images) {
-                    return Some(Some(CachedGlyph::new(
-                        glyph_atlas.id,
-                        measured.min + translate + min,
-                        scaled.as_vec2(),
-                        uv,
-                        glyph.atlas_info.is_alpha_mask,
-                        ink,
-                    )));
-                }
-                debug!("bevy_terminal: no atlas space to stretch {text:?}; drawn as rasterized");
+    // A stretched glyph drawn unstretched (no atlas room) is not cached, so
+    // the next shaping tries again.
+    let mut complete = true;
+    let mut cached = Vec::with_capacity(shaped.glyphs.len());
+    for glyph in shaped.glyphs {
+        let Some(image) = cx.images.get(glyph.atlas_info.texture) else {
+            cx.failure
+                .get_or_insert_with(|| ShapingFailure::AtlasUnavailable {
+                    fonts: Box::new(config.font.clone()),
+                });
+            return Cow::Borrowed(&[]);
+        };
+        let rect = glyph.atlas_info.rect;
+        let size = rect.size();
+        let source = SourceGlyph {
+            texture: glyph.atlas_info.texture,
+            x: rect.min.x as u32,
+            y: rect.min.y as u32,
+            width: size.x as u32,
+            height: size.y as u32,
+            scaled: None,
+        };
+        // Atlas texels must land on physical pixel boundaries. Bevy's layout positions
+        // can retain fractional shaping offsets even though the glyph bitmap is an
+        // integer-sized raster image.
+        let position = (glyph.position - size * 0.5).map(super::metrics::snap);
+        let alpha_mask = glyph.atlas_info.is_alpha_mask;
+        if let Some(Stretch { factors, measured }) = stretch {
+            // Resample the part of the bitmap inside the measured box so
+            // its ink maps exactly onto the target box.
+            let crop = Rect::from_corners(position, position + size).intersect(measured);
+            if crop.is_empty() {
+                continue;
             }
-            let ink = inked_columns(cx.images.get(glyph.atlas_info.texture)?, rect);
-            let source_uv = Vec4::new(
-                rect.min.x / atlas_size.width as f32,
-                rect.min.y / atlas_size.height as f32,
-                rect.max.x / atlas_size.width as f32,
-                rect.max.y / atlas_size.height as f32,
-            );
-            let (texture, uv) = glyph_atlas
-                .cache(source, cx.images)
-                .map_or((source.texture, source_uv), |uv| (glyph_atlas.id, uv));
-            Some(Some(CachedGlyph::new(
-                texture,
-                position + translate,
-                size,
-                uv,
-                glyph.atlas_info.is_alpha_mask,
-                ink,
-            )))
-        })
-        .collect::<Option<Vec<_>>>()
-        .map(|glyphs| glyphs.into_iter().flatten().collect::<Vec<_>>());
-    let Some(cached) = cached else {
-        cx.failure
-            .get_or_insert_with(|| ShapingFailure::AtlasUnavailable {
-                fonts: Box::new(config.font.clone()),
-            });
-        return Cow::Borrowed(&[]);
-    };
+            let min = ((crop.min - measured.min) * factors).round();
+            let max = ((crop.max - measured.min) * factors).round();
+            let scaled = (max - min).max(Vec2::ONE).as_uvec2();
+            let cropped = SourceGlyph {
+                x: source.x + (crop.min.x - position.x) as u32,
+                y: source.y + (crop.min.y - position.y) as u32,
+                width: crop.width() as u32,
+                height: crop.height() as u32,
+                ..source
+            };
+            if let Some((uv, ink)) = glyph_atlas.cache_scaled(cropped, scaled, cx.images) {
+                cached.push(CachedGlyph {
+                    texture: glyph_atlas.id,
+                    offset: measured.min + translate + min,
+                    size: scaled.as_vec2(),
+                    uv,
+                    alpha_mask,
+                    ink,
+                });
+                continue;
+            }
+            debug!("bevy_terminal: no atlas space to stretch {text:?}; drawn as rasterized");
+            complete = false;
+        }
+        let atlas_size = image.texture_descriptor.size;
+        let source_uv = Vec4::new(
+            rect.min.x / atlas_size.width as f32,
+            rect.min.y / atlas_size.height as f32,
+            rect.max.x / atlas_size.width as f32,
+            rect.max.y / atlas_size.height as f32,
+        );
+        let (texture, uv) = glyph_atlas
+            .cache(source, cx.images)
+            .map_or((source.texture, source_uv), |uv| (glyph_atlas.id, uv));
+        cached.push(CachedGlyph {
+            texture,
+            offset: position + translate,
+            size,
+            uv,
+            alpha_mask,
+            ink: inked_columns(image, rect),
+        });
+    }
+    if !complete {
+        return Cow::Owned(cached);
+    }
     shapes.insert(face, text, columns, cached)
 }
 

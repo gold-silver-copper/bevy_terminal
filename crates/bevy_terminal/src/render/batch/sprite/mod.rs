@@ -30,22 +30,6 @@ pub(crate) struct Metrics {
     pub(crate) box_thickness: u32,
 }
 
-/// Stroke weights of box-drawing lines.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Thickness {
-    Light,
-    Heavy,
-}
-
-impl Thickness {
-    fn pixels(self, base: u32) -> u32 {
-        match self {
-            Thickness::Light => base,
-            Thickness::Heavy => base * 2,
-        }
-    }
-}
-
 /// A fraction of the cell, with Ghostty's rounding: a minimum edge rounds the
 /// complementary distance from the far edge, so adjoining fills meet exactly.
 #[derive(Clone, Copy, Debug)]
@@ -53,11 +37,9 @@ struct Fraction(f64);
 
 impl Fraction {
     const ZERO: Self = Self(0.0);
-    const QUARTER: Self = Self(0.25);
     const THIRD: Self = Self(1.0 / 3.0);
     const HALF: Self = Self(0.5);
     const TWO_THIRDS: Self = Self(2.0 / 3.0);
-    const THREE_QUARTERS: Self = Self(0.75);
     const ONE: Self = Self(1.0);
 
     fn eighths(n: u32) -> Self {
@@ -98,6 +80,30 @@ fn fill(
         y1.max(metrics.cell_height),
         Shade::On,
     );
+}
+
+/// The rectangle `[x0, y0, x1, y1]` of cell `index` (row-major) of a grid
+/// two cells wide and `rows` tall over the cell.
+fn grid_cell(metrics: Metrics, index: u32, rows: u32) -> [i32; 4] {
+    let (column, row) = (index % 2, index / 2);
+    let x = |n: u32| Fraction(f64::from(n) / 2.0);
+    let y = |n: u32| Fraction(f64::from(n) / f64::from(rows));
+    let (width, height) = (metrics.cell_width, metrics.cell_height);
+    [
+        x(column).min(width),
+        y(row).min(height),
+        x(column + 1).max(width),
+        y(row + 1).max(height),
+    ]
+}
+
+/// Fills the cells of a two-column, `rows`-row grid whose bits (row-major)
+/// are set in `bits`: quadrants, sextants and octants.
+fn fill_grid(metrics: Metrics, canvas: &mut Canvas, bits: u32, rows: u32) {
+    for index in (0..2 * rows).filter(|index| bits & (1 << index) != 0) {
+        let [x0, y0, x1, y1] = grid_cell(metrics, index, rows);
+        canvas.box_(x0, y0, x1, y1, Shade::On);
+    }
 }
 
 /// Where a figure sits in the cell.
@@ -168,21 +174,21 @@ pub(crate) fn sprite_codepoint(text: &str) -> Option<u32> {
     (chars.next().is_none() && is_sprite(codepoint)).then_some(codepoint)
 }
 
-/// Draws `codepoint` in a `width` × `height` pixel box (a cell, or a wide
-/// cell's span); `None` when it is not a sprite or draws nothing.
-pub(crate) fn draw(codepoint: u32, width: u32, height: u32, metrics: Metrics) -> Option<Sprite> {
-    if !is_sprite(codepoint) || width == 0 || height == 0 {
+/// Draws `codepoint` in the metrics' cell (a cell, or a wide cell's span);
+/// `None` when it is not a sprite or draws nothing.
+pub(crate) fn draw(codepoint: u32, metrics: Metrics) -> Option<Sprite> {
+    if !is_sprite(codepoint) || metrics.cell_width == 0 || metrics.cell_height == 0 {
         return None;
     }
-    let mut canvas = Canvas::new(width, height);
+    let mut canvas = Canvas::new(metrics.cell_width, metrics.cell_height);
     match codepoint {
         0x2500..=0x257f => box_drawing::draw(codepoint, &mut canvas, metrics),
         0x2580..=0x259f => shapes::block_element(codepoint, &mut canvas, metrics),
         0x25e2..=0x25ff => shapes::geometric(codepoint, &mut canvas, metrics),
-        0x2800..=0x28ff => shapes::braille(codepoint, &mut canvas, width, height),
-        0xe0b0..=0xe0d4 => shapes::powerline(codepoint, &mut canvas, width, height, metrics),
+        0x2800..=0x28ff => shapes::braille(codepoint, &mut canvas, metrics),
+        0xe0b0..=0xe0d4 => shapes::powerline(codepoint, &mut canvas, metrics),
         0xf5d0..=0xf60d => shapes::branch(codepoint, &mut canvas, metrics),
-        _ => legacy::draw(codepoint, &mut canvas, width, height, metrics),
+        _ => legacy::draw(codepoint, &mut canvas, metrics),
     }
     canvas.finish()
 }
