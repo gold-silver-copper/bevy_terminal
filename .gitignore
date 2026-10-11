@@ -1,4 +1,3 @@
 /target/
 /out/
 *.png
-!ghostty-parity/ratty-captures/*.png

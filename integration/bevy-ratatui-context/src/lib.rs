@@ -55,7 +55,7 @@ mod tests {
             PluginGroupBuilder::start::<RatatuiPlugins>(),
         ));
         let font = Font::from_bytes(
-            include_bytes!("../../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")
+            include_bytes!("../../../crates/bevy_terminal/assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")
                 .to_vec(),
         );
         let font = app.world_mut().resource_mut::<Assets<Font>>().add(font);

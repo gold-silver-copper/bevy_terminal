@@ -14,10 +14,10 @@
 //! background over a colored window clear color (a check for straight-alpha
 //! compositing of the sRGB texture).
 //!
-//! Press `Space`/`Tab` (or `Shift+Tab` to go back) to cycle through the vendored
-//! font families under `assets/fonts/`, so glyph coverage and metrics can be
-//! compared per font; the current family is shown in the first line and the
-//! window title.
+//! Press `Space`/`Tab` (or `Shift+Tab` to go back) to cycle through the font
+//! families vendored under `crates/bevy_terminal/assets/fonts/`, so glyph
+//! coverage and metrics can be compared per font; the current family is shown
+//! in the first line and the window title.
 //!
 //! When the window is too small for the whole scene, scroll with `↑`/`↓` or
 //! `j`/`k` (one line), `PageUp`/`PageDown` (one page), `Home`/`End`, or the
@@ -45,58 +45,12 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-/// Font families vendored under `assets/fonts/`, loaded from disk at runtime so
-/// the large optional families stay out of the published crate. Each entry is
-/// (display name, directory, regular, bold, italic, bold-italic).
-const FAMILIES: [(&str, &str, &str, &str, &str, &str); 6] = [
-    (
-        "Iosevka Fixed 34.8.0",
-        "iosevka-fixed",
-        "IosevkaFixed-Regular.ttf",
-        "IosevkaFixed-Bold.ttf",
-        "IosevkaFixed-Italic.ttf",
-        "IosevkaFixed-BoldItalic.ttf",
-    ),
-    (
-        "JetBrains Mono 2.304",
-        "jetbrains-mono",
-        "JetBrainsMono-Regular.ttf",
-        "JetBrainsMono-Bold.ttf",
-        "JetBrainsMono-Italic.ttf",
-        "JetBrainsMono-BoldItalic.ttf",
-    ),
-    (
-        "Cascadia Mono 2407.24",
-        "cascadia-mono",
-        "CascadiaMono-Regular.ttf",
-        "CascadiaMono-Bold.ttf",
-        "CascadiaMono-Italic.ttf",
-        "CascadiaMono-BoldItalic.ttf",
-    ),
-    (
-        "Hack 3.003",
-        "hack",
-        "Hack-Regular.ttf",
-        "Hack-Bold.ttf",
-        "Hack-Italic.ttf",
-        "Hack-BoldItalic.ttf",
-    ),
-    (
-        "DejaVu Sans Mono 2.37",
-        "dejavu-sans-mono",
-        "DejaVuSansMono.ttf",
-        "DejaVuSansMono-Bold.ttf",
-        "DejaVuSansMono-Oblique.ttf",
-        "DejaVuSansMono-BoldOblique.ttf",
-    ),
-    (
-        "Source Code Pro 2.042",
-        "source-code-pro",
-        "SourceCodePro-Regular.ttf",
-        "SourceCodePro-Bold.ttf",
-        "SourceCodePro-It.ttf",
-        "SourceCodePro-BoldIt.ttf",
-    ),
+/// Font families vendored with the core crate, loaded from disk at runtime.
+/// Each entry is (display name, directory, file name prefix).
+const FAMILIES: [(&str, &str, &str); 3] = [
+    ("JetBrains Mono 2.304", "jetbrains-mono", "JetBrainsMono"),
+    ("Cascadia Mono 2407.24", "cascadia-mono", "CascadiaMono"),
+    ("Hack 3.003", "hack", "Hack"),
 ];
 
 const COLUMNS: u16 = 132;
@@ -176,26 +130,23 @@ impl FontCycle {
 
 /// Loads every vendored family that is present on disk; missing files are skipped.
 fn load_families(app: &mut App) -> Vec<LoadedFamily> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/bevy_terminal/assets/fonts");
     let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
     FAMILIES
         .iter()
-        .filter_map(|(name, dir, regular, bold, italic, bold_italic)| {
-            let mut load = |file: &str| {
-                std::fs::read(root.join(dir).join(file))
+        .filter_map(|(name, dir, prefix)| {
+            let mut load = |face: &str| {
+                std::fs::read(root.join(dir).join(format!("{prefix}-{face}.ttf")))
                     .ok()
                     .map(|bytes| fonts.add(Font::from_bytes(bytes)))
             };
-            let regular = load(regular)?;
-            let bold = load(bold)?;
-            let italic = load(italic)?;
-            let bold_italic = load(bold_italic)?;
             Some(LoadedFamily {
                 name,
-                regular,
-                bold,
-                italic,
-                bold_italic,
+                regular: load("Regular")?,
+                bold: load("Bold")?,
+                italic: load("Italic")?,
+                bold_italic: load("BoldItalic")?,
             })
         })
         .collect()

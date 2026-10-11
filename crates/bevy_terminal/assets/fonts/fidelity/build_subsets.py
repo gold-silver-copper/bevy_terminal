@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Rebuild pinned coverage fixtures; manual maintenance only, never run by CI.
+"""Rebuild the pinned test font subsets; manual maintenance only, never run by CI.
 
 Usage: python3 build_subsets.py SOURCE_DIRECTORY
 Install fonttools==4.63.0 first. Downloads are revision/hash pinned in the manifest.
-The source directory also supports full-font versus subset raster verification.
 """
 
 import hashlib
@@ -26,9 +25,7 @@ outputs = {}
 for source in json.loads((root / "subset-sources.json").read_text()):
     original = cache / source["input_name"]
     if not original.exists():
-        if "local" in source:
-            data = (root / source["local"]).read_bytes()
-        elif "archive" in source:
+        if "archive" in source:
             archive = zipfile.ZipFile(io.BytesIO(urllib.request.urlopen(source["archive"]).read()))
             member = [n for n in archive.namelist()
                       if n.rsplit("/", 1)[-1] == source["archive_member"]]
@@ -63,7 +60,7 @@ for source in json.loads((root / "subset-sources.json").read_text()):
         cff.fontNames = [names[6]]
         cff.topDictIndex[0].FullName = names[4]
         cff.topDictIndex[0].FamilyName = names[1]
-    path = (root / source["output"]).resolve()
+    path = root / source["output"]
     font.save(path)
     outputs[path.name] = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                           "bytes": path.stat().st_size}

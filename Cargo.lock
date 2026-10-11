@@ -1783,10 +1783,8 @@ dependencies = [
  "bevy",
  "bevy_image_export",
  "bevy_terminal",
- "fontique",
  "palette",
  "ratatui",
- "skrifa",
 ]
 
 [[package]]
