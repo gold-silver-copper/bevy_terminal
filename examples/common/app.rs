@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use bevy::{prelude::*, window::PrimaryWindow};
+use bevy_terminal_ratatui::bevy_terminal::render::grid_for;
 use bevy_terminal_ratatui::prelude::{TerminalRenderConfig, TerminalSystems, TerminalTexture};
 use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 
@@ -45,8 +46,8 @@ pub fn fit_grid(
     if !terminal.backend_mut().set_geometry(geometry) {
         return false;
     }
-    let grid = geometry.grid_for(available);
-    if terminal.surface().size() == grid {
+    let grid = grid_for(available, geometry.cell_size());
+    if terminal.surface().info().size == grid {
         return false;
     }
     terminal.resize_grid(grid.width, grid.height);
@@ -113,8 +114,8 @@ fn present_ui(
         if node.height != px(size.y) {
             node.height = px(size.y);
         }
-        if image.image != texture.image {
-            image.image = texture.image.clone();
+        if image.image != *texture.image() {
+            image.image = texture.image().clone();
         }
     }
 }

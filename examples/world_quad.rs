@@ -84,11 +84,11 @@ fn present(
         let Some(existing) = materials.get(&material.0) else {
             continue;
         };
-        if existing.base_color_texture.as_ref() != Some(&texture.image) {
+        if existing.base_color_texture.as_ref() != Some(texture.image()) {
             materials
                 .get_mut(&material.0)
                 .expect("material exists")
-                .base_color_texture = Some(texture.image.clone());
+                .base_color_texture = Some(texture.image().clone());
         }
     }
 }

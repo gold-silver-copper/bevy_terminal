@@ -418,10 +418,10 @@ mod tests {
     fn live_redraw_submits_one_surface_revision_without_a_clear_frame() {
         let mut gallery = Gallery::new(0);
         let surface = gallery.surface();
-        let before = surface.revision();
+        let before = surface.info().revision;
         assert!(gallery.state_mut().tick());
         gallery.redraw();
-        assert_eq!(surface.revision(), before + 1);
+        assert_eq!(surface.info().revision, before + 1);
         assert!(
             surface
                 .snapshot()
@@ -523,7 +523,10 @@ mod tests {
         gallery.redraw();
 
         let snapshot = gallery.surface().snapshot();
-        assert_eq!(snapshot[(20, 12)].symbol(), ratatui::symbols::block::FULL);
-        assert_eq!(snapshot[(21, 12)].symbol(), "╳");
+        assert_eq!(
+            snapshot.cell((20, 12)).unwrap().symbol(),
+            ratatui::symbols::block::FULL
+        );
+        assert_eq!(snapshot.cell((21, 12)).unwrap().symbol(), "╳");
     }
 }

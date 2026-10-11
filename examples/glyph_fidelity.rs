@@ -569,11 +569,11 @@ fn on_ready(
         commands.entity(entity).insert(CaptureStarted);
         if options.export {
             let dir = format!("target/glyph-fidelity/{}/{}x", case.dir, case.scale);
-            pending.0.push((texture.image.clone(), dir));
+            pending.0.push((texture.image().clone(), dir));
         }
         if options.check {
             commands
-                .spawn(Readback::texture(texture.image.clone()))
+                .spawn(Readback::texture(texture.image().clone()))
                 .observe(
                     move |done: On<ReadbackComplete>,
                           textures: Query<&TerminalTexture>,

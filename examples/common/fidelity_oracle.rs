@@ -353,7 +353,7 @@ pub fn sprite_overshoots(symbol: &str) -> bool {
 /// Cells the anchor at `column` occupies: its declared span, cut at the row's
 /// end and at the first cell that is not its continuation.
 pub fn span(cells: &[TerminalCell], column: usize) -> u32 {
-    let declared = usize::from(cells[column].columns()).min(cells.len() - column);
+    let declared = usize::from(cells[column].occupancy().columns()).min(cells.len() - column);
     (1..declared)
         .take_while(|offset| cells[column + offset].is_continuation())
         .count() as u32

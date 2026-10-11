@@ -79,7 +79,7 @@ fn render_headless_with(
             }
             *started = true;
             commands
-                .spawn(Readback::texture(texture.image.clone()))
+                .spawn(Readback::texture(texture.image().clone()))
                 .observe(
                     |done: On<ReadbackComplete>,
                      sink: Res<Captured>,
@@ -423,7 +423,7 @@ fn render_after_steps(
                         .query::<&TerminalTexture>()
                         .single(world)
                         .expect("one terminal")
-                        .image
+                        .image()
                         .clone();
                     world.spawn(Readback::texture(image)).observe(
                         |done: On<ReadbackComplete>,

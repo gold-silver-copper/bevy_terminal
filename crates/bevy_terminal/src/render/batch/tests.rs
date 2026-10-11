@@ -101,7 +101,7 @@ fn spawned_terminals_own_distinct_textures_and_can_be_despawned() {
         .map(|(entity, terminal, texture, _)| {
             (
                 entity,
-                terminal.surface().size(),
+                terminal.surface().info().size,
                 texture.image.id(),
                 texture.geometry.size(),
             )
@@ -398,7 +398,7 @@ fn replacing_surface_with_equal_revision_refreshes_retained_content() {
     let second = TerminalSurface::new((4, 1));
     write_text(&first, "AAAA");
     write_text(&second, "BBBB");
-    assert_eq!(first.revision(), second.revision());
+    assert_eq!(first.info().revision, second.info().revision);
     let entity = app.world_mut().spawn(TerminalRenderer::new(first)).id();
     for _ in 0..4 {
         app.update();
@@ -788,7 +788,7 @@ fn font_driven_cells_measure_the_embedded_font() {
     );
     assert_eq!(texture.geometry.size(), UVec2::new(48, 27));
     assert_eq!(
-        texture.geometry.grid_for(Vec2::new(125.0, 60.0)),
+        grid_for(Vec2::new(125.0, 60.0), texture.geometry.cell_size()),
         GridSize::new(10, 2)
     );
 

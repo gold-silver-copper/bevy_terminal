@@ -383,7 +383,7 @@ fn readbacks(
         }
         started.push(entity);
         commands
-            .spawn(Readback::texture(texture.image.clone()))
+            .spawn(Readback::texture(texture.image().clone()))
             .observe(
                 move |readback: On<ReadbackComplete>, captures: Res<Captures>| {
                     let mut captures = captures.0.lock().unwrap();
@@ -443,7 +443,8 @@ fn check(
         let font_size = geometry.physical_font_size();
         if let Some((image, last, _)) = &case.last {
             assert_eq!(
-                texture.image, *image,
+                *texture.image(),
+                *image,
                 "stable image handle across {}",
                 PHASES[frame.phase]
             );
@@ -471,7 +472,7 @@ fn check(
             assert_eq!(raw, case.last.as_ref().unwrap().2, "idle image changed");
         }
         // GPU row padding is not part of the image and need not stay identical.
-        case.last = Some((texture.image.clone(), geometry.clone(), raw.clone()));
+        case.last = Some((texture.image().clone(), geometry.clone(), raw.clone()));
         assert!(
             raw.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255),
             "opaque backgrounds remain opaque"
@@ -497,7 +498,7 @@ fn check(
             } else {
                 1
             };
-            if anchor.symbol() != expected || anchor.columns() != span {
+            if anchor.symbol() != expected || anchor.occupancy().columns() != span {
                 failures.push(format!(
                     "{} row {y}: required symbol/occupancy lost",
                     case.name

@@ -73,14 +73,24 @@ pub enum TerminalStatus {
 /// image in place.
 #[derive(Clone, Debug, PartialEq, Component)]
 pub struct TerminalTexture {
-    /// Whether the dimensions below are currently authoritative.
-    pub status: TerminalStatus,
-    /// Render-world image targeted by terminal rendering; GPU completion is separate.
-    pub image: Handle<Image>,
+    pub(crate) status: TerminalStatus,
+    pub(crate) image: Handle<Image>,
     pub(super) geometry: TerminalGeometry,
 }
 
 impl TerminalTexture {
+    /// Whether [`Self::measured`] geometry is currently authoritative, or why not.
+    #[must_use]
+    pub const fn status(&self) -> TerminalStatus {
+        self.status
+    }
+
+    /// Render-world image targeted by terminal rendering; GPU completion is separate.
+    #[must_use]
+    pub const fn image(&self) -> &Handle<Image> {
+        &self.image
+    }
+
     /// Returns the measured geometry, or `None` while loading or failed.
     ///
     /// Readiness is recorded by the renderer when it syncs
@@ -180,12 +190,6 @@ impl TerminalGeometry {
         self.measurement.physical_cell_size
     }
 
-    /// Grid fitting the available logical space, bounded by surface limits.
-    #[must_use]
-    pub fn grid_for(&self, logical_size: Vec2) -> GridSize {
-        grid_for(logical_size, self.cell_size())
-    }
-
     /// Whether this measurement belongs to this surface's current grid.
     /// Text and cursor changes do not invalidate it.
     #[must_use]
@@ -202,7 +206,8 @@ impl TerminalGeometry {
 
 /// Returns the grid that fits `logical_size` with cells of `cell_size`
 /// (floor, at least 1×1, each dimension at most `u16::MAX`, and total cells
-/// bounded by [`TerminalSurface::MAX_CELLS`]).
+/// bounded by [`TerminalSurface::MAX_CELLS`]), such as
+/// `grid_for(available, geometry.cell_size())` for a measured [`TerminalGeometry`].
 #[must_use]
 pub fn grid_for(logical_size: Vec2, cell_size: Vec2) -> GridSize {
     let fit = |logical: f32, cell: f32| {
@@ -216,16 +221,16 @@ pub fn grid_for(logical_size: Vec2, cell_size: Vec2) -> GridSize {
         };
         (logical / cell).floor().clamp(1.0, f32::from(u16::MAX)) as u16
     };
-    let columns = fit(logical_size.x, cell_size.x);
-    let rows = fit(logical_size.y, cell_size.y)
-        .min((TerminalSurface::MAX_CELLS / usize::from(columns)).min(usize::from(u16::MAX)) as u16);
-    GridSize::new(columns, rows)
+    GridSize::new(
+        fit(logical_size.x, cell_size.x),
+        fit(logical_size.y, cell_size.y),
+    )
+    .bounded()
 }
 
 /// Counters for the most recent scene update of one [`TerminalRenderer`]; all zero on
 /// frames that produced no terminal work.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Component)]
-#[non_exhaustive]
 pub struct TerminalStats {
     /// Rows rebuilt into the latest payload.
     pub changed_rows: u32,
@@ -239,9 +244,11 @@ pub struct TerminalStats {
     pub draw_batches: u32,
     /// Shape-cache misses in the latest update.
     pub shape_misses: u32,
-    /// Nanoseconds spent updating the retained terminal snapshot; zero without `timings`.
+    /// Nanoseconds spent updating the retained terminal snapshot.
+    #[cfg(feature = "timings")]
     pub snapshot_ns: u64,
-    /// Nanoseconds spent generating the compact CPU scene; zero without `timings`.
+    /// Nanoseconds spent generating the compact CPU scene.
+    #[cfg(feature = "timings")]
     pub scene_ns: u64,
 }
 

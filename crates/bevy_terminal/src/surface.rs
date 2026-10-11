@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, Weak},
 };
 
-use crate::scene::{CellOccupancy, CellPosition, GridSize, TerminalCell, TerminalSnapshot};
+use crate::scene::{CellPosition, GridSize, TerminalCell, TerminalSnapshot};
 
 /// A coherent observation of surface metadata, independent of its renderers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,21 +62,15 @@ impl TerminalSurface {
     }
 
     /// Maximum retained cells (about 48 MiB of cell storage per surface).
-    /// This bounds producer-controlled allocation independently of GPU limits.
+    /// This bounds producer-controlled allocation independently of GPU limits:
+    /// larger grids keep their width and are clamped to fewer rows.
     pub const MAX_CELLS: usize = 1 << 20;
 
     /// Creates an empty terminal surface with the given size in cells
-    /// (`(columns, rows)` or a [`GridSize`]).
-    ///
-    /// # Panics
-    /// Panics if the grid exceeds [`Self::MAX_CELLS`].
+    /// (`(columns, rows)` or a [`GridSize`]), clamped to [`Self::MAX_CELLS`].
     #[must_use]
     pub fn new(size: impl Into<GridSize>) -> Self {
-        let size = size.into();
-        assert!(
-            size.area() <= Self::MAX_CELLS,
-            "terminal surface exceeds MAX_CELLS"
-        );
+        let size = size.into().bounded();
         Self {
             shared: Arc::new(Mutex::new(SurfaceState {
                 size,
@@ -90,25 +84,11 @@ impl TerminalSurface {
         }
     }
 
-    /// Returns the current grid size.
-    #[must_use]
-    pub fn size(&self) -> GridSize {
-        self.lock().size
-    }
-
     /// Returns an owned snapshot of the most recently published terminal state.
     #[must_use]
     pub fn snapshot(&self) -> TerminalSnapshot {
         let state = self.lock();
         state.snapshot()
-    }
-
-    /// Returns the change revision, incremented once per changed update.
-    /// The counter wraps at `u64::MAX`; compare revisions for equality rather
-    /// than ordering. Incremental readers support crossing that boundary.
-    #[must_use]
-    pub fn revision(&self) -> u64 {
-        self.lock().revision
     }
 
     /// Returns whether both handles refer to the same terminal surface.
@@ -146,7 +126,8 @@ impl TerminalSurface {
             changed: false,
         };
         f(&mut update);
-        update.finish()
+        // Dropping the update publishes the revision.
+        update.changed
     }
 
     /// Brings `snapshot` up to date by copying only the cells changed since it
@@ -175,26 +156,21 @@ impl TerminalSurface {
             };
         }
 
-        let width = usize::from(state.size.width);
-        let height = state.size.height;
+        // Compare ages rather than raw revisions so wrapping the counter is
+        // harmless. Revisions belong to each reader; synchronizing never
+        // consumes another reader's changes.
+        let snapshot_age = state.revision.wrapping_sub(snapshot.revision);
+        let width = usize::from(state.size.width).max(1);
+        let rows = (snapshot.cells.chunks_mut(width))
+            .zip(state.cells.chunks(width))
+            .zip(&state.row_revisions);
         let mut changed_cells = 0;
-        for row in 0..height {
-            // Compare ages rather than raw revisions so wrapping the counter is
-            // harmless. Revisions belong to each reader; synchronizing never
-            // consumes another reader's changes.
-            let age = state
-                .revision
-                .wrapping_sub(state.row_revisions[usize::from(row)]);
-            if age >= state.revision.wrapping_sub(snapshot.revision) {
+        for (((retained, current), revision), row) in rows.zip(0..) {
+            if state.revision.wrapping_sub(*revision) >= snapshot_age {
                 continue;
             }
-            let start = usize::from(row) * width;
-            let end = start + width;
             let mut row_changed = false;
-            for (retained, current) in snapshot.cells[start..end]
-                .iter_mut()
-                .zip(&state.cells[start..end])
-            {
+            for (retained, current) in retained.iter_mut().zip(current) {
                 if retained != current {
                     retained.clone_from(current);
                     changed_cells += 1;
@@ -220,6 +196,9 @@ impl TerminalSurface {
     }
 
     /// Reads grid, cursor and revision together without copying cell content.
+    ///
+    /// The revision is incremented once per changed update. It wraps at
+    /// `u64::MAX`; compare revisions for equality rather than ordering.
     #[must_use]
     pub fn info(&self) -> SurfaceInfo {
         let state = self.lock();
@@ -265,10 +244,6 @@ struct SurfaceState {
 }
 
 impl SurfaceState {
-    fn touch(&mut self) {
-        self.revision = self.revision.wrapping_add(1);
-    }
-
     fn snapshot(&self) -> TerminalSnapshot {
         TerminalSnapshot {
             size: self.size,
@@ -280,77 +255,110 @@ impl SurfaceState {
         }
     }
 
-    fn index(&self, x: u16, y: u16) -> usize {
-        usize::from(y) * usize::from(self.size.width) + usize::from(x)
-    }
-
-    /// Writes `cell` at `index`, marking it dirty when it differs.
-    fn write(&mut self, index: usize, cell: &TerminalCell) -> bool {
-        if self.cells[index] == *cell {
+    /// Writes `cell` at `position`, marking its row dirty when anything changed.
+    ///
+    /// Every cell write goes through here, and it keeps wide glyphs whole as
+    /// real terminals do: overwriting any column of a wide glyph resets the
+    /// rest of it, and a wide anchor writes its continuation cells, with its
+    /// span clipped to the row. Continuation cells only come from their
+    /// anchor, so writing one is ignored, as are positions outside the grid.
+    fn write(&mut self, position: CellPosition, cell: &TerminalCell) -> bool {
+        let x = usize::from(position.x);
+        let next_revision = self.revision.wrapping_add(1);
+        let (Some(row), Some(row_revision)) = (
+            (self.cells.chunks_mut(usize::from(self.size.width).max(1))).nth(position.y.into()),
+            self.row_revisions.get_mut(usize::from(position.y)),
+        ) else {
             return false;
-        }
-        self.cells[index].clone_from(cell);
-        self.row_revisions[index / usize::from(self.size.width)] = self.revision.wrapping_add(1);
-        true
-    }
+        };
+        let Some(head) = row.get(..=x).filter(|_| !cell.is_continuation()) else {
+            return false;
+        };
+        // The overwritten columns extend left to the anchor of a glyph whose
+        // continuation is at `x`, and right over the continuations of a glyph
+        // anchored inside the new one.
+        let start = head
+            .iter()
+            .rposition(|cell| !cell.is_continuation())
+            .unwrap_or(0);
+        let span = cell.occupancy().columns().min(self.size.width - position.x);
+        let covered = x + usize::from(span);
+        let trailing = row
+            .iter()
+            .skip(covered)
+            .take_while(|cell| cell.is_continuation());
+        let end = covered + trailing.count();
 
-    fn reset(&mut self, index: usize) -> bool {
-        self.write(index, &TerminalCell::EMPTY)
-    }
-
-    fn reset_range(&mut self, range: Range<usize>) -> bool {
+        let clipped;
+        let anchor = if span < cell.occupancy().columns() {
+            clipped = cell.clipped(span);
+            &clipped
+        } else {
+            cell
+        };
+        let continuation = TerminalCell::continuation_of(cell);
         let mut changed = false;
-        for index in range {
-            changed |= self.reset(index);
+        for (column, slot) in row.iter_mut().enumerate().take(end).skip(start) {
+            let target = match column {
+                column if column == x => anchor,
+                column if column > x && column < covered => &continuation,
+                _ => &TerminalCell::EMPTY,
+            };
+            if slot != target {
+                slot.clone_from(target);
+                changed = true;
+            }
+        }
+        if changed {
+            *row_revision = next_revision;
         }
         changed
     }
 
-    fn row_range(&self, row: u16) -> Range<usize> {
-        let width = usize::from(self.size.width);
-        let start = usize::from(row) * width;
-        start..start + width
-    }
-
     fn scroll(&mut self, region: Range<u16>, line_count: u16, down: bool) -> bool {
-        let start = region.start.min(self.size.height);
-        let end = region.end.min(self.size.height).max(start);
-        let count = line_count.min(end - start);
         let width = usize::from(self.size.width);
-        if count == 0 || width == 0 {
+        let start = usize::from(region.start.min(self.size.height));
+        let end = usize::from(region.end.min(self.size.height)).max(start);
+        let shift = usize::from(line_count).min(end - start) * width;
+        let next_revision = self.revision.wrapping_add(1);
+        let (Some(cells), Some(revisions)) = (
+            self.cells.get_mut(start * width..end * width),
+            self.row_revisions.get_mut(start..end),
+        ) else {
+            return false;
+        };
+        if shift == 0 {
             return false;
         }
-        let first = usize::from(start) * width;
-        let last = usize::from(end) * width;
-        let offset = usize::from(count) * width;
+        // Mark only the rows whose content actually changes.
         let mut changed = false;
-        // Move in the direction that preserves the source, retaining allocation
-        // and marking only rows whose cells actually changed.
-        for step in 0..last - first {
-            let index = if down { last - 1 - step } else { first + step };
+        for (row, revision) in (0..cells.len()).step_by(width).zip(revisions) {
             let source = if down {
-                index.checked_sub(offset).filter(|source| *source >= first)
+                row.checked_sub(shift)
             } else {
-                index.checked_add(offset).filter(|source| *source < last)
+                Some(row + shift)
             };
-            let Some(source) = source else {
-                changed |= self.reset(index);
-                continue;
+            let destination = cells.get(row..row + width).unwrap_or_default();
+            let differs = match source.and_then(|source| cells.get(source..source + width)) {
+                Some(source) => destination != source,
+                None => destination.iter().any(|cell| *cell != TerminalCell::EMPTY),
             };
-            if self.cells[index] == self.cells[source] {
-                continue;
+            if differs {
+                *revision = next_revision;
+                changed = true;
             }
-            // Source and destination cannot overlap: count is nonzero. Borrow
-            // them separately to avoid allocating a temporary heap-backed symbol.
-            if source < index {
-                let (before, after) = self.cells.split_at_mut(index);
-                after[0].clone_from(&before[source]);
-            } else {
-                let (before, after) = self.cells.split_at_mut(source);
-                before[index].clone_from(&after[0]);
-            }
-            self.row_revisions[index / width] = self.revision.wrapping_add(1);
-            changed = true;
+        }
+        // Rotating moves cells without cloning them; the rows that wrapped
+        // around are then cleared.
+        let entering = if down {
+            cells.rotate_right(shift);
+            0..shift
+        } else {
+            cells.rotate_left(shift);
+            cells.len() - shift..cells.len()
+        };
+        if let Some(entering) = cells.get_mut(entering) {
+            entering.fill(TerminalCell::EMPTY);
         }
         changed
     }
@@ -387,40 +395,13 @@ impl SurfaceUpdate<'_> {
 
     /// Writes `cell` at `position`; positions outside the grid are ignored.
     ///
-    /// A [`CellOccupancy::Wide`] anchor also writes explicit continuation
-    /// cells for the columns it spans, clipped to the row. Replacing a wide
-    /// anchor with a narrower cell resets the continuation cells that no
-    /// longer belong to an anchor, so stale continuations cannot survive.
+    /// Wide glyphs stay whole, as in a real terminal: a
+    /// [`Wide`](crate::scene::CellOccupancy::Wide) anchor also writes continuation cells for the
+    /// columns it spans, clipped to the row, and overwriting any column of an
+    /// existing wide glyph resets the rest of it. Continuation cells (as read
+    /// from a snapshot) are written by their anchor, so passing one is a no-op.
     pub fn set_cell(&mut self, position: impl Into<CellPosition>, cell: &TerminalCell) -> bool {
-        let CellPosition { x, y } = position.into();
-        if !self.state.size.contains((x, y)) {
-            return false;
-        }
-        let state = &mut *self.state;
-        let index = state.index(x, y);
-        let previous_columns = match state.cells[index].occupancy() {
-            CellOccupancy::Wide { columns } => columns,
-            CellOccupancy::Single | CellOccupancy::Continuation => 1,
-        };
-        let mut changed = state.write(index, cell);
-
-        let width = state.size.width;
-        let new_columns = cell.columns().max(1);
-        let last_column = x.saturating_add(new_columns).min(width);
-        if new_columns > 1 {
-            let continuation = TerminalCell::continuation_of(cell);
-            for column in x + 1..last_column {
-                changed |= state.write(state.index(column, y), &continuation);
-            }
-        }
-        // Continuations orphaned by a narrower replacement are reset.
-        let previous_last = x.saturating_add(previous_columns).min(width);
-        for column in last_column.max(x + 1)..previous_last {
-            let orphan = state.index(column, y);
-            if state.cells[orphan].is_continuation() {
-                changed |= state.reset(orphan);
-            }
-        }
+        let changed = self.state.write(position.into(), cell);
         self.changed |= changed;
         changed
     }
@@ -449,73 +430,65 @@ impl SurfaceUpdate<'_> {
 
     /// Resets every cell to [`TerminalCell::EMPTY`].
     pub fn clear(&mut self) -> bool {
-        let range = 0..self.state.cells.len();
-        self.reset_cells(range)
+        self.clear_range((0, 0), (u16::MAX, u16::MAX))
     }
 
     /// Resets one row.
     pub fn clear_row(&mut self, row: u16) -> bool {
-        if row >= self.state.size.height {
-            return false;
-        }
-        let range = self.state.row_range(row);
-        self.reset_cells(range)
+        row < self.state.size.height && self.clear_range((0, row), (u16::MAX, row))
     }
 
     /// Resets the cells from `start` through `end` (both inclusive) in
-    /// row-major order. Positions are clamped into the grid; nothing happens
-    /// when `end` precedes `start`.
+    /// row-major order, together with the rest of any wide glyph cut by
+    /// either end. Positions are clamped into the grid; nothing happens when
+    /// `end` precedes `start`.
     pub fn clear_range(
         &mut self,
         start: impl Into<CellPosition>,
         end: impl Into<CellPosition>,
     ) -> bool {
-        let (Some(start), Some(end)) = (
-            self.clamped_index(start.into()),
-            self.clamped_index(end.into()),
-        ) else {
-            return false;
-        };
-        if end < start {
+        let GridSize { width, height } = self.state.size;
+        if width == 0 || height == 0 {
             return false;
         }
-        self.reset_cells(start..end + 1)
+        let index = |position: CellPosition| {
+            usize::from(position.y.min(height - 1)) * usize::from(width)
+                + usize::from(position.x.min(width - 1))
+        };
+        let width = usize::from(width);
+        let mut changed = false;
+        for index in index(start.into())..=index(end.into()) {
+            let position = CellPosition::new((index % width) as u16, (index / width) as u16);
+            changed |= self.state.write(position, &TerminalCell::EMPTY);
+        }
+        self.changed |= changed;
+        changed
     }
 
-    /// Resizes the grid, preserving the overlapping cells and clamping the
-    /// cursor into the new bounds. Every row is invalidated.
-    ///
-    /// # Panics
-    /// Panics before modifying the grid if it exceeds [`TerminalSurface::MAX_CELLS`].
+    /// Resizes the grid, clamped to [`TerminalSurface::MAX_CELLS`], keeping
+    /// the overlapping cells (a wide glyph cut by the new right edge is
+    /// clipped) and clamping the cursor into the new bounds. Every row is
+    /// invalidated.
     pub fn resize(&mut self, size: impl Into<GridSize>) -> bool {
         let state = &mut *self.state;
-        let new_size = size.into();
-        assert!(
-            new_size.area() <= TerminalSurface::MAX_CELLS,
-            "terminal surface exceeds MAX_CELLS"
-        );
-        let GridSize {
-            width: columns,
-            height: rows,
-        } = new_size;
-        if state.size == new_size {
+        let size = size.into().bounded();
+        if state.size == size {
             return false;
         }
-        let old_size = state.size;
-        let old_cells =
-            std::mem::replace(&mut state.cells, vec![TerminalCell::EMPTY; new_size.area()]);
-        let copied_columns = usize::from(columns.min(old_size.width));
-        for y in 0..rows.min(old_size.height) {
-            let old_start = usize::from(y) * usize::from(old_size.width);
-            let new_start = usize::from(y) * usize::from(columns);
-            state.cells[new_start..new_start + copied_columns]
-                .clone_from_slice(&old_cells[old_start..old_start + copied_columns]);
+        let old_width = usize::from(state.size.width).max(1);
+        let old_cells = std::mem::replace(&mut state.cells, vec![TerminalCell::EMPTY; size.area()]);
+        state.size = size;
+        state.row_revisions = vec![0; usize::from(size.height)];
+        // Writing the old anchors regenerates their continuations.
+        for (y, row) in (0..size.height).zip(old_cells.chunks(old_width)) {
+            for (x, cell) in (0..size.width).zip(row) {
+                state.write(CellPosition::new(x, y), cell);
+            }
         }
-        state.size = new_size;
+        state.row_revisions.fill(state.revision.wrapping_add(1));
         state.resize_generation = state.resize_generation.wrapping_add(1);
-        state.row_revisions = vec![state.revision.wrapping_add(1); usize::from(rows)];
-        state.cursor_position.x = state.cursor_position.x.min(columns.saturating_sub(1));
-        state.cursor_position.y = state.cursor_position.y.min(rows.saturating_sub(1));
+        state.cursor_position.x = state.cursor_position.x.min(size.width.saturating_sub(1));
+        state.cursor_position.y = state.cursor_position.y.min(size.height.saturating_sub(1));
         self.changed = true;
         true
     }
@@ -535,47 +508,22 @@ impl SurfaceUpdate<'_> {
         self.changed |= changed;
         changed
     }
-
-    fn finish(&mut self) -> bool {
-        if self.changed {
-            self.state.touch();
-            self.changed = false;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn clamped_index(&self, position: CellPosition) -> Option<usize> {
-        let size = self.state.size;
-        if size.width == 0 || size.height == 0 {
-            return None;
-        }
-        Some(self.state.index(
-            position.x.min(size.width - 1),
-            position.y.min(size.height - 1),
-        ))
-    }
-
-    fn reset_cells(&mut self, range: Range<usize>) -> bool {
-        let changed = self.state.reset_range(range);
-        self.changed |= changed;
-        changed
-    }
 }
 
 impl Drop for SurfaceUpdate<'_> {
     fn drop(&mut self) {
-        // A producer panic leaves its completed writes in place. Publish those
-        // writes before releasing the lock, just as on a normal return.
-        self.finish();
+        // Publishes the batch, also when a producer panic unwinds through
+        // `update`, so completed writes are never left unpublished.
+        if self.changed {
+            self.state.revision = self.state.revision.wrapping_add(1);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{StyleFlags, TerminalColor, TerminalStyle};
+    use crate::scene::{CellOccupancy, StyleFlags, TerminalColor, TerminalStyle};
 
     /// The changed rows and delta of one synchronization.
     fn sync(
@@ -602,7 +550,7 @@ mod tests {
         sync(&surface, &mut fast);
         let (delta_rows, _) = sync(&surface, &mut slow);
         assert_eq!(delta_rows, [0, 1]);
-        assert_eq!(slow.to_text(), fast.to_text());
+        assert_eq!(slow.to_string(), fast.to_string());
         assert_eq!(slow.revision(), fast.revision());
         assert!(sync(&surface, &mut slow).0.is_empty());
     }
@@ -618,7 +566,7 @@ mod tests {
             })
         });
         assert!(result.is_err());
-        assert_ne!(surface.revision(), snapshot.revision());
+        assert_ne!(surface.info().revision, snapshot.revision());
         sync(&surface, &mut snapshot);
         assert_eq!(snapshot.row_text(0), "A ");
         assert!(surface.update(|u| {
@@ -662,32 +610,25 @@ mod tests {
             u.scroll_down(0..3, 1);
         });
         let snapshot = surface.snapshot();
-        assert_eq!(snapshot[(0, 1)], first);
-        assert_eq!(snapshot[(0, 2)], second);
+        assert_eq!(snapshot.cell((0, 1)).unwrap(), &first);
+        assert_eq!(snapshot.cell((0, 2)).unwrap(), &second);
         surface.update(|u| {
             u.scroll_up(0..3, 1);
         });
         let snapshot = surface.snapshot();
-        assert_eq!(snapshot[(0, 0)], first);
-        assert_eq!(snapshot[(0, 1)], second);
-        assert_eq!(snapshot[(0, 2)], TerminalCell::EMPTY);
+        assert_eq!(snapshot.cell((0, 0)).unwrap(), &first);
+        assert_eq!(snapshot.cell((0, 1)).unwrap(), &second);
+        assert_eq!(snapshot.cell((0, 2)).unwrap(), &TerminalCell::EMPTY);
     }
 
     #[test]
-    fn oversized_resize_panics_before_changing_the_surface() {
-        let surface = TerminalSurface::new((2, 1));
-        let before = surface.info();
-        assert!(
-            std::panic::catch_unwind(|| {
-                surface.update(|update| {
-                    update.resize((u16::MAX, u16::MAX));
-                });
-            })
-            .is_err()
-        );
-        assert_eq!(surface.info(), before);
-        assert_eq!(surface.snapshot().to_text(), "  ");
-        assert!(std::panic::catch_unwind(|| TerminalSurface::new((u16::MAX, u16::MAX))).is_err());
+    fn oversized_grids_are_clamped_to_max_cells() {
+        let surface = TerminalSurface::new((u16::MAX, u16::MAX));
+        assert_eq!(surface.info().size, GridSize::new(u16::MAX, 16));
+        assert!(surface.update(|update| {
+            update.resize((2000, 1000));
+        }));
+        assert_eq!(surface.info().size, GridSize::new(2000, 524));
     }
 
     #[test]
@@ -707,10 +648,10 @@ mod tests {
         surface.update(|update| {
             update.set_cell((0, 1), &TerminalCell::new("B"));
         });
-        assert_eq!(surface.revision(), 0);
+        assert_eq!(surface.info().revision, 0);
         assert_eq!(sync(&surface, &mut fast).0, [1]);
         assert_eq!(sync(&surface, &mut slow).0, [0, 1]);
-        assert_eq!(fast.to_text(), slow.to_text());
+        assert_eq!(fast.to_string(), slow.to_string());
     }
 
     #[test]
@@ -740,7 +681,7 @@ mod tests {
     #[test]
     fn updates_publish_at_most_one_revision_and_none_when_unchanged() {
         let surface = TerminalSurface::new((3, 2));
-        let initial = surface.revision();
+        let initial = surface.info().revision;
         let published = surface.update(|update| {
             update.set_cell((0, 0), &TerminalCell::EMPTY);
             update.set_cursor_position((0, 0));
@@ -749,7 +690,7 @@ mod tests {
             update.resize((3, 2));
         });
         assert!(!published);
-        assert_eq!(surface.revision(), initial);
+        assert_eq!(surface.info().revision, initial);
 
         let published = surface.update(|update| {
             assert!(update.set_cell((0, 0), &TerminalCell::new("A")));
@@ -758,13 +699,13 @@ mod tests {
             assert!(update.set_cursor_visible(true));
         });
         assert!(published);
-        assert_eq!(surface.revision(), initial + 1);
+        assert_eq!(surface.info().revision, initial + 1);
 
         let published = surface.update(|update| {
             assert!(!update.set_cell((0, 0), &TerminalCell::new("A")));
         });
         assert!(!published);
-        assert_eq!(surface.revision(), initial + 1);
+        assert_eq!(surface.info().revision, initial + 1);
     }
 
     #[test]
@@ -781,8 +722,8 @@ mod tests {
         });
 
         let snapshot = surface.snapshot();
-        assert_eq!(snapshot[(1, 0)], cell);
-        assert_eq!(snapshot[(0, 0)], TerminalCell::EMPTY);
+        assert_eq!(snapshot.cell((1, 0)).unwrap(), &cell);
+        assert_eq!(snapshot.cell((0, 0)).unwrap(), &TerminalCell::EMPTY);
     }
 
     #[test]
@@ -798,8 +739,8 @@ mod tests {
         assert_eq!(delta.changed_cells, 1);
         assert_eq!(delta_rows, [1]);
         assert!(!delta.resized);
-        assert_eq!(snapshot[(2, 1)], changed);
-        assert_eq!(snapshot.revision(), surface.revision());
+        assert_eq!(snapshot.cell((2, 1)).unwrap(), &changed);
+        assert_eq!(snapshot.revision(), surface.info().revision);
 
         surface.update(|u| {
             u.set_cursor_position((3, 2));
@@ -829,24 +770,67 @@ mod tests {
             u.set_cell((1, 0), &wide);
         });
         let snapshot = surface.snapshot();
-        assert_eq!(snapshot[(1, 0)].symbol(), "界");
-        assert_eq!(snapshot[(1, 0)].columns(), 2);
-        assert!(snapshot[(2, 0)].is_continuation());
-        assert_eq!(snapshot[(2, 0)].style, wide.style);
-        assert_eq!(snapshot[(3, 0)], TerminalCell::EMPTY);
+        assert_eq!(snapshot.cell((1, 0)).unwrap().symbol(), "界");
+        assert_eq!(snapshot.cell((1, 0)).unwrap().occupancy().columns(), 2);
+        assert!(snapshot.cell((2, 0)).unwrap().is_continuation());
+        assert_eq!(snapshot.cell((2, 0)).unwrap().style, wide.style);
+        assert_eq!(snapshot.cell((3, 0)).unwrap(), &TerminalCell::EMPTY);
 
         surface.update(|u| {
             u.set_cell((1, 0), &TerminalCell::new("a"));
         });
         let snapshot = surface.snapshot();
-        assert_eq!(snapshot[(1, 0)].symbol(), "a");
-        assert_eq!(snapshot[(2, 0)], TerminalCell::EMPTY);
+        assert_eq!(snapshot.cell((1, 0)).unwrap().symbol(), "a");
+        assert_eq!(snapshot.cell((2, 0)).unwrap(), &TerminalCell::EMPTY);
 
         // A wide glyph at the last column is clipped to the row.
         surface.update(|u| {
             u.set_cell((3, 0), &wide);
         });
-        assert_eq!(surface.snapshot()[(3, 0)].columns(), 2);
+        assert_eq!(
+            surface.snapshot().cell((3, 0)).unwrap().occupancy(),
+            CellOccupancy::Single
+        );
+    }
+
+    #[test]
+    fn overwriting_any_part_of_a_wide_glyph_resets_the_rest_of_it() {
+        let surface = TerminalSurface::new((4, 1));
+        let wide =
+            TerminalCell::wide("界", 2).with_style(TerminalStyle::new().bg(TerminalColor::RED));
+        let write = |x, cell: &TerminalCell| {
+            surface.update(|u| {
+                u.set_cell((x, 0), cell);
+            });
+            surface.snapshot()
+        };
+        // Clearing the anchor leaves no colored continuation behind.
+        write(1, &wide);
+        surface.update(|u| {
+            u.clear_range((1, 0), (1, 0));
+        });
+        assert_eq!(surface.snapshot().cells(), [TerminalCell::EMPTY; 4]);
+        // Writing over the continuation resets the anchor.
+        write(1, &wide);
+        assert_eq!(write(2, &TerminalCell::new("x")).row_text(0), "  x ");
+        // A wide glyph overlapping another's continuation resets its anchor.
+        write(0, &wide);
+        let snapshot = write(1, &wide);
+        assert_eq!(snapshot.row_text(0), " 界 ");
+        assert_eq!(snapshot.cell((0, 0)).unwrap(), &TerminalCell::EMPTY);
+        // Continuation cells come only from their anchor.
+        let continuation = snapshot.cell((2, 0)).unwrap().clone();
+        assert!(!surface.update(|u| {
+            u.set_cell((0, 0), &continuation);
+        }));
+        // Shrinking clips a wide glyph cut by the new edge.
+        surface.update(|u| {
+            u.resize((2, 1));
+        });
+        assert_eq!(
+            surface.snapshot().cell((1, 0)).unwrap().occupancy(),
+            CellOccupancy::Single
+        );
     }
 
     #[test]
@@ -859,12 +843,18 @@ mod tests {
         assert!(surface.update(|u| {
             u.clear_range((3, 1), (99, 99));
         }));
-        assert_eq!(surface.snapshot()[(3, 1)], TerminalCell::EMPTY);
-        assert_eq!(surface.snapshot()[(2, 1)].symbol(), "G");
+        assert_eq!(
+            surface.snapshot().cell((3, 1)).unwrap(),
+            &TerminalCell::EMPTY
+        );
+        assert_eq!(surface.snapshot().cell((2, 1)).unwrap().symbol(), "G");
         assert!(surface.update(|update| {
             update.clear_range((0, 0), (0, 0));
         }));
-        assert_eq!(surface.snapshot()[(0, 0)], TerminalCell::EMPTY);
+        assert_eq!(
+            surface.snapshot().cell((0, 0)).unwrap(),
+            &TerminalCell::EMPTY
+        );
         assert!(!surface.update(|update| {
             update.clear_range((0, 0), (0, 0));
         }));
@@ -878,29 +868,38 @@ mod tests {
             u.clear_range((1, 0), (3, 0));
         });
         let snapshot = surface.snapshot();
-        assert_eq!(snapshot[(0, 0)].symbol(), "A");
-        assert_eq!(snapshot[(1, 0)], TerminalCell::EMPTY);
-        assert_eq!(snapshot[(3, 0)], TerminalCell::EMPTY);
-        assert_eq!(snapshot[(0, 1)].symbol(), "E");
+        assert_eq!(snapshot.cell((0, 0)).unwrap().symbol(), "A");
+        assert_eq!(snapshot.cell((1, 0)).unwrap(), &TerminalCell::EMPTY);
+        assert_eq!(snapshot.cell((3, 0)).unwrap(), &TerminalCell::EMPTY);
+        assert_eq!(snapshot.cell((0, 1)).unwrap().symbol(), "E");
 
         fill(&surface, "ABCDEFGH", 4);
         surface.update(|u| {
             u.clear_range((1, 0), (u16::MAX, u16::MAX));
         });
-        assert_eq!(surface.snapshot()[(0, 0)].symbol(), "A");
-        assert_eq!(surface.snapshot()[(0, 1)], TerminalCell::EMPTY);
+        assert_eq!(surface.snapshot().cell((0, 0)).unwrap().symbol(), "A");
+        assert_eq!(
+            surface.snapshot().cell((0, 1)).unwrap(),
+            &TerminalCell::EMPTY
+        );
 
         fill(&surface, "ABCDEFGH", 4);
         surface.update(|u| {
             u.clear_range((0, 0), (1, 1));
         });
-        assert_eq!(surface.snapshot()[(1, 1)], TerminalCell::EMPTY);
-        assert_eq!(surface.snapshot()[(2, 1)].symbol(), "G");
+        assert_eq!(
+            surface.snapshot().cell((1, 1)).unwrap(),
+            &TerminalCell::EMPTY
+        );
+        assert_eq!(surface.snapshot().cell((2, 1)).unwrap().symbol(), "G");
 
         surface.update(|u| {
             u.clear_row(1);
         });
-        assert_eq!(surface.snapshot()[(2, 1)], TerminalCell::EMPTY);
+        assert_eq!(
+            surface.snapshot().cell((2, 1)).unwrap(),
+            &TerminalCell::EMPTY
+        );
         assert!(!surface.update(|u| {
             u.clear_row(5);
         }));
@@ -922,17 +921,17 @@ mod tests {
             u.scroll_up(0..3, 1);
         });
         let up = surface.snapshot();
-        assert_eq!(up[(0, 0)].symbol(), "B");
-        assert_eq!(up[(0, 1)].symbol(), "C");
-        assert_eq!(up[(0, 2)], TerminalCell::EMPTY);
+        assert_eq!(up.cell((0, 0)).unwrap().symbol(), "B");
+        assert_eq!(up.cell((0, 1)).unwrap().symbol(), "C");
+        assert_eq!(up.cell((0, 2)).unwrap(), &TerminalCell::EMPTY);
 
         surface.update(|u| {
             u.scroll_down(0..3, 1);
         });
         let down = surface.snapshot();
-        assert_eq!(down[(0, 0)], TerminalCell::EMPTY);
-        assert_eq!(down[(0, 1)].symbol(), "B");
-        assert_eq!(down[(0, 2)].symbol(), "C");
+        assert_eq!(down.cell((0, 0)).unwrap(), &TerminalCell::EMPTY);
+        assert_eq!(down.cell((0, 1)).unwrap().symbol(), "B");
+        assert_eq!(down.cell((0, 2)).unwrap().symbol(), "C");
 
         assert!(!surface.update(|u| {
             u.scroll_up(0..3, 0);
@@ -940,7 +939,10 @@ mod tests {
         assert!(surface.update(|u| {
             u.scroll_up(1..3, 5);
         }));
-        assert_eq!(surface.snapshot()[(0, 1)], TerminalCell::EMPTY);
+        assert_eq!(
+            surface.snapshot().cell((0, 1)).unwrap(),
+            &TerminalCell::EMPTY
+        );
     }
 
     #[test]
@@ -955,9 +957,9 @@ mod tests {
         });
         let snapshot = surface.snapshot();
         assert_eq!(snapshot.size(), GridSize::new(2, 3));
-        assert_eq!(snapshot[(0, 0)].symbol(), "A");
-        assert_eq!(snapshot[(0, 1)].symbol(), "B");
-        assert_eq!(snapshot[(0, 2)].symbol(), "C");
+        assert_eq!(snapshot.cell((0, 0)).unwrap().symbol(), "A");
+        assert_eq!(snapshot.cell((0, 1)).unwrap().symbol(), "B");
+        assert_eq!(snapshot.cell((0, 2)).unwrap().symbol(), "C");
         assert_eq!(snapshot.cursor_position(), CellPosition::new(1, 2));
 
         let info = surface.info();

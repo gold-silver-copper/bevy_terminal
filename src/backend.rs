@@ -26,10 +26,8 @@ pub struct RatatuiBackend {
 }
 
 impl RatatuiBackend {
-    /// Creates a backend with a fixed initial size in terminal cells.
-    ///
-    /// # Panics
-    /// Panics if the grid exceeds [`TerminalSurface::MAX_CELLS`].
+    /// Creates a backend with a fixed initial size in terminal cells, clamped
+    /// to [`TerminalSurface::MAX_CELLS`].
     #[must_use]
     pub fn new(columns: u16, rows: u16) -> Self {
         Self {
@@ -68,13 +66,8 @@ impl RatatuiBackend {
     /// Fullscreen and inline Ratatui terminals adopt this size on their next
     /// draw, or immediately through `Terminal::autoresize`. Fixed viewports
     /// remain application-owned; use `Terminal::resize` to change their area.
-    ///
-    /// # Panics
-    /// Panics if the grid exceeds [`TerminalSurface::MAX_CELLS`].
+    /// The grid is clamped to [`TerminalSurface::MAX_CELLS`].
     pub fn resize(&mut self, columns: u16, rows: u16) {
-        if self.surface.size() != GridSize::new(columns, rows) {
-            self.geometry = None;
-        }
         self.surface.update(|update| {
             update.resize((columns, rows));
         });
@@ -199,21 +192,8 @@ const fn translate_color(color: Color) -> TerminalColor {
     }
 }
 
-#[cfg(test)]
-const MODIFIER_FLAGS: [(Modifier, StyleFlags); 9] = [
-    (Modifier::BOLD, StyleFlags::BOLD),
-    (Modifier::DIM, StyleFlags::DIM),
-    (Modifier::ITALIC, StyleFlags::ITALIC),
-    (Modifier::UNDERLINED, StyleFlags::UNDERLINED),
-    (Modifier::SLOW_BLINK, StyleFlags::SLOW_BLINK),
-    (Modifier::RAPID_BLINK, StyleFlags::RAPID_BLINK),
-    (Modifier::REVERSED, StyleFlags::REVERSED),
-    (Modifier::HIDDEN, StyleFlags::HIDDEN),
-    (Modifier::CROSSED_OUT, StyleFlags::CROSSED_OUT),
-];
-
 /// Ratatui's modifier bits and [`StyleFlags`] use the same bit layout, so the
-/// translation is a mask; `MODIFIER_FLAGS` documents and tests that mapping.
+/// translation is a mask; the tests check that mapping flag by flag.
 const fn translate_modifier(modifier: Modifier) -> StyleFlags {
     StyleFlags::from_bits_truncate(modifier.bits())
 }
@@ -277,26 +257,25 @@ impl Backend for RatatuiBackend {
 
     fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Self::Error> {
         self.surface.update(|update| {
-            let size = update.size();
-            if size.width == 0 || size.height == 0 {
-                return;
-            }
+            // Positions are clamped into the grid. A cursor below the grid has
+            // everything before it and nothing after it.
             let cursor = update.cursor_position();
-            let cursor = (cursor.x.min(size.width - 1), cursor.y.min(size.height - 1));
-            let last = (size.width - 1, size.height - 1);
+            let below = cursor.y >= update.size().height;
             match clear_type {
                 ClearType::All => update.clear(),
-                ClearType::AfterCursor => update.clear_range(cursor, last),
+                ClearType::BeforeCursor if below => update.clear(),
+                _ if below => false,
+                ClearType::AfterCursor => update.clear_range(cursor, (u16::MAX, u16::MAX)),
                 ClearType::BeforeCursor => update.clear_range((0, 0), cursor),
-                ClearType::CurrentLine => update.clear_row(cursor.1),
-                ClearType::UntilNewLine => update.clear_range(cursor, (size.width - 1, cursor.1)),
+                ClearType::CurrentLine => update.clear_row(cursor.y),
+                ClearType::UntilNewLine => update.clear_range(cursor, (u16::MAX, cursor.y)),
             };
         });
         Ok(())
     }
 
     fn size(&self) -> Result<Size, Self::Error> {
-        Ok(size_from_grid(self.surface.size()))
+        Ok(size_from_grid(self.surface.info().size))
     }
 
     fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
@@ -305,7 +284,7 @@ impl Backend for RatatuiBackend {
             .as_ref()
             .filter(|geometry| geometry.matches_surface(&self.surface))
             .map(|geometry| (geometry.grid(), geometry.size()))
-            .unwrap_or_else(|| (self.surface.size(), UVec2::ZERO));
+            .unwrap_or_else(|| (self.surface.info().size, UVec2::ZERO));
         Ok(WindowSize {
             columns_rows: size_from_grid(grid),
             pixels: Size::new(
@@ -376,6 +355,19 @@ mod tests {
     use ratatui::style::Style;
 
     use super::test_support::measure;
+
+    const MODIFIER_FLAGS: [(Modifier, StyleFlags); 9] = [
+        (Modifier::BOLD, StyleFlags::BOLD),
+        (Modifier::DIM, StyleFlags::DIM),
+        (Modifier::ITALIC, StyleFlags::ITALIC),
+        (Modifier::UNDERLINED, StyleFlags::UNDERLINED),
+        (Modifier::SLOW_BLINK, StyleFlags::SLOW_BLINK),
+        (Modifier::RAPID_BLINK, StyleFlags::RAPID_BLINK),
+        (Modifier::REVERSED, StyleFlags::REVERSED),
+        (Modifier::HIDDEN, StyleFlags::HIDDEN),
+        (Modifier::CROSSED_OUT, StyleFlags::CROSSED_OUT),
+    ];
+
     #[test]
     fn geometry_adoption_rejects_other_surfaces_and_stale_resizes() {
         let mut backend = RatatuiBackend::new(4, 2);
@@ -423,7 +415,10 @@ mod tests {
                 Viewport::Inline(_) => assert_eq!(frame.buffer.area.as_size(), Size::new(10, 2)),
                 Viewport::Fixed(area) => assert_eq!(frame.buffer.area, area),
             }
-            assert_eq!(terminal.backend().surface().size(), GridSize::new(10, 6));
+            assert_eq!(
+                terminal.backend().surface().info().size,
+                GridSize::new(10, 6)
+            );
             if matches!(viewport, Viewport::Fixed(_)) {
                 terminal.resize(Rect::new(0, 0, 5, 3)).unwrap();
                 assert_eq!(terminal.draw(|_| {}).unwrap().area, Rect::new(0, 0, 5, 3));
@@ -522,17 +517,20 @@ mod tests {
             .unwrap();
 
         let snapshot = backend.surface().snapshot();
-        assert_eq!(snapshot[(1, 0)], translate_cell(&cell));
-        assert_eq!(snapshot[(1, 0)].style.foreground, TerminalColor::Indexed(1));
-        assert!(snapshot[(1, 0)].style.has(StyleFlags::BOLD));
-        assert_eq!(snapshot[(0, 0)], TerminalCell::EMPTY);
+        assert_eq!(snapshot.cell((1, 0)).unwrap(), &translate_cell(&cell));
+        assert_eq!(
+            snapshot.cell((1, 0)).unwrap().style.foreground,
+            TerminalColor::Indexed(1)
+        );
+        assert!(snapshot.cell((1, 0)).unwrap().style.has(StyleFlags::BOLD));
+        assert_eq!(snapshot.cell((0, 0)).unwrap(), &TerminalCell::EMPTY);
     }
 
     #[test]
     fn each_draw_publishes_at_most_one_revision_and_no_ops_publish_none() {
         let mut backend = RatatuiBackend::new(2, 1);
         let empty = Cell::EMPTY;
-        let initial = backend.surface().revision();
+        let initial = backend.surface().info().revision;
 
         backend.draw([(0, 0, &empty)].into_iter()).unwrap();
         backend.flush().unwrap();
@@ -540,16 +538,16 @@ mod tests {
         backend.set_cursor_position(Position::ORIGIN).unwrap();
         backend.clear().unwrap();
         backend.resize(2, 1);
-        assert_eq!(backend.surface().revision(), initial);
+        assert_eq!(backend.surface().info().revision, initial);
 
         let a = Cell::new("A");
         let b = Cell::new("B");
         backend.draw([(0, 0, &a), (1, 0, &b)].into_iter()).unwrap();
         backend.flush().unwrap();
-        assert_eq!(backend.surface().revision(), initial + 1);
+        assert_eq!(backend.surface().info().revision, initial + 1);
         backend.draw([(0, 0, &a), (1, 0, &b)].into_iter()).unwrap();
         backend.flush().unwrap();
-        assert_eq!(backend.surface().revision(), initial + 1);
+        assert_eq!(backend.surface().info().revision, initial + 1);
     }
 
     #[test]
@@ -559,10 +557,10 @@ mod tests {
         backend.draw([(1, 0, &cell)].into_iter()).unwrap();
 
         let snapshot = backend.surface().snapshot();
-        assert_eq!(snapshot[(1, 0)].symbol(), "界");
-        assert_eq!(snapshot[(1, 0)].columns(), 2);
-        assert!(snapshot[(2, 0)].is_continuation());
-        assert_eq!(snapshot[(3, 0)], TerminalCell::EMPTY);
+        assert_eq!(snapshot.cell((1, 0)).unwrap().symbol(), "界");
+        assert_eq!(snapshot.cell((1, 0)).unwrap().occupancy().columns(), 2);
+        assert!(snapshot.cell((2, 0)).unwrap().is_continuation());
+        assert_eq!(snapshot.cell((3, 0)).unwrap(), &TerminalCell::EMPTY);
     }
 
     #[test]
@@ -573,18 +571,18 @@ mod tests {
             .draw(|frame| frame.render_widget("界A", frame.area()))
             .unwrap();
         let snapshot = terminal.backend().surface().snapshot();
-        assert_eq!(snapshot[(0, 0)].symbol(), "界");
-        assert!(snapshot[(1, 0)].is_continuation());
-        assert_eq!(snapshot[(2, 0)].symbol(), "A");
+        assert_eq!(snapshot.cell((0, 0)).unwrap().symbol(), "界");
+        assert!(snapshot.cell((1, 0)).unwrap().is_continuation());
+        assert_eq!(snapshot.cell((2, 0)).unwrap().symbol(), "A");
 
         terminal
             .draw(|frame| frame.render_widget("abc", frame.area()))
             .unwrap();
         let snapshot = terminal.backend().surface().snapshot();
-        assert_eq!(snapshot[(0, 0)].symbol(), "a");
-        assert_eq!(snapshot[(1, 0)].symbol(), "b");
-        assert!(!snapshot[(1, 0)].is_continuation());
-        assert_eq!(snapshot[(2, 0)].symbol(), "c");
+        assert_eq!(snapshot.cell((0, 0)).unwrap().symbol(), "a");
+        assert_eq!(snapshot.cell((1, 0)).unwrap().symbol(), "b");
+        assert!(!snapshot.cell((1, 0)).unwrap().is_continuation());
+        assert_eq!(snapshot.cell((2, 0)).unwrap().symbol(), "c");
 
         // A narrow replacement of only the anchor clears the orphaned continuation.
         terminal
@@ -593,8 +591,8 @@ mod tests {
         let mut backend = RatatuiBackend::from_surface(terminal.backend().surface());
         backend.draw([(0, 0, &Cell::new("x"))].into_iter()).unwrap();
         let snapshot = backend.surface().snapshot();
-        assert_eq!(snapshot[(0, 0)].symbol(), "x");
-        assert_eq!(snapshot[(1, 0)], TerminalCell::EMPTY);
+        assert_eq!(snapshot.cell((0, 0)).unwrap().symbol(), "x");
+        assert_eq!(snapshot.cell((1, 0)).unwrap(), &TerminalCell::EMPTY);
     }
 
     #[test]
@@ -607,24 +605,30 @@ mod tests {
         backend.clear_region(ClearType::UntilNewLine).unwrap();
 
         let snapshot = backend.surface().snapshot();
-        assert_eq!(snapshot[(0, 0)].symbol(), "A");
-        assert_eq!(snapshot[(1, 0)], TerminalCell::EMPTY);
-        assert_eq!(snapshot[(3, 0)], TerminalCell::EMPTY);
-        assert_eq!(snapshot[(0, 1)].symbol(), "E");
+        assert_eq!(snapshot.cell((0, 0)).unwrap().symbol(), "A");
+        assert_eq!(snapshot.cell((1, 0)).unwrap(), &TerminalCell::EMPTY);
+        assert_eq!(snapshot.cell((3, 0)).unwrap(), &TerminalCell::EMPTY);
+        assert_eq!(snapshot.cell((0, 1)).unwrap().symbol(), "E");
         assert!(snapshot.cursor_visible());
         assert_eq!(snapshot.cursor_position().x, 1);
 
         backend.clear_region(ClearType::CurrentLine).unwrap();
-        assert_eq!(backend.surface().snapshot()[(0, 0)], TerminalCell::EMPTY);
+        assert_eq!(
+            backend.surface().snapshot().cell((0, 0)).unwrap(),
+            &TerminalCell::EMPTY
+        );
         backend.clear_region(ClearType::All).unwrap();
-        assert_eq!(backend.surface().snapshot()[(0, 1)], TerminalCell::EMPTY);
+        assert_eq!(
+            backend.surface().snapshot().cell((0, 1)).unwrap(),
+            &TerminalCell::EMPTY
+        );
 
         draw_text(&mut backend, "ABCDEFGH", 4);
         backend.resize(2, 1);
         let resized = backend.surface().snapshot();
         assert_eq!(resized.size(), GridSize::new(2, 1));
         assert_eq!(backend.size().unwrap(), Size::new(2, 1));
-        assert_eq!(resized[(0, 0)].symbol(), "A");
+        assert_eq!(resized.cell((0, 0)).unwrap().symbol(), "A");
     }
 
     #[test]
@@ -633,17 +637,67 @@ mod tests {
         draw_text(&mut after, "ABCDEF", 3);
         after.set_cursor_position((1, 0)).unwrap();
         after.clear_region(ClearType::AfterCursor).unwrap();
-        assert_eq!(after.surface().snapshot()[(0, 0)].symbol(), "A");
-        assert_eq!(after.surface().snapshot()[(1, 0)], TerminalCell::EMPTY);
-        assert_eq!(after.surface().snapshot()[(2, 1)], TerminalCell::EMPTY);
+        assert_eq!(
+            after.surface().snapshot().cell((0, 0)).unwrap().symbol(),
+            "A"
+        );
+        assert_eq!(
+            after.surface().snapshot().cell((1, 0)).unwrap(),
+            &TerminalCell::EMPTY
+        );
+        assert_eq!(
+            after.surface().snapshot().cell((2, 1)).unwrap(),
+            &TerminalCell::EMPTY
+        );
 
         let mut before = RatatuiBackend::new(3, 2);
         draw_text(&mut before, "ABCDEF", 3);
         before.set_cursor_position((1, 1)).unwrap();
         before.clear_region(ClearType::BeforeCursor).unwrap();
-        assert_eq!(before.surface().snapshot()[(0, 0)], TerminalCell::EMPTY);
-        assert_eq!(before.surface().snapshot()[(1, 1)], TerminalCell::EMPTY);
-        assert_eq!(before.surface().snapshot()[(2, 1)].symbol(), "F");
+        assert_eq!(
+            before.surface().snapshot().cell((0, 0)).unwrap(),
+            &TerminalCell::EMPTY
+        );
+        assert_eq!(
+            before.surface().snapshot().cell((1, 1)).unwrap(),
+            &TerminalCell::EMPTY
+        );
+        assert_eq!(
+            before.surface().snapshot().cell((2, 1)).unwrap().symbol(),
+            "F"
+        );
+    }
+
+    #[test]
+    fn clearing_with_the_cursor_below_the_grid_spares_the_last_row() {
+        let mut backend = RatatuiBackend::new(2, 2);
+        draw_text(&mut backend, "ABCD", 2);
+        backend.set_cursor_position((0, 5)).unwrap();
+        for clear_type in [
+            ClearType::AfterCursor,
+            ClearType::CurrentLine,
+            ClearType::UntilNewLine,
+        ] {
+            backend.clear_region(clear_type).unwrap();
+            assert_eq!(backend.surface().snapshot().to_string(), "AB\nCD");
+        }
+        backend.clear_region(ClearType::BeforeCursor).unwrap();
+        assert_eq!(backend.surface().snapshot().to_string(), "  \n  ");
+    }
+
+    #[test]
+    fn a_wide_glyph_moving_left_leaves_no_stale_cells() {
+        use ratatui::text::{Line, Span};
+        let mut terminal = RatatuiTerminal::new(4, 1);
+        let red = Style::new().bg(Color::Red);
+        terminal.draw(|frame| {
+            let line = Line::from(vec![Span::raw("a"), Span::styled("界", red)]);
+            frame.render_widget(line, frame.area());
+        });
+        terminal.draw(|frame| frame.render_widget(Span::styled("界", red), frame.area()));
+        let snapshot = terminal.surface().snapshot();
+        assert_eq!(snapshot.row_text(0), "界  ");
+        assert_eq!(snapshot.cell((2, 0)).unwrap(), &TerminalCell::EMPTY);
     }
 
     #[cfg(feature = "scrolling-regions")]
@@ -654,15 +708,15 @@ mod tests {
 
         backend.scroll_region_up(0..3, 1).unwrap();
         let up = backend.surface().snapshot();
-        assert_eq!(up[(0, 0)].symbol(), "B");
-        assert_eq!(up[(0, 1)].symbol(), "C");
-        assert_eq!(up[(0, 2)], TerminalCell::EMPTY);
+        assert_eq!(up.cell((0, 0)).unwrap().symbol(), "B");
+        assert_eq!(up.cell((0, 1)).unwrap().symbol(), "C");
+        assert_eq!(up.cell((0, 2)).unwrap(), &TerminalCell::EMPTY);
 
         backend.scroll_region_down(0..3, 1).unwrap();
         let down = backend.surface().snapshot();
-        assert_eq!(down[(0, 0)], TerminalCell::EMPTY);
-        assert_eq!(down[(0, 1)].symbol(), "B");
-        assert_eq!(down[(0, 2)].symbol(), "C");
+        assert_eq!(down.cell((0, 0)).unwrap(), &TerminalCell::EMPTY);
+        assert_eq!(down.cell((0, 1)).unwrap().symbol(), "B");
+        assert_eq!(down.cell((0, 2)).unwrap().symbol(), "C");
     }
 
     #[test]
@@ -672,9 +726,9 @@ mod tests {
 
         backend.resize(2, 3);
         let snapshot = backend.surface().snapshot();
-        assert_eq!(snapshot[(0, 0)].symbol(), "A");
-        assert_eq!(snapshot[(0, 1)].symbol(), "B");
-        assert_eq!(snapshot[(0, 2)].symbol(), "C");
+        assert_eq!(snapshot.cell((0, 0)).unwrap().symbol(), "A");
+        assert_eq!(snapshot.cell((0, 1)).unwrap().symbol(), "B");
+        assert_eq!(snapshot.cell((0, 2)).unwrap().symbol(), "C");
 
         // Pixel metrics stay zero until a renderer configures the cell size.
         let window_size = backend.window_size().unwrap();
@@ -708,12 +762,12 @@ mod tests {
         terminal.draw(|frame| frame.render_widget("ABCDEFGH", frame.area()));
         terminal.resize_grid(6, 3);
         assert_eq!(terminal.size().unwrap(), Size::new(6, 3));
-        assert_eq!(surface.size(), GridSize::new(6, 3));
+        assert_eq!(surface.info().size, GridSize::new(6, 3));
         terminal.draw(|frame| frame.render_widget("wide now", frame.area()));
-        assert_eq!(surface.snapshot()[(5, 0)].symbol(), "n");
+        assert_eq!(surface.snapshot().cell((5, 0)).unwrap().symbol(), "n");
         assert_eq!(terminal.surface().snapshot().row_text(0), "wide n");
         assert_eq!(
-            terminal.surface().snapshot().to_text(),
+            terminal.surface().snapshot().to_string(),
             "wide n\n      \n      "
         );
     }
@@ -728,8 +782,8 @@ mod tests {
         let scrolled = backend.surface().snapshot();
         assert_eq!(scrolled.cursor_position().x, 1);
         assert_eq!(scrolled.cursor_position().y, 2);
-        assert_eq!(scrolled[(0, 0)].symbol(), "B");
-        assert_eq!(scrolled[(0, 2)], TerminalCell::EMPTY);
+        assert_eq!(scrolled.cell((0, 0)).unwrap().symbol(), "B");
+        assert_eq!(scrolled.cell((0, 2)).unwrap(), &TerminalCell::EMPTY);
 
         backend.set_cursor_position((0, u16::MAX)).unwrap();
         backend.append_lines(0).unwrap();
@@ -741,7 +795,7 @@ mod tests {
     fn new_pairs_a_terminal_with_its_renderer() {
         let (terminal, renderer) = RatatuiTerminal::new(5, 2).with_renderer();
         assert!(terminal.surface().shares_state_with(renderer.surface()));
-        assert_eq!(terminal.surface().size(), GridSize::new(5, 2));
+        assert_eq!(terminal.surface().info().size, GridSize::new(5, 2));
 
         let mut terminal = RatatuiTerminal::new(5, 2);
         terminal.draw(|frame| {
@@ -749,7 +803,7 @@ mod tests {
         });
         let (terminal, renderer) = terminal.with_renderer();
         assert_eq!(renderer.surface().snapshot().row_text(0), "Hello");
-        assert_eq!(terminal.surface().snapshot().to_text(), "Hello\n     ");
+        assert_eq!(terminal.surface().snapshot().to_string(), "Hello\n     ");
     }
 
     #[test]
@@ -769,13 +823,13 @@ mod tests {
             })
             .unwrap();
         let snapshot = surface.snapshot();
-        assert_eq!(snapshot[(0, 0)].symbol(), "┌");
-        assert_eq!(snapshot[(1, 1)].symbol(), "h");
+        assert_eq!(snapshot.cell((0, 0)).unwrap().symbol(), "┌");
+        assert_eq!(snapshot.cell((1, 1)).unwrap().symbol(), "h");
         assert!(snapshot.cursor_visible());
         assert_eq!(snapshot.cursor_position().x, 3);
         assert_eq!(snapshot.cursor_position().y, 1);
 
-        let revision = surface.revision();
+        let revision = surface.info().revision;
         terminal
             .draw(|frame| {
                 frame.render_widget(
@@ -785,30 +839,6 @@ mod tests {
                 frame.set_cursor_position((3, 1));
             })
             .unwrap();
-        assert_eq!(surface.revision(), revision);
-    }
-}
-
-#[cfg(test)]
-mod audit_pixel_metrics {
-    use super::*;
-    use bevy_terminal::bevy::math::Vec2;
-    #[test]
-    fn shared_resize_away_and_back_invalidates_pixels() {
-        let mut backend = RatatuiBackend::new(4, 2);
-        backend.set_geometry(
-            test_support::measure(backend.surface(), Vec2::new(10.0, 20.0))
-                .measured()
-                .unwrap(),
-        );
-        let surface = backend.surface();
-        surface.update(|u| {
-            u.resize((8, 2));
-        });
-        assert_eq!(backend.window_size().unwrap().pixels, Size::new(0, 0));
-        surface.update(|u| {
-            u.resize((4, 2));
-        });
-        assert_eq!(backend.window_size().unwrap().pixels, Size::new(0, 0));
+        assert_eq!(surface.info().revision, revision);
     }
 }

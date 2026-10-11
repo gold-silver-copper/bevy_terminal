@@ -41,12 +41,6 @@ impl Default for TerminalTheme {
 }
 
 impl TerminalTheme {
-    /// Resolves a background color; [`TerminalColor::Default`] is the theme background.
-    #[cfg(test)]
-    pub(crate) fn background(&self, color: TerminalColor) -> BevyColor {
-        self.resolve(color, self.background)
-    }
-
     /// Resolves `color`, using `default` for [`TerminalColor::Default`]:
     /// the per-cell conversion [`Palette`] replaces, kept as its reference.
     #[cfg(test)]
@@ -59,19 +53,14 @@ impl TerminalTheme {
     }
 
     fn indexed(&self, index: u8) -> BevyColor {
-        match index {
-            0..=15 => self.ansi[usize::from(index)],
-            16..=231 => {
-                let offset = index - 16;
-                let red = offset / 36;
-                let green = (offset % 36) / 6;
-                let blue = offset % 6;
-                BevyColor::srgb_u8(cube(red), cube(green), cube(blue))
-            }
-            232..=255 => {
-                let value = 8 + (index - 232) * 10;
-                BevyColor::srgb_u8(value, value, value)
-            }
+        if let Some(&ansi) = self.ansi.get(usize::from(index)) {
+            ansi
+        } else if let Some(gray) = index.checked_sub(232) {
+            let value = 8 + gray * 10;
+            BevyColor::srgb_u8(value, value, value)
+        } else {
+            let offset = index - 16;
+            BevyColor::srgb_u8(cube(offset / 36), cube(offset % 36 / 6), cube(offset % 6))
         }
     }
 }
@@ -145,16 +134,23 @@ impl Palette {
     pub(crate) fn resolve(&self, color: TerminalColor, default: Resolved) -> Resolved {
         match color {
             TerminalColor::Default => default,
-            TerminalColor::Indexed(index) => self.indexed[usize::from(index)],
-            TerminalColor::Rgb(red, green, blue) => Resolved {
-                linear: LinearRgba::new(
-                    self.channels[usize::from(red)],
-                    self.channels[usize::from(green)],
-                    self.channels[usize::from(blue)],
-                    1.0,
-                ),
-                srgba: Srgba::rgb_u8(red, green, blue),
-            },
+            TerminalColor::Indexed(index) => self
+                .indexed
+                .get(usize::from(index))
+                .copied()
+                .unwrap_or(default),
+            TerminalColor::Rgb(red, green, blue) => {
+                let [r, g, b] = [red, green, blue].map(|value| {
+                    self.channels
+                        .get(usize::from(value))
+                        .copied()
+                        .unwrap_or_default()
+                });
+                Resolved {
+                    linear: LinearRgba::new(r, g, b, 1.0),
+                    srgba: Srgba::rgb_u8(red, green, blue),
+                }
+            }
         }
     }
 }
@@ -206,7 +202,6 @@ mod tests {
     #[test]
     fn default_uses_the_contextual_color() {
         let theme = TerminalTheme::default();
-        assert_eq!(theme.background(TerminalColor::Default), theme.background);
         let palette = Palette::new(&theme);
         let default = palette.resolve(TerminalColor::Default, palette.foreground);
         assert_eq!(default.linear, theme.foreground.to_linear());
