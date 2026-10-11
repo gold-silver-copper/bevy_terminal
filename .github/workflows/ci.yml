@@ -33,7 +33,7 @@ jobs:
         run: |
           curl -sSfL "https://raw.githubusercontent.com/ghostty-org/ghostty/$GHOSTTY_REVISION/src/font/nerd_font_attributes.zig" \
             -o "$RUNNER_TEMP/nerd_font_attributes.zig"
-          python3 ghostty-parity/gen_nerd_font_table.py "$RUNNER_TEMP/nerd_font_attributes.zig" "$GHOSTTY_REVISION" \
+          python3 tools/gen_nerd_font_table.py "$RUNNER_TEMP/nerd_font_attributes.zig" "$GHOSTTY_REVISION" \
             | diff -u crates/bevy_terminal/src/render/batch/nerd_font.rs -
 
   metal:
