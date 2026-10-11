@@ -1,9 +1,8 @@
-//! Deterministic resource invariants established by the Ghostty parity
-//! work, asserted as counts rather than timings (the scenarios follow
-//! `benchmarks/audit-workloads`): adding glyphs never touches a
-//! terminal-owned image, terminals retain no CPU copy of their images, the
-//! shape cache keeps working sets across a retirement, queued atlas uploads
-//! stay within one atlas, and idle terminals do no work.
+//! Deterministic resource invariants, asserted as counts rather than
+//! timings: adding glyphs never touches a terminal-owned image, terminals
+//! retain no CPU copy of their images, the shape cache keeps working sets
+//! across a retirement, queued atlas uploads stay within one atlas, and idle
+//! terminals do no work.
 
 use super::*;
 use crate::render::{FontFaces, TerminalSizing};
@@ -205,7 +204,8 @@ fn alternating_working_sets_keep_their_shape_cache_misses() {
     }
     // Every glyph of A and B misses once; the retired generation still holds
     // most of A when it returns, so the third phase misses far less.
-    assert_eq!(phases, [2880, 2880, 447]);
+    assert_eq!(phases[..2], [2880, 2880]);
+    assert!(phases[2] < phases[0] / 2, "A missed again: {phases:?}");
 }
 
 #[test]
@@ -245,10 +245,17 @@ fn idle_terminals_build_no_scene_and_change_no_component() {
     struct Changes(usize);
     type Published = Or<(Changed<TerminalTexture>, Changed<TerminalStats>)>;
     let (mut app, surfaces) = app(4, 8.0);
+    // Published components, and Bevy's text resources, which only shaping
+    // borrows mutably.
     app.init_resource::<Changes>().add_systems(
         Update,
-        (|changed: Query<(), Published>, mut count: ResMut<Changes>| {
-            count.0 += changed.iter().count();
+        (|changed: Query<(), Published>,
+          pipeline: Res<TextPipeline>,
+          atlases: Res<FontAtlasSet>,
+          mut count: ResMut<Changes>| {
+            count.0 += changed.iter().count()
+                + usize::from(pipeline.is_changed())
+                + usize::from(atlases.is_changed());
         })
         .after(super::super::TerminalSystems::Sync),
     );

@@ -27,7 +27,10 @@ use bevy::{
     },
     shader::Shader,
 };
-use std::sync::atomic::Ordering;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 /// The terminal shader, `batch.wgsl`.
 const BATCH_SHADER: Handle<Shader> = uuid_handle!("3db953c8-0f3f-4124-9a1c-6aa749bb0655");
@@ -57,7 +60,7 @@ pub(super) fn collect_batch_scenes(main_world: &mut World, pending: &mut Pending
         pending.scenes.remove(&output);
         pending.released_atlases.push(atlas);
     }
-    // Withdrawn before newer scenes arrive, which then absorb them.
+    // Withdrawn before newer scenes arrive, which then carry their uploads.
     for output in queue.withdrawn.drain() {
         if let Some(scene) = pending.scenes.get_mut(&output) {
             scene.withdraw();
@@ -68,7 +71,7 @@ pub(super) fn collect_batch_scenes(main_world: &mut World, pending: &mut Pending
         // main world, so superseding it cannot lose intermediate rows;
         // its atlas entries are carried over.
         if let Some(superseded) = pending.scenes.remove(&destination) {
-            scene.absorb(superseded);
+            superseded.carry_into(&mut scene.atlas_uploads, &mut scene.atlas_fresh);
         }
         pending.scenes.insert(destination, scene);
     }
@@ -112,13 +115,24 @@ fn instance_layout() -> VertexBufferLayout {
     }
 }
 
-/// Queues the pipelines and starts the GPU state afresh; `RenderStartup`
-/// also runs after a render device is recreated.
+/// The main world's count of recreated render devices (`SceneQueue::device`).
+#[derive(Resource)]
+pub(super) struct DeviceGeneration(pub(super) Arc<AtomicU64>);
+
+/// Queues the pipelines and starts the GPU state afresh. `RenderStartup`
+/// also runs after a render device is recreated: the main world is then told
+/// to rebuild every terminal's atlas and repaint it, since the new device
+/// holds neither.
 pub(super) fn init_batch_pipelines(
     mut commands: Commands,
     device: Res<RenderDevice>,
     pipeline_cache: Res<PipelineCache>,
+    previous: Option<Res<BatchGpuState>>,
+    generation: Res<DeviceGeneration>,
 ) {
+    if previous.is_some() {
+        generation.0.fetch_add(1, Ordering::AcqRel);
+    }
     let layout = BindGroupLayoutDescriptor::new(
         "bevy_terminal glyph atlas layout",
         &BindGroupLayoutEntries::sequential(
@@ -220,11 +234,6 @@ fn upload_atlas(
     sampler: &Sampler,
     scene: &BatchScene,
 ) {
-    if !atlases.contains_key(&scene.atlas) && !scene.atlas_fresh {
-        // Earlier entries never reached this texture (the render world was
-        // reset): have the main world rebuild the atlas.
-        scene.atlas_lost.store(true, Ordering::Release);
-    }
     if scene.atlas_uploads.is_empty() {
         return;
     }
@@ -283,7 +292,7 @@ struct UploadChunk {
 /// Preserve scene and instance order while bounding each upload. Empty scenes
 /// still get a pass, because clearing an image does not require any instances.
 fn plan_uploads(counts: impl IntoIterator<Item = usize>, limit: usize) -> Vec<UploadChunk> {
-    assert!(limit > 0);
+    let limit = limit.max(1);
     let mut chunks = Vec::new();
     let mut chunk = UploadChunk::default();
     for (scene, count) in counts.into_iter().enumerate() {
@@ -352,28 +361,20 @@ pub(super) fn render_batch_scenes(
     let scenes = std::mem::take(&mut pending.scenes);
     let mut renderable = Vec::with_capacity(scenes.len());
     for scene in scenes.into_values() {
-        let Some(target) = gpu_images.get(scene.destination) else {
-            pending.scenes.insert(scene.destination, scene);
-            continue;
-        };
-        let target_size = target.texture_descriptor.size;
-        if target_size.width != scene.destination_size.x
-            || target_size.height != scene.destination_size.y
-        {
-            // An Image asset replacement can coexist with its previous render asset for a frame.
-            // Keep the complete replacement scene pending until the matching GPU texture is ready.
-            pending.scenes.insert(scene.destination, scene);
-            continue;
-        }
-        if scene
+        // An Image asset replacement can coexist with its previous render asset for a frame:
+        // a scene waits for a target of its size, and for its glyph sources.
+        let ready = gpu_images.get(scene.destination).is_some_and(|target| {
+            let size = target.texture_descriptor.size;
+            UVec2::new(size.width, size.height) == scene.destination_size
+        }) && scene
             .batches
             .iter()
-            .any(|batch| batch.texture != scene.atlas && gpu_images.get(batch.texture).is_none())
-        {
+            .all(|batch| batch.texture == scene.atlas || gpu_images.get(batch.texture).is_some());
+        if ready {
+            renderable.push(scene);
+        } else {
             pending.scenes.insert(scene.destination, scene);
-            continue;
         }
-        renderable.push(scene);
     }
     if renderable.is_empty() {
         return;
@@ -406,9 +407,10 @@ pub(super) fn render_batch_scenes(
             .iter()
             .filter(|batch| batch.texture != scene.atlas)
         {
-            let image = gpu_images
-                .get(batch.texture)
-                .expect("glyph readiness was checked before bind-group creation");
+            // Readiness was checked above.
+            let Some(image) = gpu_images.get(batch.texture) else {
+                continue;
+            };
             source_bind_groups.entry(batch.texture).or_insert_with(|| {
                 device.create_bind_group(
                     "bevy_terminal glyph atlas",
@@ -440,8 +442,11 @@ pub(super) fn render_batch_scenes(
     for (chunk, buffer) in chunks.iter().zip(instances.iter_mut()) {
         buffer.clear();
         for slice in &chunk.slices {
-            for instance in &renderable[slice.scene].instances[slice.instances.clone()] {
-                buffer.push(*instance);
+            if let Some(scene_instances) = renderable
+                .get(slice.scene)
+                .and_then(|scene| scene.instances.get(slice.instances.clone()))
+            {
+                buffer.values_mut().extend_from_slice(scene_instances);
             }
         }
         if !buffer.is_empty() {
@@ -454,10 +459,13 @@ pub(super) fn render_batch_scenes(
     let encoder = render_context.command_encoder();
     for (chunk, buffer) in chunks.iter().zip(instances.iter()) {
         for slice in &chunk.slices {
-            let scene = &renderable[slice.scene];
-            let target = gpu_images
-                .get(scene.destination)
-                .expect("destination readiness was checked before encoding");
+            // Readiness was checked above.
+            let Some((scene, target)) = renderable
+                .get(slice.scene)
+                .and_then(|scene| Some((scene, gpu_images.get(scene.destination)?)))
+            else {
+                continue;
+            };
             let load = if scene.clear && slice.instances.start == 0 {
                 LoadOp::Clear(scene.clear_color.to_linear().into())
             } else {
@@ -479,8 +487,8 @@ pub(super) fn render_batch_scenes(
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if !slice.instances.is_empty() {
-                let vertex_buffer = buffer.buffer().expect("non-empty chunks are written");
+            // Chunks with instances are written.
+            if let Some(vertex_buffer) = buffer.buffer().filter(|_| !slice.instances.is_empty()) {
                 pass.set_vertex_buffer(
                     0,
                     *vertex_buffer.slice((slice.offset * size_of::<QuadInstance>()) as u64..),
@@ -504,8 +512,10 @@ pub(super) fn render_batch_scenes(
                         atlases
                             .get(&scene.atlas)
                             .map_or(&*empty_atlas, |atlas| &atlas.bind_group)
+                    } else if let Some(bind_group) = source_bind_groups.get(&batch.texture) {
+                        bind_group
                     } else {
-                        &source_bind_groups[&batch.texture]
+                        continue;
                     };
                     pass.set_bind_group(0, bind_group, &[]);
                     pass.draw(

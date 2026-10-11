@@ -15,7 +15,6 @@ use bevy::{
     },
 };
 use std::borrow::Cow;
-use std::sync::{Arc, atomic::AtomicBool};
 
 // Keep common terminal alphabets hot without retaining every grapheme ever
 // displayed. A full cache starts a fresh working set; individually oversized
@@ -378,10 +377,6 @@ pub(super) struct UnifiedGlyphAtlas {
     /// Whether no entry has been handed to a scene since the atlas was last
     /// cleared: the next scene's uploads then hold every entry.
     pub(super) fresh: bool,
-    /// Set by the render world when it had to create this atlas's texture for
-    /// a scene that relies on earlier entries (after a render device reset):
-    /// the main world must rebuild the atlas from scratch.
-    pub(super) lost: Arc<AtomicBool>,
     /// The atlas contents, for tests that inspect drawn pixels.
     #[cfg(test)]
     pub(super) shadow: Vec<u8>,
@@ -400,7 +395,6 @@ impl Default for UnifiedGlyphAtlas {
             uploads: Vec::new(),
             overflowed: false,
             fresh: true,
-            lost: Arc::default(),
             #[cfg(test)]
             shadow: vec![0; (GLYPH_ATLAS_SIZE * GLYPH_ATLAS_SIZE * 4) as usize],
         }
