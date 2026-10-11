@@ -902,7 +902,7 @@ pub(super) fn cached_shape<'s>(
             cell_height: cell.y,
             box_thickness: raster.box_thickness,
         };
-        let Some(drawn) = sprite::draw(codepoint, cell.x, cell.y, metrics) else {
+        let Some(drawn) = sprite::draw(codepoint, metrics) else {
             return shapes.insert(face, text, columns, Vec::new());
         };
         let Some(uv) = glyph_atlas.cache_sprite(codepoint, cell, &drawn) else {

@@ -1,160 +1,189 @@
-//! Compares every sprite with Ghostty's reference atlases
-//! (`src/font/sprite/testdata`, copied under `testdata/` with Ghostty's MIT
-//! license). Each atlas holds 256 codepoints in a 16 × 16 grid of canvases
-//! including their quarter-cell margins, drawn at four sets of metrics.
-//!
-//! Rectangle-built glyphs must match exactly. Anti-aliased paths come from a
-//! different rasterizer (z2d in Ghostty), so their edges may differ by a
-//! bounded amount while their shape must agree. Shades are dithered instead
-//! of Ghostty's uniform translucency and are checked on their own.
+//! Rules every sprite follows: drawing never fails at any cell size, box
+//! drawing lines meet their neighbours' lines at the cell edges, blocks fill
+//! their fraction of the cell, and shades are dithered dots that tile.
 
 use super::*;
 use bevy::math::{IVec2, UVec2};
 
-/// (cell width, ascent, descent, box thickness), as Ghostty's test draws them.
-const METRICS: [(u32, u32, u32, u32); 4] = [
-    (18, 30, 6, 4),
-    (12, 20, 4, 3),
-    (11, 19, 2, 2),
-    (9, 15, 2, 1),
-];
-
-/// Whether Ghostty draws `codepoint` with anti-aliased paths.
-fn uses_paths(codepoint: u32) -> bool {
-    matches!(
-        codepoint,
-        0x256d..=0x2573
-            | 0x25e2..=0x25ff
-            | 0xe0b0..=0xe0d4
-            | 0xf5d6..=0xf5ed
-            | 0xf5ee..=0xf60d
-            | 0x1fb3c..=0x1fb6f
-            | 0x1fb98..=0x1fbae
-            | 0x1fbbd..=0x1fbbf
-            | 0x1fbd0..=0x1fbe3
-            | 0x1fbe8..=0x1fbef
-            | 0x1cc30..=0x1cc3f
-            | 0x1ce00..=0x1ce0c
-    )
+fn metrics(cell_width: u32, cell_height: u32, box_thickness: u32) -> Metrics {
+    Metrics {
+        cell_width,
+        cell_height,
+        box_thickness,
+    }
 }
 
-/// Whether `codepoint` is a shade that deliberately differs from Ghostty.
-fn dithered(codepoint: u32) -> bool {
-    matches!(codepoint, 0x2591..=0x2593)
+fn sprites() -> impl Iterator<Item = u32> {
+    (0x2500..=0x1ceaf).filter(|codepoint| is_sprite(*codepoint))
 }
 
-fn reference(block: u32, (width, height, thickness): (u32, u32, u32)) -> Option<(u32, Vec<u8>)> {
-    let path = format!(
-        "{}/src/render/batch/sprite/testdata/U+{block:X}...U+{:X}-{width}x{height}+{thickness}.png",
-        env!("CARGO_MANIFEST_DIR"),
-        block + 0xff
-    );
-    let file = std::fs::File::open(path).ok()?;
-    let mut reader = png::Decoder::new(std::io::BufReader::new(file))
-        .read_info()
-        .unwrap();
-    let mut buffer = vec![0; reader.output_buffer_size().unwrap()];
-    let info = reader.next_frame(&mut buffer).unwrap();
-    let channels = info.color_type.samples();
-    let gray = buffer[..info.buffer_size()]
-        .iter()
-        .step_by(channels)
-        .copied()
-        .collect();
-    Some((info.width, gray))
+/// The coverage of `codepoint` inside the cell, row by row; ink drawn
+/// outside the cell is dropped.
+fn cell_alpha(codepoint: u32, metrics: Metrics) -> Vec<u8> {
+    let (width, height) = (metrics.cell_width, metrics.cell_height);
+    let mut cell = vec![0; (width * height) as usize];
+    let Some(sprite) = draw(codepoint, metrics) else {
+        return cell;
+    };
+    for (index, alpha) in sprite.alpha.iter().enumerate() {
+        let index = index as u32;
+        let at =
+            sprite.offset + UVec2::new(index % sprite.size.x, index / sprite.size.x).as_ivec2();
+        if at.x >= 0 && at.y >= 0 && (at.x as u32) < width && (at.y as u32) < height {
+            cell[(at.y as u32 * width + at.x as u32) as usize] = *alpha;
+        }
+    }
+    cell
 }
 
 #[test]
-fn sprites_match_ghostty_reference_atlases() {
-    let mut exact_failures = Vec::new();
-    let mut path_failures = Vec::new();
-    let mut compared = 0;
-    for (width, ascent, descent, thickness) in METRICS {
-        let height = ascent + descent;
-        let metrics = Metrics {
-            cell_width: width,
-            cell_height: height,
-            box_thickness: thickness,
+fn every_sprite_draws_at_any_cell_size() {
+    let tiny = (1..=5).flat_map(|width| (1..=5).map(move |height| (width, height, 1)));
+    for (width, height, thickness) in tiny.chain([(7, 30, 2), (40, 20, 5), (96, 200, 9)]) {
+        let metrics = metrics(width, height, thickness);
+        for codepoint in sprites() {
+            let Some(sprite) = draw(codepoint, metrics) else {
+                continue;
+            };
+            let label = format!("U+{codepoint:04X} at {width}x{height}");
+            assert_eq!(
+                sprite.alpha.len(),
+                (sprite.size.x * sprite.size.y) as usize,
+                "{label}"
+            );
+            // Drawings may overshoot the cell by at most its quarter margin.
+            let margin = IVec2::new(width as i32 / 4, height as i32 / 4);
+            let end = sprite.offset + sprite.size.as_ivec2();
+            assert!(sprite.offset.cmpge(-margin).all(), "{label}");
+            assert!(
+                end.cmple(IVec2::new(width as i32, height as i32) + margin)
+                    .all(),
+                "{label}"
+            );
+        }
+    }
+}
+
+/// Every edge a box-drawing line reaches is crossed exactly like a straight
+/// light, heavy or double line crosses it, so neighbouring cells join
+/// without seams or steps.
+#[test]
+fn box_drawing_lines_meet_at_cell_edges() {
+    let fading = 0xf5d2..=0xf5d5;
+    let diagonals = 0x2571..=0x2573;
+    for (width, height, thickness) in [
+        (18, 36, 4),
+        (12, 24, 3),
+        (11, 21, 2),
+        (9, 17, 1),
+        (8, 15, 1),
+    ] {
+        let metrics = metrics(width, height, thickness);
+        let inked = |codepoint: u32| -> Vec<bool> {
+            let alpha = cell_alpha(codepoint, metrics);
+            alpha.iter().map(|alpha| *alpha >= 128).collect()
         };
-        let padding = UVec2::new(width / 4, height / 4);
-        let stride = UVec2::new(width, height) + 2 * padding;
-        let mut blocks: Vec<u32> = (0x2500..=0x1ceaf_u32)
-            .filter(|cp| is_sprite(*cp))
-            .map(|cp| cp & !0xff)
-            .collect();
-        blocks.dedup();
-        for block in blocks {
-            let (atlas_width, expected) = reference(block, (width, height, thickness))
-                .unwrap_or_else(|| panic!("reference atlas for U+{block:X}"));
-            for codepoint in (block..block + 0x100).filter(|cp| is_sprite(*cp) && !dithered(*cp)) {
-                compared += 1;
-                let index = codepoint - block;
-                let tile = UVec2::new(index % 16, index / 16) * stride;
-                let mut actual = vec![0u8; (stride.x * stride.y) as usize];
-                if let Some(sprite) = draw(codepoint, width, height, metrics) {
-                    let origin = sprite.offset + padding.as_ivec2();
-                    for y in 0..sprite.size.y {
-                        for x in 0..sprite.size.x {
-                            let p = origin + IVec2::new(x as i32, y as i32);
-                            actual[(p.y as u32 * stride.x + p.x as u32) as usize] =
-                                sprite.alpha[(y * sprite.size.x + x) as usize];
-                        }
-                    }
-                }
-                let expected: Vec<u8> = (0..stride.y)
-                    .flat_map(|y| {
-                        let start = ((tile.y + y) * atlas_width + tile.x) as usize;
-                        expected[start..start + stride.x as usize].iter().copied()
-                    })
-                    .collect();
-                let differences: Vec<u8> = expected
-                    .iter()
-                    .zip(&actual)
-                    .map(|(e, a)| e.abs_diff(*a))
-                    .collect();
-                let worst = differences.iter().copied().max().unwrap_or(0);
-                let total: u32 = differences.iter().map(|d| u32::from(*d)).sum();
-                let ink: u32 = expected.iter().map(|e| u32::from(*e)).sum::<u32>().max(255);
-                let label = format!("U+{codepoint:X} at {width}x{height}+{thickness}");
-                if uses_paths(codepoint) {
-                    // Edges may differ; the silhouette may not: at most a
-                    // tenth of the ink (one-pixel strokes are mostly edge),
-                    // and hardly any pixel flipped between on and off.
-                    let flipped = expected
-                        .iter()
-                        .zip(&actual)
-                        .filter(|(e, a)| (**e >= 224 && **a < 32) || (**e < 32 && **a >= 224))
-                        .count();
-                    if total * 10 > ink || flipped > (stride.x + stride.y) as usize / 8 {
-                        path_failures.push(format!(
-                            "{label}: {total} total difference over {ink} ink, {flipped} flipped"
-                        ));
-                    }
-                } else if worst != 0 {
-                    let first = differences.iter().position(|d| *d != 0).unwrap() as u32;
-                    exact_failures.push(format!(
-                        "{label}: {} pixels differ, first at ({},{})",
-                        differences.iter().filter(|d| **d != 0).count(),
-                        first % stride.x,
-                        first / stride.x
-                    ));
+        let column = |ink: &[bool], x: u32| -> Vec<bool> {
+            (0..height).map(|y| ink[(y * width + x) as usize]).collect()
+        };
+        let row = |ink: &[bool], y: u32| -> Vec<bool> {
+            (0..width).map(|x| ink[(y * width + x) as usize]).collect()
+        };
+        // ─ ━ ═ and │ ┃ ║: straight lines continue across their own edges.
+        let across: Vec<Vec<bool>> = [0x2500, 0x2501, 0x2550]
+            .map(|codepoint| {
+                let ink = inked(codepoint);
+                assert_eq!(column(&ink, 0), column(&ink, width - 1));
+                column(&ink, 0)
+            })
+            .into();
+        let down: Vec<Vec<bool>> = [0x2502, 0x2503, 0x2551]
+            .map(|codepoint| {
+                let ink = inked(codepoint);
+                assert_eq!(row(&ink, 0), row(&ink, height - 1));
+                row(&ink, 0)
+            })
+            .into();
+        // Light lines are the box thickness, heavy ones twice that.
+        let count = |line: &[bool]| line.iter().filter(|inked| **inked).count() as u32;
+        assert_eq!(
+            (count(&across[0]), count(&across[1])),
+            (thickness, 2 * thickness)
+        );
+        assert_eq!(
+            (count(&down[0]), count(&down[1])),
+            (thickness, 2 * thickness)
+        );
+
+        let lines = (0x2500..=0x257f).chain([0x1fbaf]).chain(0xf5d0..=0xf5ed);
+        for codepoint in lines.filter(|c| !fading.contains(c) && !diagonals.contains(c)) {
+            let ink = inked(codepoint);
+            let edges = [
+                (column(&ink, 0), &across),
+                (column(&ink, width - 1), &across),
+                (row(&ink, 0), &down),
+                (row(&ink, height - 1), &down),
+            ];
+            for (edge, (crossing, straight)) in ["left", "right", "top", "bottom"].iter().zip(edges)
+            {
+                assert!(
+                    crossing.iter().all(|inked| !inked) || straight.contains(&crossing),
+                    "U+{codepoint:04X} at {width}x{height}+{thickness}: {edge} edge {crossing:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Eighth blocks fill whole rows from the bottom or columns from the left.
+#[test]
+fn eighth_blocks_fill_their_fraction() {
+    for (width, height) in [(9, 17), (10, 20), (11, 21), (3, 5)] {
+        let metrics = metrics(width, height, 1);
+        let eighths = |n: u32, size: u32| (f64::from(n * size) / 8.0).round() as u32;
+        for n in 1..=8 {
+            let lower = cell_alpha(0x2580 + n, metrics);
+            let left = cell_alpha(0x2590 - n, metrics);
+            for y in 0..height {
+                for x in 0..width {
+                    let index = (y * width + x) as usize;
+                    let in_lower = y >= height - eighths(n, height);
+                    assert_eq!(lower[index] == 255, in_lower, "U+{:04X}", 0x2580 + n);
+                    assert_eq!(
+                        left[index] == 255,
+                        x < eighths(n, width),
+                        "U+{:04X}",
+                        0x2590 - n
+                    );
                 }
             }
         }
     }
-    assert_eq!(compared, 4 * 869, "every undithered sprite at every size");
-    assert!(
-        exact_failures.is_empty(),
-        "{} exact failures:\n{}",
-        exact_failures.len(),
-        exact_failures.join("\n")
-    );
-    assert!(
-        path_failures.is_empty(),
-        "{} path failures:\n{}",
-        path_failures.len(),
-        path_failures.join("\n")
-    );
+}
+
+/// Separated quadrants and sextants keep a gap at every edge of the cell,
+/// however small, so neighbouring mosaics stay apart.
+#[test]
+fn separated_mosaics_keep_their_gaps() {
+    for width in 1..=12 {
+        for height in 1..=24 {
+            let metrics = metrics(width, height, 1);
+            for codepoint in (0x1cc21..=0x1cc2f).chain(0x1ce51..=0x1ce8f) {
+                let alpha = cell_alpha(codepoint, metrics);
+                let edge = |index: usize| {
+                    let (x, y) = (index as u32 % width, index as u32 / width);
+                    x == 0 || y == 0 || x == width - 1 || y == height - 1
+                };
+                assert!(
+                    alpha
+                        .iter()
+                        .enumerate()
+                        .all(|(index, alpha)| *alpha == 0 || !edge(index)),
+                    "U+{codepoint:04X} at {width}x{height}"
+                );
+            }
+        }
+    }
 }
 
 /// The scene draws `solid_block` rectangles as solid quads instead of the
@@ -169,7 +198,7 @@ fn solid_blocks_are_exactly_the_single_rectangle_sprites() {
             box_thickness: 1,
         };
         for codepoint in 0x2580..=0x259f {
-            let sprite = draw(codepoint, width, height, metrics).expect("block element");
+            let sprite = draw(codepoint, metrics).expect("block element");
             let inked = |x: i32, y: i32| {
                 let (x, y) = (x - sprite.offset.x, y - sprite.offset.y);
                 x >= 0
@@ -209,7 +238,7 @@ fn ink(codepoint: u32, width: u32, height: u32) -> Vec<bool> {
         cell_height: height,
         box_thickness: 1,
     };
-    let sprite = draw(codepoint, width, height, metrics).expect("shade");
+    let sprite = draw(codepoint, metrics).expect("shade");
     assert!(
         sprite
             .alpha
