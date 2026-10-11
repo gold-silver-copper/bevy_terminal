@@ -1,13 +1,5 @@
 [
   {
-    "local": "../cascadia-mono/CascadiaMono-Regular.ttf",
-    "sha256": "06520d032ec274fa5040b22c6f4a1d829081b24ba40b2da56dae89bf10c7b481",
-    "input_name": "CascadiaMono-Regular.ttf",
-    "output": "FidelityASCII.ttf",
-    "family": "Fidelity ASCII",
-    "text": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~█"
-  },
-  {
     "repository": "notofonts/noto-cjk",
     "revision": "f8d157532fbfaeda587e826d4cd5b21a49186f7c",
     "path": "Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
@@ -36,7 +28,7 @@
     "archive_member": "Iosevka-Regular.ttf",
     "sha256": "8b6065f04ca4ff4ce95ae48cf9f2f31b584823557adc38ec817dbe6f3745624b",
     "input_name": "Iosevka-Regular.ttf",
-    "output": "../../../crates/bevy_terminal/assets/fonts/fidelity/FidelityWideSymbols.ttf",
+    "output": "FidelityWideSymbols.ttf",
     "family": "Fidelity Wide Symbols",
     "text": "()0W[]_agjpqy{|}ÅÉẪ↔∑∞█◆★⠿⣿",
     "layout_features": []
@@ -48,7 +40,7 @@
     "url": "https://raw.githubusercontent.com/ghostty-org/ghostty/b40acce58dcf77df52231c3798ea58e924647c89/src/font/res/JetBrainsMonoNerdFont-Regular.ttf",
     "sha256": "a2f4268a1719b95d1f1448376173a42317919cb598423f18ea327eaca13dd916",
     "input_name": "ghostty-JetBrainsMonoNerdFont-Regular.ttf",
-    "output": "../../../crates/bevy_terminal/assets/fonts/fidelity/FidelityNerdSymbols.ttf",
+    "output": "FidelityNerdSymbols.ttf",
     "family": "Fidelity Nerd Symbols",
     "text": "0☰",
     "layout_features": []
