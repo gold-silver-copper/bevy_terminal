@@ -9,8 +9,19 @@ repository = "https://github.com/gold-silver-copper/bevy_terminal"
 documentation = "https://docs.rs/bevy_terminal"
 keywords = ["bevy", "terminal", "tui", "rendering"]
 categories = ["game-development", "gui", "rendering"]
-# Ghostty's reference sprite atlases are repository-only test fixtures.
-exclude = ["src/render/batch/sprite/testdata"]
+# Library source only: test modules and fixtures stay in the repository.
+include = [
+    "src/**/*.rs",
+    "src/**/*.wgsl",
+    "src/**/*.txt",
+    "!src/**/tests.rs",
+    "!src/render/batch/baseline.rs",
+    "!src/render/batch/invariants.rs",
+    "!src/render/batch/probe.rs",
+    "!src/render/batch/replay.rs",
+    "/README.md",
+    "/LICENSE",
+]
 
 [features]
 default = ["system_fonts"]

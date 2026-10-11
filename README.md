@@ -140,8 +140,8 @@ enable the appropriate Bevy features in the application itself.
 Cells snap to physical pixels. Wide glyphs occupy explicit continuation cells,
 and shaping stays anchored to grid columns. The renderer supports ANSI/indexed/RGB
 colors, underline colors, style flags, cursor shapes, and blinking. Unicode
-coverage depends on the selected fonts and fallback; inspect the fidelity harness
-for the fonts your application ships.
+coverage depends on the selected fonts and fallback; the `render_test` example
+shows the coverage of the fonts your application ships.
 
 The output is `Rgba8UnormSrgb` with straight alpha, suitable for Bevy UI, sprites,
 and materials. Transparent backgrounds are supported.
@@ -174,8 +174,7 @@ should run after registration, or be repeated when the font collection changes.
   trait, such as `soft_ratatui`.
 
 `TerminalStats` counters remain available without timing instrumentation and are
-zero on idle frames; timing fields are zero when `timings` is disabled. Benchmarks
-that report those timings enable the feature explicitly.
+zero on idle frames; timing fields are zero when `timings` is disabled.
 
 The adapter exports `RatatuiBackend`, `RatatuiTerminal`, `TerminalRenderer`, the
 `bevy_terminal` crate, and a curated `prelude`. Advanced renderer modules are
@@ -184,129 +183,47 @@ across both crate roots.
 
 ## Render QA
 
-The `image_export` example uses the Git development dependency
-`bevy_image_export` to write frames under `target/render-qa/`:
+The examples live in the repository, not in the published crate; run them from
+a checkout. The export examples use the Git development dependency
+`bevy_image_export`.
 
 ```text
-cargo run --example colors_rgb                      # live full-grid true-color stress test, vsync off
 cargo run --example render_test                     # one window with every style/color/glyph check
 cargo run --example render_test -- --export         # same scene to target/render-test/<family>/
-cargo run --example render_test -- --font iosevka-fixed
-cargo run --example image_export
-cargo run --example high_dpi_export
-cargo run --example multiple_terminals_export
+cargo run --example render_test -- --font hack      # start with another vendored family
+cargo run --example colors_rgb                      # live full-grid true-color stress test, vsync off
+cargo run --example image_export                    # frames under target/render-qa/
+cargo run --example high_dpi_export                 # 2x raster under target/render-qa-2x/
+cargo run --example multiple_terminals_export       # target/multiple-terminals-qa/
 ```
 
 For optimized builds that still rebuild quickly after an edit, use the
-`release-fast` profile (no LTO, 16 codegen units, incremental; binaries land in
-`target/release-fast/`). `release` itself is unchanged:
+`release-fast` profile (no LTO, 16 codegen units, incremental):
+`cargo run --profile release-fast --example render_test`.
+
+`render_test` shows all 512 modifier combinations, the four font faces, ANSI 16
+as foreground/background/reversed, the 256-color cube and grayscale ramp, RGB
+gradients, underline colors, every box-drawing weight and junction,
+block/quadrant/shade/braille elements, wide CJK/emoji cells with guard columns,
+combining marks, RTL/Indic text, and the cursor. `Space`/`Tab` (`Shift+Tab`
+back) cycle through the vendored font families. `colors_rgb` ports Ratatui's
+animated RGB example and redraws every cell on every frame; its title bar
+reports the grid size and per-frame renderer statistics.
+
+The interactive examples are resizable: their grids follow the window at the
+renderer's measured cell size instead of the window being sized from a fixed
+column × row count. `image_export` shrinks the grid partway through, and
+`multiple_terminals_export` grows one of two terminals, so the exported frames
+also catch stale pixels after a resize.
+
+Glyph placement is checked by rules rather than reference images: library tests
+verify that ink is clipped only at the texture's edges, that box, block and
+shade tiles meet without seams, and that symbols fit their cells. The GPU
+readback tests need a GPU:
 
 ```text
-cargo run --profile release-fast --example render_test
-cargo run --profile release-fast --example glyph_fidelity -- --check --font all --scale all
+cargo test --workspace --all-features --test gpu_readback --test export_readiness -- --ignored --test-threads=1
 ```
-
-`colors_rgb` ports Ratatui's animated RGB example and redraws every cell on
-every frame, making it a live renderer-throughput stress test. Its title bar
-reports the fitted grid size and per-frame renderer statistics.
-
-The fidelity harnesses and their multi-font fixtures are repository-only; run
-the commands below from a Git checkout. They are excluded from the crates.io package.
-
-`glyph_fidelity` is the clipping/seam harness: full printable ASCII in four
-faces, Latin-1/Extended-A, Greek, Cyrillic, combining-mark stacks, all box
-drawing (U+2500–257F), block elements, braille, shapes, arrows, a wide
-CJK/emoji row and block/line tile panels on a per-cell checkerboard with `│`
-guard columns:
-
-```text
-cargo run --example glyph_fidelity                                   # window; Space/Tab cycle fonts
-cargo run --example glyph_fidelity -- --export --font all --scale all # target/glyph-fidelity/<family>/<scale>x/
-cargo run --example glyph_fidelity -- --check --font all --scale all  # GPU readback assertions, exit 1 on failure
-cargo test --test glyph_fidelity -- --ignored                         # the same check as an integration test
-```
-
-`--check` compares GPU pixels with rows composed from raw Bevy glyph-atlas
-coverage under Ghostty's placement rules, independently of the renderer's
-fitting: ordinary text at its rasterized size and bearings on a shared
-typographic baseline, centered in cells wider than the face, symbols scaled
-down only as needed to fit the face box of the cells they may occupy, colour
-glyphs covering it, ink
-overflowing neighbouring cells and rows (only the texture's edges clip it),
-later runs drawn over earlier ones. Every content
-cell, blank ones included, must match within two sRGB code values per blend
-(8-bit linear blending on software Vulkan), with text coverage blended by
-Ghostty's `linear-corrected` rule against the cell background. Solid blocks, half-block joins, and line panels have
-strict continuity checks at 1×, 1.5×, 2×, and 3×. Grid graphics are drawn
-procedurally, like Ghostty's sprites, and are compared with Ghostty's own
-reference sprite atlases by `cargo test -p bevy_terminal --lib sprite`, except
-for the shades, which are dithered in the classic VGA patterns rather than
-filled translucently, and are tested for density and seamless tiling.
-
-Checks disable host font discovery and use bundled faces plus a monochrome emoji
-fallback. Unsupported characters are reported as font-coverage gaps, separately
-from rendering failures. TSV results, full captures, and native/8× glyph details
-are written to `target/glyph-fidelity-check` (override with `--output`).
-
-```text
-cargo run --example glyph_fidelity -- --check --font all --scale all --from-font 23
-cargo run --example glyph_fidelity -- --check --font all --scale all --from-font 23 --line-height 0.85
-cargo run --example glyph_fidelity -- --check --font all --scale all --fixed-cell 9x18 --font-size 18
-cargo run --example glyph_fidelity -- --check --font all --scale all --fixed-cell 14x24 --font-size 16
-cargo test --example glyph_fidelity  # reference-oracle regressions
-```
-
-`cargo run --example glyph_coverage` checks required script fallback and color
-emoji with pinned test fonts and no host discovery. It verifies configured
-baseline placement, intrinsic emoji colors over two backgrounds, wide-cell
-occupancy, and untouched neighbors. Eight stages cover fractional metrics,
-compact/fixed cells, font changes, content replacement, and idle rendering.
-Missing required glyphs or an unexpected resolved face fail the run. Results
-and captures go to `target/glyph-coverage` (`--output` overrides this).
-VS16 color sequences are covered. `--text-presentation` adds a strict VS15
-fallback probe, currently failing in Parley 0.9 because it selects the emoji
-fallback even for text presentation; this capability remains outstanding.
-
-Test-font subset provenance, licensing, and reproduction instructions are in
-[`assets/fonts/fidelity/README.md`](assets/fonts/fidelity/README.md).
-
-The interactive UI examples are resizable: their grids follow the window at the
-renderer's measured cell size (see the application-owned fitting helper in
-`examples/common/app.rs::fit_grid_to_window`) instead of the window being sized
-from a fixed column × row count.
-
-`render_test` is the single all-in-one check (press `Space`/`Tab` to cycle
-through the vendored font families under `assets/fonts/`, `Shift+Tab` for the
-previous one; `--font <index|dir>` or `RENDER_TEST_FONT` picks the initial
-family, `--export` or `RENDER_TEST_EXPORT=1` exports headlessly): all
-512 modifier combinations,
-the four font faces, ANSI 16 as foreground/background/reversed, the 256-color
-cube and grayscale ramp, RGB gradients, underline colors, every box-drawing
-weight and junction, block/quadrant/shade/braille elements, wide CJK/emoji
-cells with guard columns, combining marks, RTL/Indic text, and the cursor.
-
-In `image_export`, early frames contain the complete 72×22 scene. Later frames shrink the backend
-to 60×18 so the exported sequence also catches row-stride errors and stale
-texture pixels after a resize.
-
-`high_dpi_export` writes the renderer-owned terminal texture at 2× scale under
-`target/render-qa-2x/`, exercising native 2× font rasterization without a
-camera resampling stage.
-
-`multiple_terminals_export` writes a before/after sequence under
-`target/multiple-terminals-qa/`; the second texture grows while the first
-retains its dimensions. Measured sizes depend on the selected font.
-
-
-## Renderer performance comparison
-
-`benchmarks/renderer-comparison` is a separate workspace containing a
-windowless, synchronized Bevy harness for comparing `bevy_terminal_ratatui`,
-`soft_ratatui`, `egui_ratatui`, `parley_ratatui`, and `bevy_tui_texture` with
-identical Ratatui workloads. It reports raw JSON samples plus CSV/Markdown
-summaries and keeps all third-party renderer dependencies outside this library's
-runtime manifest. See
-[`benchmarks/renderer-comparison/README.md`](benchmarks/renderer-comparison/README.md).
 
 ## Ratatui upstream example ports
 
@@ -331,20 +248,8 @@ keeping fixed, crisp cell dimensions; deterministic exports remain 100×62.
 The exporter writes stable frames beneath `target/ratatui-examples/<slug>/`.
 Network responses, randomness, clocks, tracing subscribers, panic hooks, and
 terminal-only input or escape behavior use documented deterministic fixtures.
-See [RATATUI_EXAMPLES.md](RATATUI_EXAMPLES.md) for the pinned upstream commit,
+See [RATATUI_EXAMPLES.md](https://github.com/gold-silver-copper/bevy_terminal/blob/main/RATATUI_EXAMPLES.md) for the pinned upstream commit,
 complete inventory, and adaptation policy.
-
-## Migration from the previous presentation API
-
-| Previous API | Replacement |
-| --- | --- |
-| `TerminalWorldQuad`, `3d` feature | Application mesh/material binding; `world_quad` example |
-| `ui` feature, automatic `ImageNode` sizing | Application presentation system |
-| `TerminalRenderScale` | Numeric `RasterConfig.scale` |
-| `TerminalReady`, `TerminalRemeasured` | Persistent measured output after `TerminalSystems::Sync` |
-| `TerminalFonts` | Direct Bevy `FontCx` access |
-| Window-specific grid/scale helpers | Application window policy; `TerminalGeometry::grid_for` |
-| Adapter root `render`, `scene`, `surface`, `bevy` modules | Explicit `bevy_terminal` crate re-export |
 
 ## License
 

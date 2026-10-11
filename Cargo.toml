@@ -13,25 +13,7 @@ repository = "https://github.com/gold-silver-copper/bevy_terminal"
 documentation = "https://docs.rs/bevy_terminal_ratatui"
 keywords = ["bevy", "ratatui", "terminal", "tui"]
 categories = ["game-development", "gui", "rendering"]
-exclude = [
-    "benchmarks/**",
-    "CODEBASE_AUDIT*.md",
-    "CODEBASE_IMPLEMENTATION_*",
-    "crates/**",
-    "integration/**",
-    "examples/glyph_fidelity.rs",
-    "examples/glyph_coverage.rs",
-    "examples/common/fidelity_oracle.rs",
-    "tests/glyph_fidelity.rs",
-    "CLEANUP_PROGRESS.md",
-    "*_PROMPT.md",
-    "HANDOFF_*.md",
-    "GHOSTTY_PARITY_*",
-    "ghostty-parity/**",
-    "tools/**",
-    "assets/fonts/*",
-    "!assets/fonts/jetbrains-mono",
-]
+include = ["src/**/*.rs", "/README.md", "/LICENSE"]
 
 [features]
 default = ["system_fonts"]
@@ -52,10 +34,6 @@ bevy = { version = "0.20", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["std", "underline-color"] }
 
 [dev-dependencies]
-# Deterministic font collections for the glyph fidelity oracle.
-fontique = { version = "0.11", default-features = false }
-# Raw font metrics (line gap, cap height) for the oracle's face box.
-skrifa = { version = "0.44", default-features = false, features = ["std"] }
 ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets"] }
 bevy = { version = "0.20", default-features = false, features = ["2d", "3d", "ui", "system_font_discovery"] }
 bevy_image_export = { version = "0.17.0", git = "https://github.com/gold-silver-copper/bevy_image_export", branch = "bevy-0.20" }

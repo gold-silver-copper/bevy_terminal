@@ -160,8 +160,9 @@ Ghostty's translucent fills, shades (`░▒▓` and the legacy medium shades) a
 dithered: opaque dots in the classic VGA patterns, scaled to the cell so they
 tile seamlessly.
 
-The crate is MIT licensed; the test fonts under `assets/fonts` are bundled
-under their own licenses (OFL 1.1) and are used only by tests.
+The crate is MIT licensed. The fonts under `assets/fonts` in the repository are
+used only by tests and examples, keep their own licenses, and are not
+published.
 
 `FontFaces` selects regular, bold, italic, and bold-italic sources. Missing faces
 can request weight/style from fallback faces. Supply Bevy `Font` assets, generic
