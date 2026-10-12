@@ -36,6 +36,26 @@ jobs:
           python3 tools/gen_nerd_font_table.py "$RUNNER_TEMP/nerd_font_attributes.zig" "$GHOSTTY_REVISION" \
             | diff -u crates/bevy_terminal/src/render/batch/nerd_font.rs -
 
+  fuzz:
+    name: Fuzz smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      # A short run of each target catches regressions; longer runs are local.
+      - name: Fuzz each target for one minute
+        working-directory: fuzz
+        run: |
+          for target in surface ratatui_backend renderer; do
+            cargo fuzz run "$target" -s none -- -max_total_time=60 -len_control=0 -timeout=30 -rss_limit_mb=4096
+          done
+
   metal:
     name: Metal readback
     runs-on: macos-latest

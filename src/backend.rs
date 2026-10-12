@@ -257,18 +257,17 @@ impl Backend for RatatuiBackend {
 
     fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Self::Error> {
         self.surface.update(|update| {
-            // Positions are clamped into the grid. A cursor below the grid has
-            // everything before it and nothing after it.
+            // Like a terminal's cursor, an off-grid cursor clears from its
+            // clamped position.
             let cursor = update.cursor_position();
-            let below = cursor.y >= update.size().height;
+            let row = cursor.y.min(update.size().height.saturating_sub(1));
+            let cursor = (cursor.x, row);
             match clear_type {
                 ClearType::All => update.clear(),
-                ClearType::BeforeCursor if below => update.clear(),
-                _ if below => false,
                 ClearType::AfterCursor => update.clear_range(cursor, (u16::MAX, u16::MAX)),
                 ClearType::BeforeCursor => update.clear_range((0, 0), cursor),
-                ClearType::CurrentLine => update.clear_row(cursor.y),
-                ClearType::UntilNewLine => update.clear_range(cursor, (u16::MAX, cursor.y)),
+                ClearType::CurrentLine => update.clear_row(row),
+                ClearType::UntilNewLine => update.clear_range(cursor, (u16::MAX, row)),
             };
         });
         Ok(())
@@ -301,20 +300,16 @@ impl Backend for RatatuiBackend {
     fn append_lines(&mut self, line_count: u16) -> Result<(), Self::Error> {
         self.surface.update(|update| {
             let size = update.size();
-            if size.width == 0 || size.height == 0 {
-                return;
-            }
             let cursor = update.cursor_position();
-            let x = cursor.x.saturating_add(1).min(size.width - 1);
-            let y = cursor.y.min(size.height - 1);
-            let rows_below = size.height - 1 - y;
-            let y = if line_count <= rows_below {
-                y.saturating_add(line_count).min(size.height - 1)
-            } else {
+            let last_row = size.height.saturating_sub(1);
+            let rows_below = last_row.saturating_sub(cursor.y);
+            if line_count > rows_below {
                 update.scroll_up(0..size.height, line_count - rows_below);
-                size.height - 1
-            };
-            update.set_cursor_position((x, y));
+            }
+            update.set_cursor_position((
+                cursor.x.saturating_add(1).min(size.width.saturating_sub(1)),
+                cursor.y.saturating_add(line_count).min(last_row),
+            ));
         });
         Ok(())
     }
@@ -669,20 +664,24 @@ mod tests {
     }
 
     #[test]
-    fn clearing_with_the_cursor_below_the_grid_spares_the_last_row() {
+    fn clearing_with_the_cursor_below_the_grid_clears_from_the_last_row() {
         let mut backend = RatatuiBackend::new(2, 2);
-        draw_text(&mut backend, "ABCD", 2);
-        backend.set_cursor_position((0, 5)).unwrap();
-        for clear_type in [
-            ClearType::AfterCursor,
-            ClearType::CurrentLine,
-            ClearType::UntilNewLine,
-        ] {
+        let mut clear_at = |text, cursor, clear_type| {
+            draw_text(&mut backend, text, 2);
+            backend.set_cursor_position(cursor).unwrap();
             backend.clear_region(clear_type).unwrap();
-            assert_eq!(backend.surface().snapshot().to_string(), "AB\nCD");
-        }
-        backend.clear_region(ClearType::BeforeCursor).unwrap();
-        assert_eq!(backend.surface().snapshot().to_string(), "  \n  ");
+            backend.surface().snapshot().to_string()
+        };
+        assert_eq!(clear_at("ABCD", (1, 5), ClearType::UntilNewLine), "AB\nC ");
+        assert_eq!(clear_at("ABCD", (1, 5), ClearType::CurrentLine), "AB\n  ");
+        assert_eq!(clear_at("ABCD", (0, 5), ClearType::BeforeCursor), "  \n D");
+    }
+
+    #[test]
+    fn append_lines_moves_the_cursor_on_an_empty_grid() {
+        let mut backend = RatatuiBackend::new(15, 0);
+        backend.append_lines(1).unwrap();
+        assert_eq!(backend.get_cursor_position().unwrap(), Position::new(1, 0));
     }
 
     #[test]

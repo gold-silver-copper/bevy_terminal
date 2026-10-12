@@ -865,7 +865,14 @@ fn sync_batch_terminals(mut terminals: Query<TerminalQuery>, resources: SyncReso
                         TerminalStatus::ShapingFailed
                     }
                 };
+                // Metrics that are only too large stay valid: keeping them lets
+                // an idle oversized terminal skip measuring every update.
+                let measured = state
+                    .measure
+                    .in_use
+                    .filter(|_| status == TerminalStatus::TextureTooLarge);
                 state.invalidate(&mut queue);
+                state.measure.in_use = measured;
                 if output.status != status {
                     output.status = status;
                 }
@@ -996,6 +1003,10 @@ fn sync_batch_terminal(
         glyph_atlas.clear();
         raster
     };
+    // Refining the cell to the font can grow it past the limit.
+    if terminal_pixel_size(surface.info().size, &raster).max_element() > texture_limit {
+        return Err(TerminalStatus::TextureTooLarge.into());
+    }
     let blink = BlinkPhases::at(elapsed, config);
     // A phase flip only matters where it changes pixels: text phases when the
     // snapshot holds blinking cells, the cursor phase when the cursor shows.
