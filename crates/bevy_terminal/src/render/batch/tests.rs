@@ -1234,6 +1234,29 @@ fn invalid_and_oversized_geometry_is_observable_and_can_recover() {
 }
 
 #[test]
+fn a_terminal_too_large_only_after_refining_its_cell_goes_idle() {
+    let mut app = text_app();
+    // 387 rows fit the requested 20 px cell, but not the cell refined to fit
+    // the font.
+    let entity = app
+        .world_mut()
+        .spawn(TerminalRenderer::new(TerminalSurface::new((5, 387))))
+        .id();
+    for _ in 0..3 {
+        app.update();
+    }
+    assert_eq!(
+        app.world().get::<TerminalTexture>(entity).unwrap().status,
+        TerminalStatus::TextureTooLarge
+    );
+    app.update();
+    assert_eq!(
+        *app.world().get::<TerminalStats>(entity).unwrap(),
+        TerminalStats::default()
+    );
+}
+
+#[test]
 fn late_consumer_observes_current_geometry_and_resizes_keep_the_image() {
     let mut app = text_app();
     let surface = TerminalSurface::new((4, 2));

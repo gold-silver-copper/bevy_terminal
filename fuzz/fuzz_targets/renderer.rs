@@ -880,15 +880,8 @@ impl Harness {
                 assert_eq!(texture.status(), *status, "status changed while idle");
                 // Shaping failures are documented to retry every update.
                 if *status != TerminalStatus::ShapingFailed {
-                    let mut stats = *world.get::<TerminalStats>(entity).unwrap();
-                    // KNOWN ISSUE: a terminal that only exceeds the texture
-                    // limit after its cell height is refined re-snapshots the
-                    // surface (and re-measures) on every idle update.
-                    if *status == TerminalStatus::TextureTooLarge {
-                        stats.snapshot_cells = 0;
-                    }
                     assert_eq!(
-                        stats,
+                        *world.get::<TerminalStats>(entity).unwrap(),
                         TerminalStats::default(),
                         "idle terminal did work ({status:?})"
                     );

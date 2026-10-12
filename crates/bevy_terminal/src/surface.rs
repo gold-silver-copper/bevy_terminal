@@ -110,6 +110,10 @@ impl TerminalSurface {
     /// writes are retained and their revision is published before unlocking.
     /// A batch that changes a value and restores it still publishes a revision.
     ///
+    /// The surface stays locked while `f` runs, so calling a method of this
+    /// surface (through any handle) inside `f` deadlocks. Read the size and
+    /// cursor through the [`SurfaceUpdate`] instead.
+    ///
     /// ```
     /// # use bevy_terminal::prelude::{TerminalSurface, TerminalCell};
     /// let surface = TerminalSurface::new((4, 1));

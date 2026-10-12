@@ -609,18 +609,8 @@ impl Backend for RefBackend {
         }
         let w = usize::from(self.screen.width);
         let actual = self.tb.cursor_position();
-        // Known issue K2 (skipped): with the cursor below the grid,
-        // RatatuiBackend clears everything for BeforeCursor and nothing for
-        // AfterCursor/CurrentLine/UntilNewLine, while a terminal clamps the
-        // cursor to the last row and clears from there. Follow bevy here.
-        if actual.y >= self.screen.height {
-            if clear_type == ClearType::BeforeCursor {
-                return self.clear();
-            }
-            return Ok(());
-        }
         let x = actual.x.min(self.screen.width - 1);
-        let y = actual.y;
+        let y = actual.y.min(self.screen.height - 1);
         let cursor = usize::from(y) * w + usize::from(x);
         let row = usize::from(y) * w;
         let range = match clear_type {
@@ -637,13 +627,15 @@ impl Backend for RefBackend {
     }
 
     fn append_lines(&mut self, line_count: u16) -> Result<(), Infallible> {
-        // Known issue K1 (skipped): on a zero-area grid TestBackend still moves
-        // the cursor (x + 1, y + n clamped) while RatatuiBackend leaves it.
-        if self.screen.width == 0 || self.screen.height == 0 {
-            return Ok(());
-        }
         let Position { y, .. } = self.tb.cursor_position();
         let max_y = self.screen.height.saturating_sub(1);
+        if self.screen.width == 0 {
+            // TestBackend divides by the width here; move its cursor the way
+            // it would on any other grid.
+            return self
+                .tb
+                .set_cursor_position(Position::new(0, y.saturating_add(line_count).min(max_y)));
+        }
         let after = max_y.saturating_sub(y);
         if line_count > after {
             self.screen.scroll_up(usize::from(line_count - after));
