@@ -12,6 +12,7 @@ use super::{
     cursor_should_be_visible, terminal_pixel_size,
 };
 use crate::scene::{StyleFlags, TerminalCell};
+use crate::surface::TerminalSurface;
 use bevy::prelude::*;
 
 #[derive(Default)]
@@ -27,15 +28,22 @@ pub(super) struct SceneScratch {
     pub(super) placed: Vec<PlacedGlyph>,
     pub(super) decorations: Vec<QuadInstance>,
     pub(super) styles: Vec<ResolvedStyle>,
-    /// Rows whose bands this scene repaints.
-    pub(super) repaint: Vec<bool>,
-    /// Rows whose backgrounds, glyphs and decorations have been laid out.
-    pub(super) painted: Vec<bool>,
-    /// Per painted row, its background runs.
-    pub(super) row_backgrounds: Vec<Vec<BackgroundRun>>,
+    /// What this scene does with each row.
+    pub(super) painting: Vec<RowPaint>,
     /// Glyphs of the last full scene before clipping, recorded for the probe.
     #[cfg(test)]
     pub(super) probe: Option<super::probe::ProbeRecord>,
+}
+
+/// What a scene does with one row.
+#[derive(Default)]
+pub(super) struct RowPaint {
+    /// Whether the scene repaints the row's band.
+    repaint: bool,
+    /// Whether the row's backgrounds, glyphs and decorations are laid out.
+    painted: bool,
+    /// The row's background runs, once painted.
+    backgrounds: Vec<BackgroundRun>,
 }
 
 impl SceneScratch {
@@ -46,11 +54,18 @@ impl SceneScratch {
         self.placed.clear();
         self.decorations.clear();
         self.styles.clear();
-        self.repaint.clear();
-        self.painted.clear();
-        for runs in &mut self.row_backgrounds {
-            runs.clear();
+        for row in &mut self.painting {
+            row.repaint = false;
+            row.painted = false;
+            row.backgrounds.clear();
         }
+    }
+}
+
+/// Has the scene repaint `rows`.
+fn mark_repaint(painting: &mut [RowPaint], rows: std::ops::Range<usize>) {
+    for row in painting.get_mut(rows).unwrap_or_default() {
+        row.repaint = true;
     }
 }
 
@@ -64,8 +79,8 @@ pub(super) fn merge_background_rect(
     color: LinearRgba,
 ) {
     for &index in prev_runs {
-        let (rect, existing) = &mut rects[index];
-        if *existing == color
+        if let Some((rect, existing)) = rects.get_mut(index)
+            && *existing == color
             && rect.min.x == geometry.min.x
             && rect.width() == geometry.width()
             && (rect.max.y - geometry.min.y).abs() < 0.01
@@ -100,8 +115,9 @@ pub(super) struct RowReach {
 
 impl RowReach {
     /// The rows `row`'s ink covers, cut to a grid `height` rows tall.
-    pub(super) fn rows(self, row: u16, height: u16) -> std::ops::Range<u16> {
-        row.saturating_sub(self.up)..row.saturating_add(self.down).saturating_add(1).min(height)
+    pub(super) fn rows(self, row: u16, height: u16) -> std::ops::Range<usize> {
+        usize::from(row.saturating_sub(self.up))
+            ..usize::from(row.saturating_add(self.down).saturating_add(1).min(height))
     }
 
     /// The reach of ink spanning `top..bottom` pixels from a row of `cell_height`.
@@ -126,12 +142,10 @@ impl RowReach {
 }
 
 /// What the last layout of each row left behind: how far its ink reaches,
-/// and whether it holds blinking text, with a count of such rows so blink
-/// phases can be skipped without scanning the grid.
+/// and whether it holds blinking text, so blink phases repaint only those rows.
 #[derive(Default)]
 pub(super) struct RowStates {
     rows: Vec<RowState>,
-    blinking: usize,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -145,22 +159,27 @@ impl RowStates {
     fn reset(&mut self, height: u16) {
         self.rows.clear();
         self.rows.resize(usize::from(height), RowState::default());
-        self.blinking = 0;
     }
 
     pub(super) fn reach(&self, row: u16) -> RowReach {
-        self.rows[usize::from(row)].reach
+        self.rows
+            .get(usize::from(row))
+            .map(|state| state.reach)
+            .unwrap_or_default()
     }
 
     fn set(&mut self, row: u16, reach: RowReach, blinks: bool) {
-        let state = &mut self.rows[usize::from(row)];
-        self.blinking = self.blinking + usize::from(blinks) - usize::from(state.blinks);
-        *state = RowState { reach, blinks };
+        if let Some(state) = self.rows.get_mut(usize::from(row)) {
+            *state = RowState { reach, blinks };
+        }
     }
 
-    /// Whether any row holds `SLOW_BLINK` or `RAPID_BLINK` text.
-    pub(super) fn any_blinking(&self) -> bool {
-        self.blinking > 0
+    /// The rows holding `SLOW_BLINK` or `RAPID_BLINK` text.
+    pub(super) fn blinking(&self) -> impl Iterator<Item = u16> + '_ {
+        (0..)
+            .zip(&self.rows)
+            .filter(|(_, state)| state.blinks)
+            .map(|(row, _)| row)
     }
 
     #[cfg(test)]
@@ -209,6 +228,7 @@ pub(super) fn build_scene(
 ) -> BatchScene {
     let SceneInput {
         snapshot,
+        surface,
         config,
         palette,
         raster,
@@ -244,14 +264,10 @@ pub(super) fn build_scene(
         placed,
         decorations,
         styles,
-        repaint,
-        painted,
-        row_backgrounds,
+        painting,
         ..
     } = scratch;
-    repaint.resize(usize::from(height), false);
-    painted.resize(usize::from(height), false);
-    row_backgrounds.resize_with(usize::from(height), Vec::new);
+    painting.resize_with(usize::from(height), RowPaint::default);
     let mut painter = RowPainter {
         snapshot,
         palette,
@@ -276,29 +292,38 @@ pub(super) fn build_scene(
         probe: probe_glyphs,
     };
 
+    // A full scene changes every row.
+    let (changed, every_row) = if full {
+        (&[][..], 0..height)
+    } else {
+        (changed, 0..0)
+    };
+    let changed = changed.iter().copied().chain(every_row);
     // Changed rows and every row their previous ink reached.
-    for &row in changed {
-        for reached in rows.reach(row).rows(row, height) {
-            repaint[usize::from(reached)] = true;
-        }
+    for row in changed.clone() {
+        mark_repaint(painting, rows.reach(row).rows(row, height));
     }
-    for &row in changed {
+    let cell_height = raster.cell_size.y;
+    for row in changed {
+        let Some(paint) = painting.get_mut(usize::from(row)) else {
+            continue;
+        };
+        paint.painted = true;
         current_runs.clear();
         painter.backgrounds(
             row,
             background_rects,
             prev_runs,
             current_runs,
-            &mut row_backgrounds[usize::from(row)],
+            &mut paint.backgrounds,
         );
         std::mem::swap(prev_runs, current_runs);
         let first = placed.len();
         painter.cells(row, placed, Some(decorations));
-        painted[usize::from(row)] = true;
-        let cell_height = raster.cell_size.y;
         let row_top = f32::from(row) * cell_height;
-        let row_reach = placed[first..]
+        let row_reach = placed
             .iter()
+            .skip(first)
             .fold(RowReach::default(), |reach, glyph| {
                 reach.union(RowReach::of(
                     glyph.geometry.min.y - row_top,
@@ -311,40 +336,38 @@ pub(super) fn build_scene(
             .iter()
             .any(|style| style.any(StyleFlags::SLOW_BLINK | StyleFlags::RAPID_BLINK));
         rows.set(row, row_reach, blinks);
-        for reached in row_reach.rows(row, height) {
-            repaint[usize::from(reached)] = true;
-        }
+        mark_repaint(painting, row_reach.rows(row, height));
     }
     // Unchanged rows repainted because changed ink reaches or reached them.
     let mut reordered = false;
-    for row in 0..height {
-        if repaint[usize::from(row)] && !painted[usize::from(row)] {
+    for (row, paint) in (0..height).zip(painting.iter_mut()) {
+        if paint.repaint && !paint.painted {
             painter.backgrounds(
                 row,
                 background_rects,
                 prev_runs,
                 current_runs,
-                &mut row_backgrounds[usize::from(row)],
+                &mut paint.backgrounds,
             );
             painter.cells(row, placed, Some(decorations));
-            painted[usize::from(row)] = true;
+            paint.painted = true;
             reordered = true;
         }
     }
     // Unchanged rows whose ink reaches into a repainted band.
-    for row in 0..height {
+    for (row, paint) in (0..height).zip(painting.iter()) {
         let row_reach = rows.reach(row);
-        if !painted[usize::from(row)]
+        if !paint.painted
             && row_reach != RowReach::default()
-            && row_reach
-                .rows(row, height)
-                .any(|reached| repaint[usize::from(reached)])
+            && painting
+                .get(row_reach.rows(row, height))
+                .is_some_and(|band| band.iter().any(|reached| reached.repaint))
         {
             painter.cells(row, placed, None);
             reordered = true;
         }
     }
-    let painted_rows = painted.iter().filter(|painted| **painted).count();
+    let painted_rows = painting.iter().filter(|paint| paint.painted).count();
     if reordered {
         // A full scene draws glyphs in row-major order; the sort is stable.
         placed.sort_by_key(|glyph| glyph.row);
@@ -366,7 +389,6 @@ pub(super) fn build_scene(
     // Each repainted row's part of a glyph is drawn over that row's cell
     // backgrounds; coverage glyphs are split where the background changes
     // so every piece is blended against the background under it.
-    let cell_height = raster.cell_size.y;
     for glyph in placed.iter() {
         #[cfg(test)]
         let first_quad = quads.instances.len();
@@ -375,8 +397,12 @@ pub(super) fn build_scene(
         // Most glyphs lie inside their row and the texture: no clip needed.
         let inside =
             last == first + 1 && glyph.geometry.min.x >= 0.0 && glyph.geometry.max.x <= size.x;
-        for row in first..last {
-            if !repaint[usize::from(row)] {
+        for (row, paint) in (0u16..)
+            .zip(&*painting)
+            .take(last.into())
+            .skip(first.into())
+        {
+            if !paint.repaint {
                 continue;
             }
             let band = pixel_rect(0.0, f32::from(row) * cell_height, size.x, cell_height);
@@ -406,7 +432,7 @@ pub(super) fn build_scene(
             }
             // Runs are sorted and disjoint: start at the first one the piece
             // reaches and stop past its right edge.
-            let runs = &row_backgrounds[usize::from(row)];
+            let runs = &paint.backgrounds;
             let first = runs.partition_point(|run| run.right <= piece.min.x);
             if let Some(&BackgroundRun {
                 left,
@@ -427,7 +453,7 @@ pub(super) fn build_scene(
                 left,
                 right,
                 luminance: background,
-            } in &runs[first..]
+            } in runs.iter().skip(first)
             {
                 if left >= piece.max.x {
                     break;
@@ -467,7 +493,9 @@ pub(super) fn build_scene(
 
     if cursor_should_be_visible(snapshot)
         && !blink.cursor_hidden
-        && repaint[usize::from(snapshot.cursor_position().y)]
+        && painting
+            .get(usize::from(snapshot.cursor_position().y))
+            .is_some_and(|paint| paint.repaint)
     {
         let position = snapshot.cursor_position();
         let cursor_thickness = raster.scale.round().max(1.0) * 2.0;
@@ -518,8 +546,8 @@ pub(super) fn build_scene(
         atlas: glyph_atlas.id,
         atlas_uploads,
         atlas_fresh,
-        atlas_lost: glyph_atlas.lost.clone(),
-        source: None,
+        surface: surface.downgrade(),
+        resize_generation: snapshot.resize_generation,
         destination_size: size.as_uvec2(),
         instances,
         batches,
@@ -528,12 +556,13 @@ pub(super) fn build_scene(
     }
 }
 
-/// What a scene draws: a snapshot with its configuration, resolved theme
-/// and raster metrics, the rows to repaint (every row when `full`), the
-/// target texture and the blink phases.
+/// What a scene draws: a snapshot of `surface` with its configuration,
+/// resolved theme and raster metrics, the rows to repaint (ignored when
+/// `full`), the target texture and the blink phases.
 #[derive(Clone, Copy)]
 pub(super) struct SceneInput<'a> {
     pub(super) snapshot: &'a TerminalSnapshot,
+    pub(super) surface: &'a TerminalSurface,
     pub(super) config: &'a TerminalRenderConfig,
     pub(super) palette: &'a Palette,
     pub(super) raster: RasterMetrics,
@@ -602,14 +631,12 @@ impl RowPainter<'_, '_> {
             ));
         }
         self.resolve_styles(row);
-        let styles = &*self.styles;
         let mut start = 0;
-        while start < styles.len() {
-            let color = styles[start].background;
-            let mut end = start + 1;
-            while end < styles.len() && styles[end].background == color {
-                end += 1;
-            }
+        for run in self.styles.chunk_by(|a, b| a.background == b.background) {
+            let Some(color) = run.first().map(|style| style.background) else {
+                continue;
+            };
+            let end = start + run.len();
             // Adjacent runs of equal luminance correct identically: merge them.
             let left = start as f32 * raster.cell_size.x;
             let right = end as f32 * raster.cell_size.x;
@@ -624,11 +651,13 @@ impl RowPainter<'_, '_> {
                     luminance: run_luminance,
                 }),
             }
-            if !(self.full && color == theme_background) {
+            // The theme background is already there: cleared by a full scene,
+            // replaced by a partial one's band clear.
+            if color != theme_background {
                 let geometry = pixel_rect(
-                    start as f32 * raster.cell_size.x,
+                    left,
                     f32::from(row) * raster.cell_size.y,
-                    (end - start) as f32 * raster.cell_size.x,
+                    run.len() as f32 * raster.cell_size.x,
                     raster.cell_size.y,
                 );
                 if self.full {
@@ -654,14 +683,12 @@ impl RowPainter<'_, '_> {
         let size = self.size;
         let cells = self.snapshot.row(row);
         let mut column = 0;
-        while column < cells.len() {
-            let cell = &cells[column];
+        while let (Some(cell), Some(style)) = (cells.get(column), self.styles.get(column)) {
             if cell.is_continuation() {
                 column += 1;
                 continue;
             }
             let width = cell_span(cells, column);
-            let style = &self.styles[column];
             let symbol = cell.symbol();
             if style.any(StyleFlags::HIDDEN) || self.blink.hides(style) {
                 column += width;
@@ -800,16 +827,19 @@ impl RowPainter<'_, '_> {
 /// Powerline graphic (so runs of icons stay aligned). Logical occupancy is
 /// unchanged: the blank neighbour still belongs to the terminal.
 pub(super) fn visual_columns(cells: &[TerminalCell], column: usize, span: usize) -> usize {
-    if span != 1 || column + 1 >= cells.len() || !is_symbol(cells[column].symbol()) {
+    let symbol = |column: usize| cells.get(column).map(TerminalCell::symbol);
+    let Some(next) =
+        symbol(column + 1).filter(|_| span == 1 && symbol(column).is_some_and(is_symbol))
+    else {
         return span;
+    };
+    if column
+        .checked_sub(1)
+        .and_then(symbol)
+        .is_some_and(|previous| is_symbol(previous) && !is_powerline(previous))
+    {
+        return 1;
     }
-    if column > 0 {
-        let previous = cells[column - 1].symbol();
-        if is_symbol(previous) && !is_powerline(previous) {
-            return 1;
-        }
-    }
-    let next = cells[column + 1].symbol();
     if next.is_empty() || next == " " || next == "\u{2002}" {
         2
     } else {

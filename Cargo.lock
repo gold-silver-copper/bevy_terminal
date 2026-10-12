@@ -1768,10 +1768,8 @@ name = "bevy_terminal"
 version = "0.8.1"
 dependencies = [
  "bevy",
- "bitflags 2.13.1",
  "bytemuck",
  "fontique",
- "png",
  "skrifa",
  "unicode-segmentation",
  "unicode-width",
@@ -1784,10 +1782,8 @@ dependencies = [
  "bevy",
  "bevy_image_export",
  "bevy_terminal",
- "fontique",
  "palette",
  "ratatui",
- "skrifa",
 ]
 
 [[package]]

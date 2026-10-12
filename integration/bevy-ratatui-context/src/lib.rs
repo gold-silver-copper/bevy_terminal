@@ -31,8 +31,8 @@ fn presentation(app: &mut App) {
 
 fn present(mut images: Query<(&TerminalTexture, &mut ImageNode)>) {
     for (texture, mut image) in &mut images {
-        if texture.measured().is_some() && image.image != texture.image {
-            image.image = texture.image.clone();
+        if texture.measured().is_some() && image.image != *texture.image() {
+            image.image = texture.image().clone();
         }
     }
 }
@@ -55,7 +55,7 @@ mod tests {
             PluginGroupBuilder::start::<RatatuiPlugins>(),
         ));
         let font = Font::from_bytes(
-            include_bytes!("../../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")
+            include_bytes!("../../../crates/bevy_terminal/assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")
                 .to_vec(),
         );
         let font = app.world_mut().resource_mut::<Assets<Font>>().add(font);
@@ -85,7 +85,7 @@ mod tests {
         assert!(
             app.world()
                 .resource::<Assets<Image>>()
-                .get(&initial.image)
+                .get(initial.image())
                 .unwrap()
                 .data
                 .is_none()
@@ -100,7 +100,7 @@ mod tests {
         }
         app.update();
         let output = app.world().get::<TerminalTexture>(entity).unwrap();
-        assert_eq!(output.image, initial.image);
+        assert_eq!(output.image(), initial.image());
         assert_ne!(output.measured().unwrap().size(), initial_size);
         assert!(
             !initial.measured().unwrap().is_current(),
@@ -108,7 +108,7 @@ mod tests {
         );
         assert_eq!(
             app.world().get::<ImageNode>(entity).unwrap().image,
-            initial.image
+            *initial.image()
         );
         let geometry = output.measured().unwrap().clone();
         assert!(

@@ -28,9 +28,10 @@ pub enum CursorStyle {
     /// A translucent rectangle covering the entire cell.
     #[default]
     Block,
-    /// A two-logical-pixel bar at the cell's left edge.
+    /// A bar at the cell's left edge, two physical pixels per whole unit of
+    /// [`RasterConfig::scale`] (rounded) wide.
     Bar,
-    /// A two-logical-pixel line at the cell's bottom edge.
+    /// A line at the cell's bottom edge, as thick as the [`Self::Bar`] is wide.
     Underline,
 }
 
@@ -123,25 +124,25 @@ impl FontFaces {
     /// request from it.
     fn resolve(&self, face: Face) -> (&FontSource, FontWeight, FontStyle) {
         let (bold, italic) = (face.bold(), face.italic());
-        let (face, exact) = match (bold, italic) {
+        // The chosen face, and whether it is itself bold and italic.
+        let (face, has_bold, has_italic) = match (bold, italic) {
             (true, true) => self
                 .bold_italic
                 .as_ref()
-                .map(|face| (face, true))
-                .or_else(|| self.bold.as_ref().map(|face| (face, false)))
-                .or_else(|| self.italic.as_ref().map(|face| (face, false))),
-            (true, false) => self.bold.as_ref().map(|face| (face, true)),
-            (false, true) => self.italic.as_ref().map(|face| (face, true)),
-            (false, false) => Some((&self.regular, true)),
+                .map(|face| (face, true, true))
+                .or_else(|| self.bold.as_ref().map(|face| (face, true, false)))
+                .or_else(|| self.italic.as_ref().map(|face| (face, false, true))),
+            (true, false) => self.bold.as_ref().map(|face| (face, true, false)),
+            (false, true) => self.italic.as_ref().map(|face| (face, false, true)),
+            (false, false) => None,
         }
-        .unwrap_or((&self.regular, false));
-        let request = exact || self.synthesize;
-        let weight = if bold && request {
+        .unwrap_or((&self.regular, false, false));
+        let weight = if bold && (has_bold || self.synthesize) {
             FontWeight::BOLD
         } else {
             FontWeight::NORMAL
         };
-        let style = if italic && request {
+        let style = if italic && (has_italic || self.synthesize) {
             FontStyle::Italic
         } else {
             FontStyle::Normal
@@ -298,8 +299,9 @@ impl Default for RasterConfig {
 /// Public system set for ordering application systems around terminal syncing.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, SystemSet)]
 pub enum TerminalSystems {
-    /// Copies the latest surface state into the renderer and builds the frame's scene
-    /// (newly spawned terminals are initialized just before this set).
+    /// Copies the latest surface state into the renderer and builds the frame's scene.
+    /// Newly spawned terminals are initialized earlier, by an observer that
+    /// runs when their [`TerminalRenderer`] is added.
     Sync,
 }
 
@@ -360,31 +362,25 @@ fn pixel_rect(x: f32, y: f32, width: f32, height: f32) -> Rect {
     }
 }
 
-/// Returns the number of columns rendered for the cell at `column`.
-///
-/// A wide anchor claims its declared span, clipped to the row and to the run of
-/// explicit continuation cells that actually follow it, so a wide glyph can
-/// never paint over a neighbor that has since been overwritten.
+/// Returns the number of columns rendered for the cell at `column`. The
+/// surface keeps every wide anchor followed by its continuation cells, so this
+/// is its span, clipped to the row.
 fn cell_span(cells: &[TerminalCell], column: usize) -> usize {
-    let declared = usize::from(cells[column].columns()).min(cells.len() - column);
-    let mut span = 1;
-    while span < declared && cells[column + span].is_continuation() {
-        span += 1;
-    }
-    span
+    let remaining = cells.len().saturating_sub(column);
+    cells.get(column).map_or(1, |cell| {
+        usize::from(cell.occupancy().columns()).min(remaining)
+    })
 }
 
 fn cursor_should_be_visible(snapshot: &TerminalSnapshot) -> bool {
-    let size = snapshot.size();
-    let position = snapshot.cursor_position();
-    snapshot.cursor_visible() && position.x < size.width && position.y < size.height
+    snapshot.cursor_visible() && snapshot.size().contains(snapshot.cursor_position())
 }
 
-fn blink_hidden(elapsed: f32, frequency_hz: Option<f32>) -> bool {
+fn blink_hidden(elapsed: f64, frequency_hz: Option<f32>) -> bool {
     frequency_hz.is_some_and(|frequency_hz| {
         frequency_hz.is_finite()
             && frequency_hz > 0.0
-            && (elapsed * frequency_hz * 2.0).floor() as u64 % 2 == 1
+            && (elapsed * f64::from(frequency_hz) * 2.0).floor() as u64 % 2 == 1
     })
 }
 
@@ -622,6 +618,15 @@ mod tests {
         );
         assert_eq!(exact.font, bold);
         assert_eq!(exact.weight, FontWeight::BOLD);
+        // A bold face standing in for bold-italic keeps its bold weight.
+        let exact = FontFaces {
+            synthesize: false,
+            ..with_bold
+        };
+        assert_eq!(
+            exact.resolve(Face::BoldItalic),
+            (&bold, FontWeight::BOLD, FontStyle::Normal)
+        );
     }
 
     #[test]
@@ -671,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn wide_cells_span_only_their_continuations() {
+    fn wide_cells_span_their_columns_within_the_row() {
         let wide = TerminalCell::wide("界", 2);
         let cells = [
             wide.clone(),
@@ -680,10 +685,7 @@ mod tests {
         ];
         assert_eq!(cell_span(&cells, 0), 2);
         assert_eq!(cell_span(&cells, 2), 1);
-        let overwritten = [wide.clone(), TerminalCell::new("B")];
-        assert_eq!(cell_span(&overwritten, 0), 1);
-        let clipped = [wide];
-        assert_eq!(cell_span(&clipped, 0), 1);
+        assert_eq!(cell_span(&[wide], 0), 1);
     }
 
     #[test]

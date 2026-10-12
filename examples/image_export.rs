@@ -20,8 +20,8 @@ use bevy_terminal_ratatui::prelude::{
     TerminalSystems,
 };
 
-/// Canvas large enough for the 72×22 scene at the measured Iosevka cell
-/// (11 px columns → 22 px font → 27 px line box), plus margins.
+/// Canvas large enough for the 72×22 scene at the measured JetBrains Mono cell
+/// (11 px columns → 18.3 px font → 24.2 px line box), plus margins.
 const WIDTH: u32 = 832;
 const HEIGHT: u32 = 640;
 const EXPORT_FRAMES: u32 = 12;

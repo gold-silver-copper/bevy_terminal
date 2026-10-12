@@ -30,8 +30,25 @@ pub(crate) enum Shade {
 const DOT_COLUMNS: u32 = 8;
 
 impl Shade {
-    /// Whether the dot at `column`, `row` of the shade grid is inked.
-    fn inks(self, column: u32, row: u32) -> bool {
+    /// Whether the shade inks the pixel at `x`, `y` (cell coordinates) of a
+    /// `cell`-sized cell.
+    ///
+    /// The dots divide the cell into [`DOT_COLUMNS`] columns and an even
+    /// number of rows chosen to keep them about square, so every pattern
+    /// period fits the cell a whole number of times and the dots of adjoining
+    /// cells continue each other.
+    fn inks(self, cell: UVec2, x: i32, y: i32) -> bool {
+        if self == Shade::On {
+            return true;
+        }
+        let pairs = (DOT_COLUMNS / 2 * cell.y + cell.x / 2) / cell.x;
+        let rows = 2 * pairs.max(1);
+        let dot = |position: i32, size: u32, count: u32| {
+            (i64::from(position) * i64::from(count))
+                .div_euclid(i64::from(size))
+                .rem_euclid(i64::from(count)) as u32
+        };
+        let (column, row) = (dot(x, cell.x, DOT_COLUMNS), dot(y, cell.y, rows));
         let light = (column + 2 * (row % 2)) % 4 == 2;
         match self {
             Shade::Light => light,
@@ -55,10 +72,10 @@ impl Path {
     }
 
     pub(crate) fn line_to(&mut self, x: f64, y: f64) -> &mut Self {
-        if self.contours.is_empty() {
-            return self.move_to(x, y);
+        match self.contours.last_mut() {
+            Some((points, _)) => points.push(DVec2::new(x, y)),
+            None => return self.move_to(x, y),
         }
-        self.current().push(DVec2::new(x, y));
         self
     }
 
@@ -71,9 +88,11 @@ impl Path {
         x3: f64,
         y3: f64,
     ) -> &mut Self {
-        let points = self.current();
-        let p0 = *points.last().expect("curve after a point");
+        let Some((points, _)) = self.contours.last_mut() else {
+            return self.move_to(x3, y3);
+        };
         let (p1, p2, p3) = (DVec2::new(x1, y1), DVec2::new(x2, y2), DVec2::new(x3, y3));
+        let p0 = points.last().copied().unwrap_or(p3);
         let length = p0.distance(p1) + p1.distance(p2) + p2.distance(p3);
         let steps = (length * 2.0).ceil().clamp(4.0, 256.0) as usize;
         for step in 1..=steps {
@@ -90,7 +109,7 @@ impl Path {
     }
 
     /// A full circle as a closed contour.
-    pub(crate) fn circle(&mut self, center: DVec2, radius: f64) -> &mut Self {
+    fn circle(&mut self, center: DVec2, radius: f64) -> &mut Self {
         let steps = (radius * std::f64::consts::TAU).ceil().clamp(16.0, 512.0) as usize;
         let points = (0..steps)
             .map(|step| {
@@ -108,21 +127,17 @@ impl Path {
         }
         self
     }
-
-    fn current(&mut self) -> &mut Vec<DVec2> {
-        &mut self.contours.last_mut().expect("path started").0
-    }
 }
 
 /// An alpha-only drawing surface for one sprite.
 pub(crate) struct Canvas {
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) padding: UVec2,
+    width: u32,
+    height: u32,
+    padding: UVec2,
     /// Margins excluded from the output, in canvas pixels per side
     /// (left, top, right, bottom).
-    pub(crate) clip: [u32; 4],
-    pub(crate) pixels: Vec<u8>,
+    clip: [u32; 4],
+    pixels: Vec<u8>,
 }
 
 /// A drawn sprite: its trimmed coverage and where its top-left pixel lies
@@ -156,6 +171,18 @@ impl Canvas {
         self.height + 2 * self.padding.y
     }
 
+    fn cell(&self) -> UVec2 {
+        UVec2::new(self.width, self.height)
+    }
+
+    /// The pixel at `x`, `y` in canvas coordinates; zero outside.
+    fn at(&self, x: u32, y: u32) -> u8 {
+        self.pixels
+            .get((y * self.stride() + x) as usize)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Excludes everything outside the cell from the output.
     pub(crate) fn clip_to_cell(&mut self) {
         self.clip = [
@@ -168,44 +195,29 @@ impl Canvas {
 
     /// Sets one pixel (cell coordinates) to `alpha`.
     pub(crate) fn pixel(&mut self, x: i32, y: i32, alpha: u8) {
-        let x = x + self.padding.x as i32;
-        let y = y + self.padding.y as i32;
-        if x >= 0 && y >= 0 && (x as u32) < self.stride() && (y as u32) < self.rows() {
-            let stride = self.stride();
-            self.pixels[(y as u32 * stride + x as u32) as usize] = alpha;
+        let x = u32::try_from(x + self.padding.x as i32);
+        let y = u32::try_from(y + self.padding.y as i32);
+        let stride = self.stride();
+        if let (Ok(x), Ok(y)) = (x, y)
+            && x < stride
+            && let Some(pixel) = self.pixels.get_mut((y * stride + x) as usize)
+        {
+            *pixel = alpha;
         }
     }
 
-    /// Sets the pixels of the rectangle between two corners that `shade`
-    /// inks, leaving the others as they are.
+    /// Sets the pixels that `shade` inks of the rectangle from the top-left
+    /// corner `x0`, `y0` to the bottom-right corner `x1`, `y1` (exclusive),
+    /// leaving the others as they are. Reversed corners fill nothing.
     pub(crate) fn box_(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, shade: Shade) {
-        for y in y0.min(y1)..y0.max(y1) {
-            for x in x0.min(x1)..x0.max(x1) {
-                if self.inks(shade, x, y) {
+        let cell = self.cell();
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if shade.inks(cell, x, y) {
                     self.pixel(x, y, 0xff);
                 }
             }
         }
-    }
-
-    /// Whether `shade` inks the pixel at `x`, `y` (cell coordinates).
-    ///
-    /// The dots divide the cell into [`DOT_COLUMNS`] columns and an even
-    /// number of rows chosen to keep them about square, so every pattern
-    /// period fits the cell a whole number of times and the dots of adjoining
-    /// cells continue each other.
-    fn inks(&self, shade: Shade, x: i32, y: i32) -> bool {
-        if shade == Shade::On {
-            return true;
-        }
-        let pairs = (DOT_COLUMNS / 2 * self.height + self.width / 2) / self.width;
-        let rows = 2 * pairs.max(1);
-        let dot = |position: i32, size: u32, count: u32| {
-            (i64::from(position) * i64::from(count))
-                .div_euclid(i64::from(size))
-                .rem_euclid(i64::from(count)) as u32
-        };
-        shade.inks(dot(x, self.width, DOT_COLUMNS), dot(y, self.height, rows))
     }
 
     /// Coverage of `path` in canvas pixels, clamped to one.
@@ -222,28 +234,27 @@ impl Canvas {
                 accumulate(&mut accumulation, stride, rows, *a + offset, *b + offset);
             }
         }
-        let mut coverage = vec![0.0f32; stride * rows];
-        for y in 0..rows {
+        for row in accumulation.chunks_mut(stride) {
             let mut sum = 0.0;
-            for x in 0..stride {
-                sum += accumulation[y * stride + x];
-                coverage[y * stride + x] = sum.abs().min(1.0);
+            for value in row {
+                sum += *value;
+                *value = sum.abs().min(1.0);
             }
         }
-        coverage
+        accumulation
     }
 
     /// Composites coverage over the canvas where `shade` inks.
     fn composite(&mut self, coverage: &[f32], shade: Shade) {
         let stride = self.stride() as usize;
         let padding = self.padding.as_ivec2();
-        for (index, coverage) in coverage.iter().enumerate() {
+        let cell = self.cell();
+        for (index, (pixel, coverage)) in self.pixels.iter_mut().zip(coverage).enumerate() {
             let x = (index % stride) as i32 - padding.x;
             let y = (index / stride) as i32 - padding.y;
-            if !self.inks(shade, x, y) {
+            if !shade.inks(cell, x, y) {
                 continue;
             }
-            let pixel = &mut self.pixels[index];
             let destination = f32::from(*pixel) / 255.0;
             *pixel = ((coverage + destination * (1.0 - coverage)) * 255.0).round() as u8;
         }
@@ -279,6 +290,22 @@ impl Canvas {
         self.fill_path(&path, shade);
     }
 
+    /// A circle of `radius`: filled, or stroked inside its edge `stroke`
+    /// pixels wide.
+    pub(crate) fn circle(&mut self, center: DVec2, radius: f64, stroke: Option<f64>) {
+        let mut path = Path::default();
+        match stroke {
+            None => {
+                path.circle(center, radius);
+                self.fill_path(&path, Shade::On);
+            }
+            Some(width) => {
+                path.circle(center, radius - width / 2.0);
+                self.stroke_path(&path, width, Shade::On);
+            }
+        }
+    }
+
     /// Strokes a straight line with butt caps.
     pub(crate) fn line(&mut self, from: DVec2, to: DVec2, width: f64, shade: Shade) {
         let mut path = Path::default();
@@ -310,7 +337,7 @@ impl Canvas {
             stride.saturating_sub(right),
             rows.saturating_sub(bottom),
         );
-        let inked = |x: u32, y: u32| self.pixels[(y * stride + x) as usize] != 0;
+        let inked = |x: u32, y: u32| self.at(x, y) != 0;
         let columns: Vec<u32> = (x0..x1)
             .filter(|x| (y0..y1).any(|y| inked(*x, y)))
             .collect();
@@ -321,10 +348,7 @@ impl Canvas {
         let (&min_y, &max_y) = (rows_inked.first()?, rows_inked.last()?);
         let size = UVec2::new(max_x + 1 - min_x, max_y + 1 - min_y);
         let alpha = (min_y..=max_y)
-            .flat_map(|y| {
-                let start = (y * stride + min_x) as usize;
-                self.pixels[start..start + size.x as usize].iter().copied()
-            })
+            .flat_map(|y| (min_x..=max_x).map(move |x| self.at(x, y)))
             .collect();
         Some(Sprite {
             offset: IVec2::new(min_x as i32, min_y as i32) - self.padding.as_ivec2(),
@@ -392,8 +416,10 @@ fn accumulate(accumulation: &mut [f32], stride: usize, rows: usize, a: DVec2, b:
 fn add(accumulation: &mut [f32], base: usize, stride: usize, column: isize, value: f32) {
     // Area left of the canvas still counts toward the row's running sum;
     // area right of it no longer matters.
-    if column < stride as isize {
-        accumulation[base + column.max(0) as usize] += value;
+    if column < stride as isize
+        && let Some(cell) = accumulation.get_mut(base + column.max(0) as usize)
+    {
+        *cell += value;
     }
 }
 
@@ -405,31 +431,37 @@ fn stroke_outline(path: &Path, width: f64) -> Path {
     for (points, closed) in &path.contours {
         let mut points: Vec<DVec2> = points.clone();
         points.dedup_by(|a, b| a.distance(*b) < 1e-9);
-        if *closed && points.len() > 2 && points[0].distance(*points.last().unwrap()) < 1e-9 {
+        if *closed
+            && points.len() > 2
+            && points
+                .first()
+                .zip(points.last())
+                .is_some_and(|(first, last)| first.distance(*last) < 1e-9)
+        {
             points.pop();
         }
         if points.len() < 2 {
             continue;
         }
-        let n = points.len();
-        let segments = if *closed { n } else { n - 1 };
-        let normal = |i: usize| {
-            let d = (points[(i + 1) % n] - points[i]).normalize();
-            DVec2::new(-d.y, d.x)
-        };
+        // The left normal of each segment.
+        let segments = points.len() - usize::from(!*closed);
+        let normals: Vec<DVec2> = points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .take(segments)
+            .map(|(a, b)| (*b - *a).normalize().perp())
+            .collect();
         // Offset points on one side at each vertex.
         let side = |sign: f64| -> Vec<DVec2> {
-            let mut result = Vec::with_capacity(n + 2);
+            let mut result = Vec::with_capacity(points.len() + 2);
             for (i, point) in points.iter().enumerate() {
-                let before = if i > 0 {
-                    Some(normal(i - 1))
-                } else if *closed {
-                    Some(normal(segments - 1))
-                } else {
-                    None
+                let before = match i.checked_sub(1) {
+                    Some(previous) => normals.get(previous),
+                    None if *closed => normals.last(),
+                    None => None,
                 };
-                let after = (i < segments).then(|| normal(i));
-                match (before, after) {
+                let after = normals.get(i);
+                match (before.copied(), after.copied()) {
                     (Some(a), Some(b)) => {
                         let miter = a + b;
                         let cos = a.dot(b);

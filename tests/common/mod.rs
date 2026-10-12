@@ -20,7 +20,10 @@ pub fn measure_at_scale(surface: TerminalSurface, cell_size: Vec2, scale: f32) -
         .world_mut()
         .resource_mut::<Assets<Font>>()
         .add(Font::from_bytes(
-            include_bytes!("../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf").to_vec(),
+            include_bytes!(
+                "../../crates/bevy_terminal/assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf"
+            )
+            .to_vec(),
         ));
     let entity = app
         .world_mut()

@@ -6,7 +6,7 @@
 //! linear light and an 8-bit sRGB target, so each draw rounds once as it does
 //! on the GPU. It is a reference for scene *equivalence*, not for GPU pixels.
 
-use super::probe::{BUNDLED, ProbeFont, isolate_fonts, load_faces};
+use super::probe::{isolate_fonts, load_faces};
 use super::*;
 use crate::render::{BlinkConfig, CursorConfig, RasterConfig, TerminalSizing};
 use crate::scene::{TerminalCell, TerminalColor, TerminalStyle};
@@ -216,11 +216,7 @@ impl Replay {
         ))
         .init_asset::<Image>();
         isolate_fonts(&mut app);
-        let (dir, files) = BUNDLED
-            .iter()
-            .find(|(dir, _)| *dir == family)
-            .expect("bundled family");
-        let faces = load_faces(&mut app, &ProbeFont::Bundled(dir, *files));
+        let faces = load_faces(&mut app, family);
         let surface = TerminalSurface::new(grid);
         let entity = app
             .world_mut()
@@ -287,14 +283,12 @@ impl Replay {
     pub(super) fn full_reference(&mut self) -> Canvas {
         let mut system = SystemState::<(
             TextResources,
-            ResMut<Assets<Image>>,
             Query<(&mut BatchMainState, &TerminalRenderConfig)>,
         )>::new(self.app.world_mut());
-        let (mut text, mut images, mut states) = system.get_mut(self.app.world_mut()).unwrap();
+        let (mut text, mut states) = system.get_mut(self.app.world_mut()).unwrap();
         let (mut state, config) = states.get_mut(self.entity).unwrap();
         let config = config.clone();
         let snapshot = state.snapshot().cloned().expect("retained snapshot");
-        let rows: Vec<u16> = (0..snapshot.size().height).collect();
         let destination = state.output.id();
         let blink = state.retained.as_ref().unwrap().blink;
         let raster = state.raster();
@@ -307,13 +301,14 @@ impl Replay {
         let mut scratch = SceneScratch::default();
         let mut row_states = RowStates::default();
         let mut stats = TerminalStats::default();
-        let mut cx = text.context(&mut images);
+        let mut cx = text.context();
         let input = SceneInput {
             snapshot: &snapshot,
+            surface: &self.surface,
             config: &config,
             palette,
             raster,
-            changed: &rows,
+            changed: &[],
             full: true,
             destination,
             blink,
@@ -330,7 +325,7 @@ impl Replay {
         assert!(cx.failure.is_none());
         self.atlas.upload(&scene);
         let mut canvas = Canvas::new(scene.destination_size);
-        canvas.apply(&scene, &self.atlas, &images);
+        canvas.apply(&scene, &self.atlas, &text.images);
         canvas
     }
 
@@ -462,16 +457,22 @@ fn overflowing_ink_reaches_neighbours_and_partial_repaints_match_full_scenes() {
     );
     replay.assert_matches_full("style change");
 
-    // Blinking text hides and shows overflowing ink.
+    // Blinking text hides and shows overflowing ink: each update advances
+    // time by half a blink period.
     replay
         .app
         .world_mut()
         .get_mut::<TerminalRenderConfig>(replay.entity)
         .unwrap()
         .blink = BlinkConfig {
-        slow_hz: Some(40.0),
+        slow_hz: Some(2.0),
         rapid_hz: None,
     };
+    replay
+        .app
+        .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_millis(250),
+        ));
     replay.write(
         5,
         tall,
@@ -479,7 +480,6 @@ fn overflowing_ink_reaches_neighbours_and_partial_repaints_match_full_scenes() {
     );
     for _ in 0..12 {
         replay.assert_matches_full("blinking");
-        std::thread::sleep(std::time::Duration::from_millis(7));
     }
     assert!(
         replay.partial_scenes >= 10,
@@ -526,10 +526,9 @@ fn overflowing_coverage_is_corrected_against_each_background_it_covers() {
     replay.write(2, "   ", above);
     replay.app.update();
     let scene = queued(replay.app.world(), replay.entity).expect("a scene");
+    let theme = crate::render::TerminalTheme::default();
     let luminance = |style: TerminalStyle| {
-        super::scene::luminance(
-            crate::render::TerminalTheme::default().background(style.background),
-        )
+        super::scene::luminance(theme.resolve(style.background, theme.background))
     };
     let backgrounds: Vec<f32> = scene
         .batches
@@ -589,23 +588,20 @@ fn atlas_uploads_reach_the_texture_across_font_switches() {
 }
 
 #[test]
-fn a_lost_atlas_texture_is_rebuilt_from_scratch() {
+fn a_recreated_device_gets_every_atlas_entry_and_row_again() {
     let mut replay = Replay::new("jetbrains-mono", (6, 2), TerminalSizing::font(18.0), 1.0);
     replay.write(0, "abc\u{2592}", TerminalStyle::new());
     replay.assert_matches_full("initial");
-    // The render world lost the texture (a device reset): it starts blank
-    // and flags the main world, which re-uploads every entry.
+    // A recreated render device starts with a blank texture and atlas and
+    // counts itself; the idle terminal re-uploads every entry and repaints.
     replay.atlas = Atlas::default();
-    let state = replay
+    replay.canvas = Canvas::new(replay.canvas.size);
+    replay
         .app
         .world()
-        .get::<BatchMainState>(replay.entity)
-        .unwrap();
-    state
-        .glyph_atlas
-        .lost
-        .store(true, std::sync::atomic::Ordering::Release);
-    replay.write(1, "x", TerminalStyle::new());
+        .resource::<SceneQueue>()
+        .device
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     replay.assert_matches_full("after the reset");
     let scene_fresh = replay
         .app

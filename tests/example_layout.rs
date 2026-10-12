@@ -55,7 +55,7 @@ fn fitting_adopts_fractional_pixel_geometry_without_resizing() {
         Size::new(40, 40)
     );
 
-    let mut changed = common::measure_at_scale(terminal.surface(), Vec2::new(10.5, 20.5), 2.0);
+    let changed = common::measure_at_scale(terminal.surface(), Vec2::new(10.5, 20.5), 2.0);
     let geometry = changed.measured().unwrap();
     assert_eq!(geometry.cell_size(), Vec2::new(10.5, 20.5));
     assert!(!app::fit_grid(
@@ -67,15 +67,5 @@ fn fitting_adopts_fractional_pixel_geometry_without_resizing() {
         terminal.backend_mut().window_size().unwrap().pixels,
         Size::new(84, 82)
     );
-    assert_eq!(terminal.surface().size(), GridSize::new(4, 2));
-
-    for status in [TerminalStatus::Loading, TerminalStatus::FontFailed] {
-        changed.status = status;
-        assert!(!app::fit_grid(&mut terminal, &changed, Vec2::splat(1000.0)));
-        assert_eq!(terminal.surface().size(), GridSize::new(4, 2));
-        assert_eq!(
-            terminal.backend_mut().window_size().unwrap().pixels,
-            Size::new(84, 82)
-        );
-    }
+    assert_eq!(terminal.surface().info().size, GridSize::new(4, 2));
 }

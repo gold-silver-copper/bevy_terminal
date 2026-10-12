@@ -72,8 +72,10 @@ failures, missing text resources, and device texture limits.
   `physical_cell_size()` and `physical_font_size()`: the exact physical cell and
   rasterization size.
 - `raster_scale()`: physical-to-logical pixel ratio.
-- `grid_for(available_size)`: a bounded grid fitting a logical rectangle.
 - `is_current()` and `matches_surface(...)`: source/generation validation.
+
+`render::grid_for(available_size, geometry.cell_size())` returns a bounded grid
+fitting a logical rectangle.
 
 Readiness is persistent, so late consumers need no event history. Retain the
 last useful application layout while new geometry is unavailable. `is_current()`
@@ -160,8 +162,9 @@ Ghostty's translucent fills, shades (`░▒▓` and the legacy medium shades) a
 dithered: opaque dots in the classic VGA patterns, scaled to the cell so they
 tile seamlessly.
 
-The crate is MIT licensed; the test fonts under `assets/fonts` are bundled
-under their own licenses (OFL 1.1) and are used only by tests.
+The crate is MIT licensed. The fonts under `assets/fonts` in the repository are
+used only by tests and examples, keep their own licenses, and are not
+published.
 
 `FontFaces` selects regular, bold, italic, and bold-italic sources. Missing faces
 can request weight/style from fallback faces. Supply Bevy `Font` assets, generic

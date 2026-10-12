@@ -19,41 +19,17 @@ pub const COLUMNS: u16 = 48;
 pub const ROWS: u16 = 14;
 pub const CELL_SIZE: Vec2 = Vec2::new(11.0, 20.0);
 
-/// Directory holding the Iosevka Fixed faces in the repository checkout.
-const IOSEVKA_DIR: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/fonts/iosevka-fixed"
-);
-
-/// Registers four faces and applies them to `config`. Iosevka Fixed is read
-/// from the repository checkout when present (it is too large to package);
-/// otherwise the JetBrains Mono faces embedded in this crate are used. The
+/// Registers the four JetBrains Mono faces and applies them to `config`. The
 /// renderer measures the regular face and sizes it to the cell width itself.
 pub fn configure_fonts(app: &mut App, mut config: TerminalRenderConfig) -> TerminalRenderConfig {
-    let iosevka: Option<Vec<Vec<u8>>> = [
-        "IosevkaFixed-Regular.ttf",
-        "IosevkaFixed-Bold.ttf",
-        "IosevkaFixed-Italic.ttf",
-        "IosevkaFixed-BoldItalic.ttf",
-    ]
-    .iter()
-    .map(|face| std::fs::read(std::path::Path::new(IOSEVKA_DIR).join(face)).ok())
-    .collect();
-    let faces = iosevka.unwrap_or_else(|| {
-        [REGULAR, BOLD, ITALIC, BOLD_ITALIC]
-            .iter()
-            .map(|bytes| bytes.to_vec())
-            .collect()
-    });
     let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
-    let mut handles = faces
-        .into_iter()
-        .map(|bytes| fonts.add(Font::from_bytes(bytes)));
+    let [regular, bold, italic, bold_italic] = [REGULAR, BOLD, ITALIC, BOLD_ITALIC]
+        .map(|bytes| fonts.add(Font::from_bytes(bytes.to_vec())));
     config.font = FontFaces {
-        regular: handles.next().expect("four faces").into(),
-        bold: Some(handles.next().expect("four faces").into()),
-        italic: Some(handles.next().expect("four faces").into()),
-        bold_italic: Some(handles.next().expect("four faces").into()),
+        regular: regular.into(),
+        bold: Some(bold.into()),
+        italic: Some(italic.into()),
+        bold_italic: Some(bold_italic.into()),
         synthesize: true,
     };
     config

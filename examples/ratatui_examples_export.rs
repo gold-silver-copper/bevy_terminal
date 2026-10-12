@@ -27,8 +27,8 @@ use bevy_terminal_ratatui::prelude::{
 
 const CELL_WIDTH: f32 = 10.0;
 const CELL_HEIGHT: f32 = 18.0;
-/// The measured Iosevka cell for 10 px columns is 10×24 (the requested 18 px
-/// height grows to the font's line box); the canvas is sized for that.
+/// The requested 18 px height grows to JetBrains Mono's line box (22 px for
+/// 10 px columns); the canvas leaves room for a slightly taller cell.
 const CANVAS_CELL_HEIGHT: f32 = 24.0;
 const MARGIN: f32 = 20.0;
 const FRAMES_PER_EXAMPLE: u8 = 4;

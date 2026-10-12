@@ -167,14 +167,8 @@ impl Constraint {
         ranges
             .get(index)
             .filter(|(start, _, _)| *start <= codepoint)
-            .map(|(_, _, constraint)| nerd_font::CONSTRAINTS[usize::from(*constraint)])
-    }
-
-    /// Whether the constraint changes anything.
-    pub(super) fn does_anything(&self) -> bool {
-        self.size != Size::None
-            || self.align_horizontal != Align::None
-            || self.align_vertical != Align::None
+            .and_then(|(_, _, constraint)| nerd_font::CONSTRAINTS.get(usize::from(*constraint)))
+            .copied()
     }
 
     /// Applies the constraint to `glyph` with `constraint_width` cells
@@ -185,7 +179,10 @@ impl Constraint {
         metrics: Metrics,
         constraint_width: u8,
     ) -> GlyphSize {
-        if !self.does_anything() {
+        if self.size == Size::None
+            && self.align_horizontal == Align::None
+            && self.align_vertical == Align::None
+        {
             return glyph;
         }
         if self.size == Size::Stretch {
@@ -253,9 +250,6 @@ impl Constraint {
     }
 
     fn scale_factors(&self, group: GlyphSize, metrics: Metrics, width: u8) -> (f64, f64) {
-        if self.size == Size::None {
-            return (1.0, 1.0);
-        }
         let multi_cell = width > 1;
         let target_width =
             (f64::from(width) - (self.pad_left + self.pad_right)) * metrics.face_width;
@@ -268,7 +262,7 @@ impl Constraint {
         let mut width_factor = target_width / group.width;
         let mut height_factor = target_height / group.height;
         match self.size {
-            Size::None => unreachable!(),
+            Size::None => return (1.0, 1.0),
             Size::Fit => {
                 height_factor = 1.0_f64.min(width_factor).min(height_factor);
                 width_factor = height_factor;
@@ -323,7 +317,7 @@ impl Constraint {
         }
         // Multi-cell spans run from the first cell's left edge to the right
         // edge of the last face cell.
-        let span = metrics.face_width + f64::from(width - 1) * metrics.cell_width;
+        let span = metrics.face_width + f64::from(width.saturating_sub(1)) * metrics.cell_width;
         let pad_left = self.pad_left * metrics.face_width;
         let pad_right = self.pad_right * metrics.face_width;
         let start = pad_left;

@@ -26,7 +26,7 @@ pub fn export_terminals_on_ready(app: &mut App, output_dir: impl Into<String>) {
                 }
                 commands.entity(entity).insert(ExportStarted);
                 commands.spawn((
-                    ImageExport(sources.add(texture.image.clone())),
+                    ImageExport(sources.add(texture.image().clone())),
                     ImageExportSettings {
                         output_dir: output_dir.clone(),
                         extension: "png".into(),

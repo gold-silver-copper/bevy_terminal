@@ -1,5 +1,3 @@
 /target/
 /out/
 *.png
-!crates/bevy_terminal/src/render/batch/sprite/testdata/*.png
-!ghostty-parity/ratty-captures/*.png

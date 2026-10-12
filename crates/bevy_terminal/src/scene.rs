@@ -26,6 +26,14 @@ impl GridSize {
         self.width as usize * self.height as usize
     }
 
+    /// Drops rows until the grid holds at most
+    /// [`TerminalSurface::MAX_CELLS`](crate::surface::TerminalSurface::MAX_CELLS).
+    pub(crate) fn bounded(self) -> Self {
+        let rows = crate::surface::TerminalSurface::MAX_CELLS / usize::from(self.width.max(1));
+        let rows = u16::try_from(rows).unwrap_or(u16::MAX);
+        Self::new(self.width, self.height.min(rows))
+    }
+
     /// Returns whether `position` lies inside the grid.
     #[must_use]
     pub fn contains(self, position: impl Into<CellPosition>) -> bool {
@@ -112,28 +120,83 @@ impl TerminalColor {
     pub const WHITE: Self = Self::Indexed(15);
 }
 
-bitflags::bitflags! {
-    /// Compact text attributes. The bit positions match Ratatui's modifiers.
-    #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-    pub struct StyleFlags: u16 {
-        /// Bold font weight.
-        const BOLD = 1 << 0;
-        /// Reduced contrast.
-        const DIM = 1 << 1;
-        /// Italic font style.
-        const ITALIC = 1 << 2;
-        /// Underline decoration.
-        const UNDERLINED = 1 << 3;
-        /// Slow text blink.
-        const SLOW_BLINK = 1 << 4;
-        /// Rapid text blink.
-        const RAPID_BLINK = 1 << 5;
-        /// Swap foreground and background.
-        const REVERSED = 1 << 6;
-        /// Hide foreground content.
-        const HIDDEN = 1 << 7;
-        /// Strike-through decoration.
-        const CROSSED_OUT = 1 << 8;
+/// Compact text attributes. The bit positions match Ratatui's modifiers.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct StyleFlags(u16);
+
+impl StyleFlags {
+    /// Bold font weight.
+    pub const BOLD: Self = Self(1 << 0);
+    /// Reduced contrast.
+    pub const DIM: Self = Self(1 << 1);
+    /// Italic font style.
+    pub const ITALIC: Self = Self(1 << 2);
+    /// Underline decoration.
+    pub const UNDERLINED: Self = Self(1 << 3);
+    /// Slow text blink.
+    pub const SLOW_BLINK: Self = Self(1 << 4);
+    /// Rapid text blink.
+    pub const RAPID_BLINK: Self = Self(1 << 5);
+    /// Swap foreground and background.
+    pub const REVERSED: Self = Self(1 << 6);
+    /// Hide foreground content.
+    pub const HIDDEN: Self = Self(1 << 7);
+    /// Strike-through decoration.
+    pub const CROSSED_OUT: Self = Self(1 << 8);
+    const ALL: u16 = (1 << 9) - 1;
+
+    /// No attributes.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// The raw bits.
+    #[must_use]
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
+    /// Flags from raw bits, dropping unknown ones.
+    #[must_use]
+    pub const fn from_bits_truncate(bits: u16) -> Self {
+        Self(bits & Self::ALL)
+    }
+
+    /// Whether every flag in `other` is set.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Whether any flag in `other` is set.
+    #[must_use]
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    /// Both sets of flags.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Sets the flags in `other`.
+    pub const fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+
+    /// Clears the flags in `other`.
+    pub const fn remove(&mut self, other: Self) {
+        self.0 &= !other.0;
+    }
+}
+
+impl std::ops::BitOr for StyleFlags {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        self.union(other)
     }
 }
 
@@ -151,18 +214,15 @@ pub struct TerminalStyle {
 }
 
 impl TerminalStyle {
-    /// The default style: default colors and no attributes.
-    pub const DEFAULT: Self = Self {
-        foreground: TerminalColor::Default,
-        background: TerminalColor::Default,
-        underline: TerminalColor::Default,
-        flags: StyleFlags::empty(),
-    };
-
-    /// Creates the default style.
+    /// Creates the default style: default colors and no attributes.
     #[must_use]
     pub const fn new() -> Self {
-        Self::DEFAULT
+        Self {
+            foreground: TerminalColor::Default,
+            background: TerminalColor::Default,
+            underline: TerminalColor::Default,
+            flags: StyleFlags::empty(),
+        }
     }
 
     /// Sets the foreground color.
@@ -243,31 +303,14 @@ impl CellOccupancy {
 
 const INLINE_SYMBOL_BYTES: usize = 22;
 
-const ASCII_SYMBOLS: [&str; 128] = [
-    "\u{0}", "\u{1}", "\u{2}", "\u{3}", "\u{4}", "\u{5}", "\u{6}", "\u{7}", "\u{8}", "\u{9}",
-    "\u{a}", "\u{b}", "\u{c}", "\u{d}", "\u{e}", "\u{f}", "\u{10}", "\u{11}", "\u{12}", "\u{13}",
-    "\u{14}", "\u{15}", "\u{16}", "\u{17}", "\u{18}", "\u{19}", "\u{1a}", "\u{1b}", "\u{1c}",
-    "\u{1d}", "\u{1e}", "\u{1f}", " ", "!", "\"", "#", "$", "%", "&", "'", "(", ")", "*", "+", ",",
-    "-", ".", "/", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", ";", "<", "=", ">", "?",
-    "@", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R",
-    "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^", "_", "`", "a", "b", "c", "d", "e",
-    "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x",
-    "y", "z", "{", "|", "}", "~", "\u{7f}",
-];
-
 /// The grapheme cluster shown in one cell.
 ///
-/// Single ASCII characters are stored as one byte and read back through a
-/// static table, symbols up to 22 UTF-8 bytes long are stored inline, and
-/// longer clusters spill to the heap. The representation is private; the type
-/// is 24 bytes and never allocates for ASCII, box drawing, CJK, combining
-/// sequences or most emoji.
+/// Symbols up to 22 UTF-8 bytes long are stored inline and longer clusters
+/// spill to the heap. The representation is private; the type is 24 bytes and
+/// never allocates for ASCII, box drawing, CJK, combining sequences or most
+/// emoji.
 #[derive(Clone, Eq, Hash, PartialEq)]
-struct CellSymbol(SymbolRepr);
-
-#[derive(Clone, Eq, Hash, PartialEq)]
-enum SymbolRepr {
-    Ascii(u8),
+enum CellSymbol {
     Inline {
         len: u8,
         bytes: [u8; INLINE_SYMBOL_BYTES],
@@ -277,37 +320,33 @@ enum SymbolRepr {
 
 impl CellSymbol {
     /// A single ASCII space.
-    pub const SPACE: Self = Self(SymbolRepr::Ascii(b' '));
+    const SPACE: Self = {
+        let mut bytes = [0; INLINE_SYMBOL_BYTES];
+        bytes[0] = b' ';
+        Self::Inline { len: 1, bytes }
+    };
 
-    /// Creates a symbol from a string slice.
-    #[must_use]
-    pub fn new(symbol: &str) -> Self {
-        let source = symbol.as_bytes();
-        if let [byte] = source
-            && byte.is_ascii()
-        {
-            Self(SymbolRepr::Ascii(*byte))
-        } else if source.len() <= INLINE_SYMBOL_BYTES {
-            let mut bytes = [0; INLINE_SYMBOL_BYTES];
-            bytes[..source.len()].copy_from_slice(source);
-            Self(SymbolRepr::Inline {
-                len: source.len() as u8,
-                bytes,
-            })
-        } else {
-            Self(SymbolRepr::Heap(symbol.into()))
+    fn new(symbol: &str) -> Self {
+        if symbol.len() > INLINE_SYMBOL_BYTES {
+            return Self::Heap(symbol.into());
+        }
+        let mut bytes = [0; INLINE_SYMBOL_BYTES];
+        for (byte, source) in bytes.iter_mut().zip(symbol.as_bytes()) {
+            *byte = *source;
+        }
+        Self::Inline {
+            len: symbol.len() as u8,
+            bytes,
         }
     }
 
-    /// Returns the symbol text.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match &self.0 {
-            SymbolRepr::Ascii(byte) => ASCII_SYMBOLS[usize::from(*byte & 0x7f)],
-            SymbolRepr::Inline { len, bytes } => {
-                std::str::from_utf8(&bytes[..usize::from(*len)]).unwrap_or("")
-            }
-            SymbolRepr::Heap(text) => text,
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Inline { len, bytes } => bytes
+                .get(..usize::from(*len))
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .unwrap_or_default(),
+            Self::Heap(text) => text,
         }
     }
 }
@@ -324,39 +363,13 @@ impl fmt::Debug for CellSymbol {
     }
 }
 
-impl fmt::Display for CellSymbol {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl From<&str> for CellSymbol {
-    fn from(symbol: &str) -> Self {
-        Self::new(symbol)
-    }
-}
-
-impl From<char> for CellSymbol {
-    fn from(symbol: char) -> Self {
-        let mut buffer = [0; 4];
-        Self::new(symbol.encode_utf8(&mut buffer))
-    }
-}
-
-impl std::ops::Deref for CellSymbol {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        self.as_str()
-    }
-}
-
 /// One terminal cell: a symbol, its style and its column occupancy.
 ///
 /// The occupancy is set by the constructors ([`TerminalCell::new`],
 /// [`TerminalCell::wide`]) and read through
 /// [`TerminalCell::occupancy`]; it cannot be edited in place, so a cell can
-/// never claim a span it was not created with. Surface writes generate continuation cells.
+/// never claim a span it was not created with. Surface writes generate the
+/// continuation cells and clip a span that would leave the row.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct TerminalCell {
     /// The grapheme cluster shown in this cell.
@@ -370,7 +383,7 @@ impl TerminalCell {
     /// An empty cell: a space with the default style.
     pub const EMPTY: Self = Self {
         symbol: CellSymbol::SPACE,
-        style: TerminalStyle::DEFAULT,
+        style: TerminalStyle::new(),
         occupancy: CellOccupancy::Single,
     };
 
@@ -379,7 +392,7 @@ impl TerminalCell {
     pub fn new(symbol: &str) -> Self {
         Self {
             symbol: CellSymbol::new(symbol),
-            style: TerminalStyle::DEFAULT,
+            style: TerminalStyle::new(),
             occupancy: CellOccupancy::Single,
         }
     }
@@ -389,7 +402,7 @@ impl TerminalCell {
     pub fn wide(symbol: &str, columns: u16) -> Self {
         Self {
             symbol: CellSymbol::new(symbol),
-            style: TerminalStyle::DEFAULT,
+            style: TerminalStyle::new(),
             occupancy: CellOccupancy::spanning(columns),
         }
     }
@@ -423,16 +436,19 @@ impl TerminalCell {
         self.symbol.as_str()
     }
 
-    /// Returns whether this is a continuation cell of a wide glyph.
+    /// Returns whether this is a continuation cell of a wide glyph, which
+    /// shows its anchor's glyph rather than a symbol of its own.
     #[must_use]
     pub const fn is_continuation(&self) -> bool {
         matches!(self.occupancy, CellOccupancy::Continuation)
     }
 
-    /// Returns the number of columns claimed by this cell.
-    #[must_use]
-    pub const fn columns(&self) -> u16 {
-        self.occupancy.columns()
+    /// This cell with its span clipped to `columns`.
+    pub(crate) fn clipped(&self, columns: u16) -> Self {
+        Self {
+            occupancy: CellOccupancy::spanning(columns),
+            ..self.clone()
+        }
     }
 }
 
@@ -463,23 +479,16 @@ impl TerminalSnapshot {
     /// Returns the cells of one row, or an empty slice for an out-of-range row.
     #[must_use]
     pub fn row(&self, row: u16) -> &[TerminalCell] {
-        if row >= self.size.height {
-            return &[];
-        }
         let width = usize::from(self.size.width);
         let start = usize::from(row) * width;
-        &self.cells[start..start + width]
+        self.cells.get(start..start + width).unwrap_or_default()
     }
 
     /// Returns the cell at a position, or `None` outside the grid.
     #[must_use]
     pub fn cell(&self, position: impl Into<CellPosition>) -> Option<&TerminalCell> {
         let position = position.into();
-        if !self.size.contains(position) {
-            return None;
-        }
-        self.cells
-            .get(usize::from(position.y) * usize::from(self.size.width) + usize::from(position.x))
+        self.row(position.y).get(usize::from(position.x))
     }
 
     /// Returns the cursor position in cells.
@@ -528,15 +537,8 @@ impl TerminalSnapshot {
     /// (continuation cells are skipped), styles dropped and trailing spaces
     /// kept so every row has a predictable width. An out-of-range row is
     /// empty.
-    #[must_use]
-    pub fn row_text(&self, row: u16) -> String {
-        let mut text = String::new();
-        self.write_row(row, &mut text)
-            .expect("writing to a String cannot fail");
-        text
-    }
-
-    /// Returns the whole grid as plain text, rows joined with `'\n'` — the
+    ///
+    /// The [`fmt::Display`] implementation joins every row with `'\n'`, the
     /// lossy "what is on screen" view for quick assertions:
     ///
     /// ```
@@ -545,24 +547,22 @@ impl TerminalSnapshot {
     /// let surface = TerminalSurface::new((8, 2));
     /// surface.update(|update| {
     ///     for (x, ch) in "Loading".chars().enumerate() {
-    ///         update.set_cell((x as u16, 1), &TerminalCell::new(&ch.to_string()));
+    ///         update.set_cell((x as u16, 1), &TerminalCell::from(ch));
     ///     }
     /// });
-    /// assert!(surface.snapshot().to_text().contains("Loading"));
+    /// assert!(surface.snapshot().to_string().contains("Loading"));
     /// assert_eq!(surface.snapshot().row_text(1), "Loading ");
     /// ```
-    ///
-    /// [`TerminalSnapshot`] also implements [`fmt::Display`] with this output.
     #[must_use]
-    pub fn to_text(&self) -> String {
-        self.to_string()
+    pub fn row_text(&self, row: u16) -> String {
+        self.row_symbols(row).collect()
     }
 
-    fn write_row(&self, row: u16, writer: &mut impl fmt::Write) -> fmt::Result {
-        for cell in self.row(row).iter().filter(|cell| !cell.is_continuation()) {
-            writer.write_str(cell.symbol())?;
-        }
-        Ok(())
+    fn row_symbols(&self, row: u16) -> impl Iterator<Item = &str> {
+        self.row(row)
+            .iter()
+            .filter(|cell| !cell.is_continuation())
+            .map(TerminalCell::symbol)
     }
 }
 
@@ -572,7 +572,8 @@ impl fmt::Display for TerminalSnapshot {
             if row > 0 {
                 f.write_str("\n")?;
             }
-            self.write_row(row, f)?;
+            self.row_symbols(row)
+                .try_for_each(|symbol| f.write_str(symbol))?;
         }
         Ok(())
     }
@@ -586,20 +587,7 @@ impl From<&str> for TerminalCell {
 
 impl From<char> for TerminalCell {
     fn from(symbol: char) -> Self {
-        Self {
-            symbol: symbol.into(),
-            style: TerminalStyle::DEFAULT,
-            occupancy: CellOccupancy::Single,
-        }
-    }
-}
-
-impl std::ops::Index<(u16, u16)> for TerminalSnapshot {
-    type Output = TerminalCell;
-
-    fn index(&self, (x, y): (u16, u16)) -> &TerminalCell {
-        self.cell((x, y))
-            .unwrap_or_else(|| panic!("cell ({x}, {y}) is outside {:?}", self.size))
+        Self::new(symbol.encode_utf8(&mut [0; 4]))
     }
 }
 
@@ -609,26 +597,17 @@ mod tests {
 
     #[test]
     fn short_symbols_are_stored_inline_and_long_ones_on_the_heap() {
-        assert!(matches!(CellSymbol::new("A").0, SymbolRepr::Ascii(b'A')));
-        assert_eq!(CellSymbol::new("A").as_str(), "A");
-        assert_eq!(CellSymbol::new("\u{7f}").as_str(), "\u{7f}");
-        assert_eq!(CellSymbol::new("\"").as_str(), "\"");
-        assert_eq!(CellSymbol::new("\\").as_str(), "\\");
-        for byte in 0..128_u8 {
-            assert_eq!(ASCII_SYMBOLS[usize::from(byte)].as_bytes(), [byte]);
+        for short in ["A", "\u{7f}", "\\", "e\u{301}", "👍🏽", "界"] {
+            let symbol = CellSymbol::new(short);
+            assert!(matches!(symbol, CellSymbol::Inline { .. }));
+            assert_eq!(symbol.as_str(), short);
         }
-        assert!(matches!(
-            CellSymbol::new("e\u{301}").0,
-            SymbolRepr::Inline { .. }
-        ));
-        assert!(matches!(CellSymbol::new("👍🏽").0, SymbolRepr::Inline { .. }));
         let long = "👨\u{200d}👩\u{200d}👧\u{200d}👦";
         let symbol = CellSymbol::new(long);
-        assert!(matches!(symbol.0, SymbolRepr::Heap(_)));
-        assert_eq!(&*symbol, long);
+        assert!(matches!(symbol, CellSymbol::Heap(_)));
         assert_eq!(symbol.as_str(), long);
-        assert_eq!(CellSymbol::from('界').as_str(), "界");
-        assert_eq!(CellSymbol::default(), CellSymbol::SPACE);
+        assert_eq!(CellSymbol::default().as_str(), " ");
+        assert_eq!(TerminalCell::from('界').symbol(), "界");
     }
 
     #[test]
@@ -646,7 +625,7 @@ mod tests {
         flags.remove(StyleFlags::BOLD);
         assert_eq!(flags, StyleFlags::ITALIC);
         flags.insert(StyleFlags::HIDDEN);
-        assert_eq!(format!("{flags:?}"), "StyleFlags(ITALIC | HIDDEN)");
+        assert!(flags.intersects(StyleFlags::HIDDEN | StyleFlags::DIM));
         assert_eq!(StyleFlags::from_bits_truncate(0xffff).bits(), 0x1ff);
     }
 
@@ -676,7 +655,7 @@ mod tests {
             resize_generation: 0,
         };
         snapshot.cells[4] = TerminalCell::new("X");
-        assert_eq!(snapshot[(1, 1)].symbol(), "X");
+        assert_eq!(snapshot.cell((1, 1)).unwrap().symbol(), "X");
         assert_eq!(snapshot.row(1)[1].symbol(), "X");
         assert!(snapshot.cell((3, 0)).is_none());
         assert!(snapshot.row(2).is_empty());

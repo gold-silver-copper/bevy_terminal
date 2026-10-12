@@ -9,8 +9,17 @@ repository = "https://github.com/gold-silver-copper/bevy_terminal"
 documentation = "https://docs.rs/bevy_terminal"
 keywords = ["bevy", "terminal", "tui", "rendering"]
 categories = ["game-development", "gui", "rendering"]
-# Ghostty's reference sprite atlases are repository-only test fixtures.
-exclude = ["src/render/batch/sprite/testdata"]
+# Library source only: test modules and fixtures stay in the repository.
+include = [
+    "src/**/*.rs",
+    "src/**/*.wgsl",
+    "!src/**/tests.rs",
+    "!src/render/batch/invariants.rs",
+    "!src/render/batch/probe.rs",
+    "!src/render/batch/replay.rs",
+    "/README.md",
+    "/LICENSE",
+]
 
 [features]
 default = ["system_fonts"]
@@ -21,7 +30,6 @@ system_fonts = ["bevy/system_font_discovery"]
 timings = []
 
 [dependencies]
-bitflags = "2"
 bevy = { version = "0.20", default-features = false, features = [
     "std",
     "async_executor",
@@ -43,8 +51,6 @@ bevy = { version = "0.20", default-features = false, features = ["2d", "ui", "sy
 # Host-independent font collections for the glyph placement probe.
 fontique = { version = "0.11", default-features = false }
 unicode-segmentation = "1.13"
-# Decodes Ghostty's reference sprite atlases.
-png = "0.18"
 unicode-width = "0.2"
 
 [lints.rust]

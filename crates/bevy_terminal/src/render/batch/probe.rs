@@ -9,20 +9,14 @@
 //! - how far its ink reaches outside its cell box;
 //! - the horizontal shift the scene applied.
 //!
-//! Required checks use the bundled families with a host-independent font
-//! collection. `cargo test -p bevy_terminal --lib probe -- --ignored` runs the
-//! whole matrix and writes TSV reports to `target/glyph-placement-probe`
-//! (override with `BEVY_TERMINAL_PROBE_REPORT=<dir>`).
-//! `BEVY_TERMINAL_PROBE_FONTS="Label=/path/font.ttf;Menlo"` adds optional host
-//! fonts: a path loads that file, a bare name selects a system family (host
-//! discovery and fallback are enabled for those runs).
+//! The checks use the bundled families with a host-independent font
+//! collection.
 
 use super::shaping::is_symbol;
 use super::*;
 use crate::render::pixel_rect;
 use crate::render::{BlinkConfig, CursorConfig, FontFaces, RasterConfig, TerminalSizing};
 use crate::scene::{StyleFlags, TerminalCell};
-use std::fmt::Write as _;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -170,27 +164,8 @@ fn fill(surface: &TerminalSurface) {
     });
 }
 
-/// A font for one probe run.
-#[derive(Clone, Debug)]
-pub(super) enum ProbeFont {
-    /// A bundled family directory with its four faces.
-    Bundled(&'static str, [&'static str; 4]),
-    /// A font file loaded as every face (styles synthesized).
-    File(String),
-    /// A system family (styles resolved by the host).
-    System(String),
-}
-
-pub(super) const BUNDLED: [(&str, [&str; 4]); 6] = [
-    (
-        "iosevka-fixed",
-        [
-            "IosevkaFixed-Regular.ttf",
-            "IosevkaFixed-Bold.ttf",
-            "IosevkaFixed-Italic.ttf",
-            "IosevkaFixed-BoldItalic.ttf",
-        ],
-    ),
+/// The bundled families and their regular, bold, italic and bold italic faces.
+pub(super) const BUNDLED: [(&str, [&str; 4]); 4] = [
     (
         "jetbrains-mono",
         [
@@ -227,20 +202,12 @@ pub(super) const BUNDLED: [(&str, [&str; 4]); 6] = [
             "DejaVuSansMono-BoldOblique.ttf",
         ],
     ),
-    (
-        "source-code-pro",
-        [
-            "SourceCodePro-Regular.ttf",
-            "SourceCodePro-Bold.ttf",
-            "SourceCodePro-It.ttf",
-            "SourceCodePro-BoldIt.ttf",
-        ],
-    ),
 ];
 
+/// A bundled font file from the crate's `assets/fonts`.
 pub(super) fn asset(path: &str) -> Vec<u8> {
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/");
-    std::fs::read(format!("{root}{path}")).unwrap_or_else(|error| panic!("{path}: {error}"))
+    let fonts = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/");
+    std::fs::read(format!("{fonts}{path}")).unwrap_or_else(|error| panic!("{path}: {error}"))
 }
 
 /// Replaces the host collection with bundled fallbacks so the probe does not
@@ -270,15 +237,7 @@ pub(super) fn isolate_fonts(app: &mut App) {
             &["Latn", "Zyyy", "Zzzz"][..],
         ),
     ] {
-        let font = Font::from_bytes(if path.starts_with("fidelity/FidelityNerd") {
-            std::fs::read(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/assets/fonts/fidelity/FidelityNerdSymbols.ttf"
-            ))
-            .unwrap()
-        } else {
-            asset(path)
-        });
+        let font = Font::from_bytes(asset(path));
         let families = cx.collection.register_fonts(font.data, None);
         for script in scripts {
             cx.collection.append_fallbacks(
@@ -291,67 +250,67 @@ pub(super) fn isolate_fonts(app: &mut App) {
         .expect("bundled emoji family");
 }
 
-pub(super) fn load_faces(app: &mut App, font: &ProbeFont) -> FontFaces {
+/// The faces of the bundled `family`.
+pub(super) fn load_faces(app: &mut App, family: &str) -> FontFaces {
+    let (dir, [regular, bold, italic, bold_italic]) = BUNDLED
+        .into_iter()
+        .find(|(dir, _)| *dir == family)
+        .unwrap_or_else(|| panic!("bundled family {family}"));
     let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
-    match font {
-        ProbeFont::Bundled(dir, files) => {
-            let mut load = |file: &str| -> FontSource {
-                fonts
-                    .add(Font::from_bytes(asset(&format!("{dir}/{file}"))))
-                    .into()
-            };
-            FontFaces {
-                regular: load(files[0]),
-                bold: Some(load(files[1])),
-                italic: Some(load(files[2])),
-                bold_italic: Some(load(files[3])),
-                synthesize: true,
-            }
-        }
-        ProbeFont::File(path) => FontFaces::regular(fonts.add(Font::from_bytes(
-            std::fs::read(path).unwrap_or_else(|error| panic!("{path}: {error}")),
-        ))),
-        ProbeFont::System(name) => FontFaces::regular(FontSource::Family(name.clone().into())),
+    let mut load = |file: &str| -> FontSource {
+        fonts
+            .add(Font::from_bytes(asset(&format!("{dir}/{file}"))))
+            .into()
+    };
+    FontFaces {
+        regular: load(regular),
+        bold: Some(load(bold)),
+        italic: Some(load(italic)),
+        bold_italic: Some(load(bold_italic)),
+        synthesize: true,
     }
 }
 
-/// One probe configuration.
+/// One probe configuration: a bundled family at a size, scale and line height.
 #[derive(Clone, Debug)]
-pub(super) struct ProbeCase {
-    pub(super) label: String,
-    pub(super) font: ProbeFont,
-    pub(super) font_size: f32,
-    pub(super) scale: f32,
-    pub(super) line_height: f32,
+struct ProbeCase {
+    family: &'static str,
+    font_size: f32,
+    scale: f32,
+    line_height: f32,
+}
+
+impl ProbeCase {
+    fn label(&self) -> String {
+        format!(
+            "{} {}px {}x lh {}",
+            self.family, self.font_size, self.scale, self.line_height
+        )
+    }
 }
 
 /// Measurements of one grapheme.
 #[derive(Clone, Debug, Default)]
-pub(super) struct ProbeEntry {
-    pub(super) symbol: String,
-    pub(super) row: u16,
-    pub(super) column: u16,
-    pub(super) columns: u16,
-    pub(super) class: &'static str,
-    /// Inked texels.
-    pub(super) ink: u32,
+struct ProbeEntry {
+    symbol: String,
+    row: u16,
+    column: u16,
+    class: &'static str,
     /// Inked texels dropped by a clip inside the texture.
-    pub(super) lost_clip: u32,
-    /// Inked texels past the texture's edges.
-    pub(super) lost_edge: u32,
+    lost_clip: u32,
     /// How far ink reaches past the cell box: top, bottom, left, right.
-    pub(super) outside: [i32; 4],
+    outside: [i32; 4],
     /// Ink bounds relative to the cell origin: left, top, right, bottom.
-    pub(super) bounds: [i32; 4],
-    pub(super) shift: f32,
+    bounds: [i32; 4],
+    shift: f32,
 }
 
-pub(super) struct ProbeResult {
-    pub(super) cell: Vec2,
-    pub(super) entries: Vec<ProbeEntry>,
+struct ProbeResult {
+    cell: Vec2,
+    entries: Vec<ProbeEntry>,
 }
 
-pub(super) fn run(case: &ProbeCase) -> ProbeResult {
+fn run(case: &ProbeCase) -> ProbeResult {
     let mut app = App::new();
     app.add_plugins((
         MinimalPlugins,
@@ -360,10 +319,8 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
         TerminalPlugin,
     ))
     .init_asset::<Image>();
-    if !matches!(case.font, ProbeFont::System(_)) {
-        isolate_fonts(&mut app);
-    }
-    let faces = load_faces(&mut app, &case.font);
+    isolate_fonts(&mut app);
+    let faces = load_faces(&mut app, case.family);
     let rows = samples().len() as u16;
     let surface = TerminalSurface::new((WIDTH, rows));
     fill(&surface);
@@ -403,12 +360,16 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
         .world()
         .get::<TerminalTexture>(entity)
         .and_then(TerminalTexture::measured)
-        .unwrap_or_else(|| panic!("{}: terminal never became ready", case.label))
+        .unwrap_or_else(|| panic!("{}: terminal never became ready", case.label()))
         .size();
     let state = app.world().get::<BatchMainState>(entity).unwrap();
     let record = state.scratch.probe.clone().unwrap_or_default();
     let glyphs = &record.glyphs;
-    assert!(!glyphs.is_empty(), "{}: no full scene recorded", case.label);
+    assert!(
+        !glyphs.is_empty(),
+        "{}: no full scene recorded",
+        case.label()
+    );
     let cell = state.raster().cell_size;
     let images = app.world().resource::<Assets<Image>>();
     let mut entries: Vec<ProbeEntry> = Vec::new();
@@ -421,7 +382,6 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
                     symbol: glyph.symbol.clone(),
                     row: glyph.row,
                     column: glyph.column,
-                    columns: glyph.columns,
                     class: glyph.class(),
                     outside: [i32::MIN; 4],
                     bounds: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
@@ -463,7 +423,6 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
                 }
                 let x = glyph.geometry.min.x + (tx as f32 - texels.x);
                 let y = glyph.geometry.min.y + (ty as f32 - texels.y);
-                entry.ink += 1;
                 let in_texture = x >= 0.0 && y >= 0.0 && x < size.x as f32 && y < size.y as f32;
                 let in_clip = pieces.iter().any(|piece| {
                     x >= piece.min.x - 0.01
@@ -471,9 +430,7 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
                         && x + 1.0 <= piece.max.x + 0.01
                         && y + 1.0 <= piece.max.y + 0.01
                 });
-                if !in_texture {
-                    entry.lost_edge += 1;
-                } else if !in_clip {
+                if in_texture && !in_clip {
                     entry.lost_clip += 1;
                 }
                 let over = [
@@ -503,162 +460,21 @@ pub(super) fn run(case: &ProbeCase) -> ProbeResult {
     ProbeResult { cell, entries }
 }
 
-/// The full matrix: bundled families at Ratty-like sizes, plus optional
-/// host fonts from `BEVY_TERMINAL_PROBE_FONTS`.
-pub(super) fn matrix() -> Vec<ProbeCase> {
-    let mut fonts: Vec<(String, ProbeFont)> = BUNDLED
-        .iter()
-        .map(|(dir, files)| (dir.to_string(), ProbeFont::Bundled(dir, *files)))
-        .collect();
-    if let Ok(extra) = std::env::var("BEVY_TERMINAL_PROBE_FONTS") {
-        for spec in extra.split(';').filter(|spec| !spec.is_empty()) {
-            fonts.push(match spec.split_once('=') {
-                Some((label, path)) => (label.to_owned(), ProbeFont::File(path.to_owned())),
-                None => (spec.to_owned(), ProbeFont::System(spec.to_owned())),
-            });
-        }
-    }
-    let mut cases = Vec::new();
-    for (name, font) in fonts {
-        for font_size in [18.0, 24.0] {
-            for scale in [1.0, 2.0] {
-                for line_height in [1.0, 0.85] {
-                    cases.push(ProbeCase {
-                        label: format!("{name}\t{font_size}\t{scale}\t{line_height}"),
-                        font: font.clone(),
-                        font_size,
-                        scale,
-                        line_height,
-                    });
-                }
-            }
-        }
-    }
-    cases
-}
-
-pub(super) const REPORT_HEADER: &str = "font\tsize\tscale\tline_height\tcell\tsymbol\trow\tcolumn\tcolumns\tclass\tink\tlost_clip\tlost_edge\tout_top\tout_bottom\tout_left\tout_right\tshift_x\tink_left\tink_top\tink_right\tink_bottom\n";
-pub(super) const SUMMARY_HEADER: &str = "font\tsize\tscale\tline_height\tcell\tgraphemes\tclipped\tlost_clip\tedge_clipped\tlost_edge\ttext_shifted\ttext_shift_px\toverflowing\n";
-
-/// Appends the notable entries of one run and its summary line; at 24 px
-/// and scale 2, entries of non-sprite graphemes that lost ink or were
-/// shifted also go to `defects` (committed as `probe-after-defects.tsv`).
-pub(super) fn report(
-    case: &ProbeCase,
-    result: &ProbeResult,
-    report: &mut String,
-    summary: &mut String,
-    defects: &mut String,
-) {
-    let cell = format!("{}x{}", result.cell.x, result.cell.y);
-    let mut clipped = 0;
-    let mut lost_clip = 0;
-    let mut edge_clipped = 0;
-    let mut lost_edge = 0;
-    let mut shifted = 0;
-    let mut shift_px = 0.0;
-    let mut overflowing = 0;
-    for entry in &result.entries {
-        let outside = entry.outside.iter().any(|side| *side > 0);
-        clipped += usize::from(entry.lost_clip > 0);
-        lost_clip += entry.lost_clip;
-        edge_clipped += usize::from(entry.lost_edge > 0);
-        lost_edge += entry.lost_edge;
-        overflowing += usize::from(outside);
-        if entry.class == "text" && entry.shift != 0.0 {
-            shifted += 1;
-            shift_px += entry.shift.abs();
-        }
-        if entry.lost_clip == 0
-            && entry.lost_edge == 0
-            && !outside
-            && entry.shift == 0.0
-            && std::env::var_os("BEVY_TERMINAL_PROBE_ALL").is_none()
-        {
-            continue;
-        }
-        let [top, bottom, left, right] = entry.outside;
-        let line = format!(
-            "{}\t{cell}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{top}\t{bottom}\t{left}\t{right}\t{}\t{}",
-            case.label,
-            entry.symbol,
-            entry.row,
-            entry.column,
-            entry.columns,
-            entry.class,
-            entry.ink,
-            entry.lost_clip,
-            entry.lost_edge,
-            entry.shift,
-            entry.bounds.map(|v| v.to_string()).join("\t"),
-        );
-        writeln!(report, "{line}").unwrap();
-        if case.font_size == 24.0
-            && case.scale == 2.0
-            && entry.class != "sprite"
-            && (entry.lost_clip > 0 || entry.lost_edge > 0 || entry.shift != 0.0)
-        {
-            writeln!(defects, "{line}").unwrap();
-        }
-    }
-    writeln!(
-        summary,
-        "{}\t{cell}\t{}\t{clipped}\t{lost_clip}\t{edge_clipped}\t{lost_edge}\t{shifted}\t{shift_px}\t{overflowing}",
-        case.label,
-        result.entries.len()
-    )
-    .unwrap();
-}
-
+/// A few families, sizes, scales and line heights, including a compact row.
 #[test]
-#[ignore = "full placement matrix; writes TSV reports"]
-fn glyph_placement_probe_report() {
-    let directory = std::env::var("BEVY_TERMINAL_PROBE_REPORT").unwrap_or_else(|_| {
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../target/glyph-placement-probe"
-        )
-        .into()
-    });
-    std::fs::create_dir_all(&directory).unwrap();
-    let mut report = String::from(REPORT_HEADER);
-    let mut summary = String::from(SUMMARY_HEADER);
-    let mut defects = String::from(REPORT_HEADER);
-    for case in matrix() {
-        let result = run(&case);
-        self::report(&case, &result, &mut report, &mut summary, &mut defects);
-    }
-    std::fs::write(format!("{directory}/entries.tsv"), &report).unwrap();
-    std::fs::write(format!("{directory}/summary.tsv"), &summary).unwrap();
-    std::fs::write(format!("{directory}/defects.tsv"), &defects).unwrap();
-    print!("{summary}");
-}
-
-/// Probe configurations every test run checks: a few families, sizes, scales
-/// and line heights, including a compact row.
-pub(super) fn required_cases() -> Vec<ProbeCase> {
-    [
+fn glyph_ink_is_clipped_only_at_the_texture_edges() {
+    let cases = [
         ("cascadia-mono", 24.0, 2.0, 0.85),
-        ("iosevka-fixed", 18.0, 1.0, 1.0),
+        ("jetbrains-mono", 18.0, 1.0, 1.0),
         ("hack", 24.0, 1.0, 1.0),
-    ]
-    .into_iter()
-    .map(|(dir, font_size, scale, line_height)| {
-        let files = BUNDLED.iter().find(|(name, _)| *name == dir).unwrap().1;
-        ProbeCase {
-            label: format!("{dir} {font_size}px {scale}x lh {line_height}"),
-            font: ProbeFont::Bundled(dir, files),
+    ];
+    for (family, font_size, scale, line_height) in cases {
+        let case = ProbeCase {
+            family,
             font_size,
             scale,
             line_height,
-        }
-    })
-    .collect()
-}
-
-#[test]
-fn glyph_ink_is_clipped_only_at_the_texture_edges() {
-    for case in required_cases() {
+        };
         let result = run(&case);
         let clipped: Vec<_> = result
             .entries
@@ -669,7 +485,7 @@ fn glyph_ink_is_clipped_only_at_the_texture_edges() {
         assert!(
             clipped.is_empty(),
             "{}: ink clipped inside the texture: {clipped:?}",
-            case.label
+            case.label()
         );
         assert!(
             result
@@ -677,21 +493,15 @@ fn glyph_ink_is_clipped_only_at_the_texture_edges() {
                 .iter()
                 .any(|entry| entry.class == "text" && entry.outside[0] > 0),
             "{}: the samples must include ink above its row",
-            case.label
+            case.label()
         );
     }
 }
 
 #[test]
 fn placement_follows_ghostty_rules() {
-    let files = BUNDLED
-        .iter()
-        .find(|(dir, _)| *dir == "jetbrains-mono")
-        .unwrap()
-        .1;
     let case = ProbeCase {
-        label: "jetbrains-mono 24px 2x".into(),
-        font: ProbeFont::Bundled("jetbrains-mono", files),
+        family: "jetbrains-mono",
         font_size: 24.0,
         scale: 2.0,
         line_height: 1.0,

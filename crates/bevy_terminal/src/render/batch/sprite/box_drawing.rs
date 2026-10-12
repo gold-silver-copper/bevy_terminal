@@ -1,7 +1,7 @@
 //! Box Drawing, U+2500–257F (Ghostty's `sprite/draw/box.zig`).
 
 use super::canvas::{Canvas, Path, Shade};
-use super::{Corner, Metrics, Thickness};
+use super::{Corner, Metrics};
 use bevy::math::DVec2;
 
 /// The style of a line from the cell's center to one edge.
@@ -16,8 +16,11 @@ pub(super) enum Style {
 use Style::{Double as D, Heavy as H, Light as L, None as N};
 
 pub(super) fn draw(codepoint: u32, canvas: &mut Canvas, metrics: Metrics) {
-    let light = Thickness::Light.pixels(metrics.box_thickness);
-    let heavy = Thickness::Heavy.pixels(metrics.box_thickness);
+    let light = metrics.box_thickness;
+    let heavy = 2 * light;
+    let dashes = |canvas: &mut Canvas, count, thick, gap, vertical| {
+        dashes(metrics, canvas, count, thick, gap, vertical);
+    };
     match codepoint {
         0x2500 => lines(metrics, canvas, [N, L, N, L]),
         0x2501 => lines(metrics, canvas, [N, H, N, H]),
@@ -128,37 +131,37 @@ pub(super) fn draw(codepoint: u32, canvas: &mut Canvas, metrics: Metrics) {
         0x257d => lines(metrics, canvas, [L, N, H, N]),
         0x257e => lines(metrics, canvas, [N, L, N, H]),
         0x257f => lines(metrics, canvas, [H, N, L, N]),
-        0x2504 => dash_horizontal(metrics, canvas, 3, light, light.max(4)),
-        0x2505 => dash_horizontal(metrics, canvas, 3, heavy, light.max(4)),
-        0x2506 => dash_vertical(metrics, canvas, 3, light, light.max(4)),
-        0x2507 => dash_vertical(metrics, canvas, 3, heavy, light.max(4)),
-        0x2508 => dash_horizontal(metrics, canvas, 4, light, light.max(4)),
-        0x2509 => dash_horizontal(metrics, canvas, 4, heavy, light.max(4)),
-        0x250a => dash_vertical(metrics, canvas, 4, light, light.max(4)),
-        0x250b => dash_vertical(metrics, canvas, 4, heavy, light.max(4)),
-        0x254c => dash_horizontal(metrics, canvas, 2, light, light),
-        0x254d => dash_horizontal(metrics, canvas, 2, heavy, heavy),
-        0x254e => dash_vertical(metrics, canvas, 2, light, heavy),
-        0x254f => dash_vertical(metrics, canvas, 2, heavy, heavy),
+        0x2504 => dashes(canvas, 3, light, light.max(4), false),
+        0x2505 => dashes(canvas, 3, heavy, light.max(4), false),
+        0x2506 => dashes(canvas, 3, light, light.max(4), true),
+        0x2507 => dashes(canvas, 3, heavy, light.max(4), true),
+        0x2508 => dashes(canvas, 4, light, light.max(4), false),
+        0x2509 => dashes(canvas, 4, heavy, light.max(4), false),
+        0x250a => dashes(canvas, 4, light, light.max(4), true),
+        0x250b => dashes(canvas, 4, heavy, light.max(4), true),
+        0x254c => dashes(canvas, 2, light, light, false),
+        0x254d => dashes(canvas, 2, heavy, heavy, false),
+        0x254e => dashes(canvas, 2, light, heavy, true),
+        0x254f => dashes(canvas, 2, heavy, heavy, true),
         0x256d => arc(metrics, canvas, Corner::BottomRight),
         0x256e => arc(metrics, canvas, Corner::BottomLeft),
         0x256f => arc(metrics, canvas, Corner::TopLeft),
         0x2570 => arc(metrics, canvas, Corner::TopRight),
         0x2571 => diagonal_rising(metrics, canvas),
         0x2572 => diagonal_falling(metrics, canvas),
-        0x2573 => {
+        // U+2573, the last one.
+        _ => {
             diagonal_rising(metrics, canvas);
             diagonal_falling(metrics, canvas);
         }
-        _ => unreachable!("box drawing codepoint {codepoint:x}"),
     }
 }
 
 /// Draws lines from the center to the edges in `[up, right, down, left]`
 /// styles, joining heavy, light and doubled strokes as Ghostty does.
 pub(super) fn lines(metrics: Metrics, canvas: &mut Canvas, [up, right, down, left]: [Style; 4]) {
-    let light = Thickness::Light.pixels(metrics.box_thickness);
-    let heavy = Thickness::Heavy.pixels(metrics.box_thickness);
+    let light = metrics.box_thickness;
+    let heavy = 2 * light;
     let (width, height) = (metrics.cell_width, metrics.cell_height);
 
     let h_light_top = height.saturating_sub(light) / 2;
@@ -296,7 +299,7 @@ pub(super) fn diagonal_rising(metrics: Metrics, canvas: &mut Canvas) {
     canvas.line(
         DVec2::new(width + slope.x, -slope.y),
         DVec2::new(-slope.x, height + slope.y),
-        f64::from(Thickness::Light.pixels(metrics.box_thickness)),
+        f64::from(metrics.box_thickness),
         Shade::On,
     );
 }
@@ -311,14 +314,14 @@ pub(super) fn diagonal_falling(metrics: Metrics, canvas: &mut Canvas) {
     canvas.line(
         DVec2::new(-slope.x, -slope.y),
         DVec2::new(width + slope.x, height + slope.y),
-        f64::from(Thickness::Light.pixels(metrics.box_thickness)),
+        f64::from(metrics.box_thickness),
         Shade::On,
     );
 }
 
 /// A rounded light corner joining the center lines towards `corner`'s two edges.
 pub(super) fn arc(metrics: Metrics, canvas: &mut Canvas, corner: Corner) {
-    let thickness = Thickness::Light.pixels(metrics.box_thickness);
+    let thickness = metrics.box_thickness;
     let (width, height) = (
         f64::from(metrics.cell_width),
         f64::from(metrics.cell_height),
@@ -343,60 +346,39 @@ pub(super) fn arc(metrics: Metrics, canvas: &mut Canvas, corner: Corner) {
     canvas.stroke_path(&path, thick, Shade::On);
 }
 
-/// Evenly tiling horizontal dashes: `count` dashes with half gaps at both ends.
-fn dash_horizontal(
+/// Evenly tiling dashes along the cell: `count` dashes `thick` pixels wide,
+/// with half gaps at both ends horizontally and a full gap at the bottom
+/// vertically. Cells too small for gaps get a plain light line.
+fn dashes(
     metrics: Metrics,
     canvas: &mut Canvas,
     count: u32,
     thick: u32,
     desired_gap: u32,
+    vertical: bool,
 ) {
-    let width = metrics.cell_width;
-    if width < 2 * count {
-        let light = Thickness::Light.pixels(metrics.box_thickness);
-        let y = metrics.cell_height.saturating_sub(light) / 2;
-        canvas.box_(0, y as i32, width as i32, (y + light) as i32, Shade::On);
-        return;
+    let (length, across) = if vertical {
+        (metrics.cell_height, metrics.cell_width)
+    } else {
+        (metrics.cell_width, metrics.cell_height)
+    };
+    if length < 2 * count {
+        let line = if vertical { [L, N, L, N] } else { [N, L, N, L] };
+        return lines(metrics, canvas, line);
     }
-    let gap = desired_gap.min(width / (2 * count)) as i32;
-    let total_dash = width as i32 - count as i32 * gap;
-    let dash = total_dash.div_euclid(count as i32);
-    let mut extra = total_dash.rem_euclid(count as i32);
-    let y = (metrics.cell_height.saturating_sub(thick) / 2) as i32;
-    let mut x = gap.div_euclid(2);
-    for _ in 0..count {
-        let mut x1 = x + dash;
-        if extra > 0 {
-            extra -= 1;
-            x1 += 1;
+    let count = count as i32;
+    let gap = desired_gap.min(length / (2 * count as u32)) as i32;
+    let total_dash = length as i32 - count * gap;
+    let (dash, extra) = (total_dash.div_euclid(count), total_dash.rem_euclid(count));
+    let (side, thick) = ((across.saturating_sub(thick) / 2) as i32, thick as i32);
+    let mut start = if vertical { 0 } else { gap.div_euclid(2) };
+    for index in 0..count {
+        let end = start + dash + i32::from(index < extra);
+        if vertical {
+            canvas.box_(side, start, side + thick, end, Shade::On);
+        } else {
+            canvas.box_(start, side, end, side + thick, Shade::On);
         }
-        canvas.box_(x, y, x1, y + thick as i32, Shade::On);
-        x = x1 + gap;
-    }
-}
-
-/// Evenly tiling vertical dashes: `count` dashes and a full gap at the bottom.
-fn dash_vertical(metrics: Metrics, canvas: &mut Canvas, count: u32, thick: u32, desired_gap: u32) {
-    let height = metrics.cell_height;
-    if height < 2 * count {
-        let light = Thickness::Light.pixels(metrics.box_thickness);
-        let x = metrics.cell_width.saturating_sub(light) / 2;
-        canvas.box_(x as i32, 0, (x + light) as i32, height as i32, Shade::On);
-        return;
-    }
-    let gap = desired_gap.min(height / (2 * count)) as i32;
-    let total_dash = height as i32 - count as i32 * gap;
-    let dash = total_dash.div_euclid(count as i32);
-    let mut extra = total_dash.rem_euclid(count as i32);
-    let x = (metrics.cell_width.saturating_sub(thick) / 2) as i32;
-    let mut y = 0;
-    for _ in 0..count {
-        let mut y1 = y + dash;
-        if extra > 0 {
-            extra -= 1;
-            y1 += 1;
-        }
-        canvas.box_(x, y, x + thick as i32, y1, Shade::On);
-        y = y1 + gap;
+        start = end + gap;
     }
 }
