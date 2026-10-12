@@ -1770,6 +1770,7 @@ dependencies = [
  "bevy",
  "bytemuck",
  "fontique",
+ "parking_lot",
  "skrifa",
  "unicode-segmentation",
  "unicode-width",

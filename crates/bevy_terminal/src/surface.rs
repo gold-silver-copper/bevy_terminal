@@ -3,9 +3,12 @@
 //! lock once and publishes at most one new revision per call.
 
 use std::{
+    cell::RefCell,
     ops::Range,
-    sync::{Arc, Mutex, MutexGuard, Weak},
+    sync::{Arc, Weak},
 };
+
+use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 
 use crate::scene::{CellPosition, GridSize, TerminalCell, TerminalSnapshot};
 
@@ -31,12 +34,18 @@ pub struct SurfaceInfo {
 /// producing a frame never requires access to the Bevy world.
 #[derive(Clone)]
 pub struct TerminalSurface {
-    shared: Arc<Mutex<SurfaceState>>,
+    shared: Arc<Shared>,
 }
+
+/// The state behind every handle. The lock is reentrant so the thread inside
+/// [`TerminalSurface::update`] can still read the surface; the state is
+/// borrowed only briefly inside this module and never while caller code runs,
+/// so borrows cannot overlap.
+type Shared = ReentrantMutex<RefCell<SurfaceState>>;
 
 /// Measurement identity must not keep retained terminal content alive.
 #[derive(Clone, Debug)]
-pub(crate) struct WeakSurface(Weak<Mutex<SurfaceState>>);
+pub(crate) struct WeakSurface(Weak<Shared>);
 
 impl PartialEq for WeakSurface {
     fn eq(&self, other: &Self) -> bool {
@@ -56,6 +65,11 @@ impl WeakSurface {
     }
 }
 
+// As with the `std` mutex this used before: a batch interrupted by a panic
+// keeps its completed writes and is published as it stands.
+impl std::panic::UnwindSafe for TerminalSurface {}
+impl std::panic::RefUnwindSafe for TerminalSurface {}
+
 impl TerminalSurface {
     pub(crate) fn downgrade(&self) -> WeakSurface {
         WeakSurface(Arc::downgrade(&self.shared))
@@ -72,7 +86,7 @@ impl TerminalSurface {
     pub fn new(size: impl Into<GridSize>) -> Self {
         let size = size.into().bounded();
         Self {
-            shared: Arc::new(Mutex::new(SurfaceState {
+            shared: Arc::new(ReentrantMutex::new(RefCell::new(SurfaceState {
                 size,
                 cells: vec![TerminalCell::EMPTY; size.area()],
                 cursor_position: CellPosition::new(0, 0),
@@ -80,15 +94,14 @@ impl TerminalSurface {
                 revision: 0,
                 resize_generation: 0,
                 row_revisions: vec![0; usize::from(size.height)],
-            })),
+            }))),
         }
     }
 
     /// Returns an owned snapshot of the most recently published terminal state.
     #[must_use]
     pub fn snapshot(&self) -> TerminalSnapshot {
-        let state = self.lock();
-        state.snapshot()
+        self.lock().borrow().snapshot()
     }
 
     /// Returns whether both handles refer to the same terminal surface.
@@ -110,9 +123,9 @@ impl TerminalSurface {
     /// writes are retained and their revision is published before unlocking.
     /// A batch that changes a value and restores it still publishes a revision.
     ///
-    /// The surface stays locked while `f` runs, so calling a method of this
-    /// surface (through any handle) inside `f` deadlocks. Read the size and
-    /// cursor through the [`SurfaceUpdate`] instead.
+    /// Other threads wait while `f` runs. On this thread, reads and updates
+    /// through any handle of this surface inside `f` see the batch's changes
+    /// so far; the batch's revision is published when `update` returns.
     ///
     /// ```
     /// # use bevy_terminal::prelude::{TerminalSurface, TerminalCell};
@@ -146,7 +159,8 @@ impl TerminalSurface {
         snapshot: &mut TerminalSnapshot,
         changed_rows: &mut Vec<u16>,
     ) -> SnapshotDelta {
-        let state = self.lock();
+        let guard = self.lock();
+        let state = guard.borrow();
         changed_rows.clear();
         if snapshot.size != state.size || snapshot.resize_generation != state.resize_generation {
             let changed_cells = state.cells.len();
@@ -205,7 +219,8 @@ impl TerminalSurface {
     /// `u64::MAX`; compare revisions for equality rather than ordering.
     #[must_use]
     pub fn info(&self) -> SurfaceInfo {
-        let state = self.lock();
+        let guard = self.lock();
+        let state = guard.borrow();
         SurfaceInfo {
             size: state.size,
             cursor_position: state.cursor_position,
@@ -215,10 +230,8 @@ impl TerminalSurface {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, SurfaceState> {
-        self.shared
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn lock(&self) -> ReentrantMutexGuard<'_, RefCell<SurfaceState>> {
+        self.shared.lock()
     }
 }
 
@@ -374,7 +387,7 @@ impl SurfaceState {
 /// publishes one new revision when the closure returns if anything changed and
 /// none otherwise. Positions outside the grid are ignored.
 pub struct SurfaceUpdate<'a> {
-    state: MutexGuard<'a, SurfaceState>,
+    state: ReentrantMutexGuard<'a, RefCell<SurfaceState>>,
     changed: bool,
 }
 
@@ -382,19 +395,19 @@ impl SurfaceUpdate<'_> {
     /// Returns the grid size.
     #[must_use]
     pub fn size(&self) -> GridSize {
-        self.state.size
+        self.state.borrow().size
     }
 
     /// Returns the cursor position.
     #[must_use]
     pub fn cursor_position(&self) -> CellPosition {
-        self.state.cursor_position
+        self.state.borrow().cursor_position
     }
 
     /// Returns whether the cursor is visible.
     #[must_use]
     pub fn cursor_visible(&self) -> bool {
-        self.state.cursor_visible
+        self.state.borrow().cursor_visible
     }
 
     /// Writes `cell` at `position`; positions outside the grid are ignored.
@@ -405,7 +418,7 @@ impl SurfaceUpdate<'_> {
     /// existing wide glyph resets the rest of it. Continuation cells (as read
     /// from a snapshot) are written by their anchor, so passing one is a no-op.
     pub fn set_cell(&mut self, position: impl Into<CellPosition>, cell: &TerminalCell) -> bool {
-        let changed = self.state.write(position.into(), cell);
+        let changed = self.state.borrow_mut().write(position.into(), cell);
         self.changed |= changed;
         changed
     }
@@ -414,20 +427,22 @@ impl SurfaceUpdate<'_> {
     /// simply hide the cursor while out of range.
     pub fn set_cursor_position(&mut self, position: impl Into<CellPosition>) -> bool {
         let position = position.into();
-        if self.state.cursor_position == position {
+        let mut state = self.state.borrow_mut();
+        if state.cursor_position == position {
             return false;
         }
-        self.state.cursor_position = position;
+        state.cursor_position = position;
         self.changed = true;
         true
     }
 
     /// Shows or hides the cursor.
     pub fn set_cursor_visible(&mut self, visible: bool) -> bool {
-        if self.state.cursor_visible == visible {
+        let mut state = self.state.borrow_mut();
+        if state.cursor_visible == visible {
             return false;
         }
-        self.state.cursor_visible = visible;
+        state.cursor_visible = visible;
         self.changed = true;
         true
     }
@@ -439,7 +454,7 @@ impl SurfaceUpdate<'_> {
 
     /// Resets one row.
     pub fn clear_row(&mut self, row: u16) -> bool {
-        row < self.state.size.height && self.clear_range((0, row), (u16::MAX, row))
+        row < self.size().height && self.clear_range((0, row), (u16::MAX, row))
     }
 
     /// Resets the cells from `start` through `end` (both inclusive) in
@@ -451,7 +466,8 @@ impl SurfaceUpdate<'_> {
         start: impl Into<CellPosition>,
         end: impl Into<CellPosition>,
     ) -> bool {
-        let GridSize { width, height } = self.state.size;
+        let mut state = self.state.borrow_mut();
+        let GridSize { width, height } = state.size;
         if width == 0 || height == 0 {
             return false;
         }
@@ -463,7 +479,7 @@ impl SurfaceUpdate<'_> {
         let mut changed = false;
         for index in index(start.into())..=index(end.into()) {
             let position = CellPosition::new((index % width) as u16, (index / width) as u16);
-            changed |= self.state.write(position, &TerminalCell::EMPTY);
+            changed |= state.write(position, &TerminalCell::EMPTY);
         }
         self.changed |= changed;
         changed
@@ -474,7 +490,8 @@ impl SurfaceUpdate<'_> {
     /// clipped) and clamping the cursor into the new bounds. Every row is
     /// invalidated.
     pub fn resize(&mut self, size: impl Into<GridSize>) -> bool {
-        let state = &mut *self.state;
+        let mut state = self.state.borrow_mut();
+        let state = &mut *state;
         let size = size.into().bounded();
         if state.size == size {
             return false;
@@ -500,7 +517,7 @@ impl SurfaceUpdate<'_> {
     /// Scrolls the rows in `region` up by `line_count`, clearing the rows that
     /// enter at the bottom.
     pub fn scroll_up(&mut self, region: Range<u16>, line_count: u16) -> bool {
-        let changed = self.state.scroll(region, line_count, false);
+        let changed = self.state.borrow_mut().scroll(region, line_count, false);
         self.changed |= changed;
         changed
     }
@@ -508,7 +525,7 @@ impl SurfaceUpdate<'_> {
     /// Scrolls the rows in `region` down by `line_count`, clearing the rows
     /// that enter at the top.
     pub fn scroll_down(&mut self, region: Range<u16>, line_count: u16) -> bool {
-        let changed = self.state.scroll(region, line_count, true);
+        let changed = self.state.borrow_mut().scroll(region, line_count, true);
         self.changed |= changed;
         changed
     }
@@ -519,7 +536,8 @@ impl Drop for SurfaceUpdate<'_> {
         // Publishes the batch, also when a producer panic unwinds through
         // `update`, so completed writes are never left unpublished.
         if self.changed {
-            self.state.revision = self.state.revision.wrapping_add(1);
+            let mut state = self.state.borrow_mut();
+            state.revision = state.revision.wrapping_add(1);
         }
     }
 }
@@ -537,6 +555,25 @@ mod tests {
         let mut rows = Vec::new();
         let delta = surface.update_snapshot(snapshot, &mut rows);
         (rows, delta)
+    }
+
+    #[test]
+    fn the_surface_can_be_read_and_updated_inside_its_own_update() {
+        let surface = TerminalSurface::new((4, 1));
+        let other = surface.clone();
+        surface.update(|update| {
+            update.set_cell((0, 0), &TerminalCell::new("A"));
+            // The batch so far, still under the last published revision.
+            assert_eq!(other.snapshot().row_text(0), "A   ");
+            assert_eq!(other.info().revision, 0);
+            other.update(|nested| {
+                nested.set_cursor_position((2, 0));
+            });
+            assert_eq!(update.cursor_position(), CellPosition::new(2, 0));
+        });
+        // The nested update and the outer batch each publish a revision.
+        assert_eq!(surface.info().revision, 2);
+        assert_eq!(surface.snapshot().row_text(0), "A   ");
     }
 
     #[test]
@@ -639,7 +676,8 @@ mod tests {
     fn snapshot_readers_cross_revision_wrap_independently() {
         let surface = TerminalSurface::new((1, 2));
         {
-            let mut state = surface.lock();
+            let guard = surface.lock();
+            let mut state = guard.borrow_mut();
             state.revision = u64::MAX - 1;
             state.row_revisions.fill(u64::MAX - 1);
         }
