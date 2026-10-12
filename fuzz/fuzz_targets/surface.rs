@@ -195,18 +195,50 @@ impl Dim {
 
 #[derive(Arbitrary, Debug, Clone)]
 enum Op {
-    SetCell { x: Coord, y: Coord, cell: CellSpec },
+    SetCell {
+        x: Coord,
+        y: Coord,
+        cell: CellSpec,
+    },
     /// Writes a run of cells starting at a position, like a producer would.
-    SetRun { x: Coord, y: Coord, cells: Vec<CellSpec> },
+    SetRun {
+        x: Coord,
+        y: Coord,
+        cells: Vec<CellSpec>,
+    },
     /// Writes a cell read back from the pre-batch snapshot (possibly a continuation).
-    CopyCell { sx: Coord, sy: Coord, x: Coord, y: Coord },
+    CopyCell {
+        sx: Coord,
+        sy: Coord,
+        x: Coord,
+        y: Coord,
+    },
     Clear,
     ClearRow(Coord),
-    ClearRange { x0: Coord, y0: Coord, x1: Coord, y1: Coord },
-    Resize { w: Dim, h: Dim },
-    ScrollUp { start: Coord, end: Coord, count: Coord },
-    ScrollDown { start: Coord, end: Coord, count: Coord },
-    CursorPosition { x: Coord, y: Coord },
+    ClearRange {
+        x0: Coord,
+        y0: Coord,
+        x1: Coord,
+        y1: Coord,
+    },
+    Resize {
+        w: Dim,
+        h: Dim,
+    },
+    ScrollUp {
+        start: Coord,
+        end: Coord,
+        count: Coord,
+    },
+    ScrollDown {
+        start: Coord,
+        end: Coord,
+        count: Coord,
+    },
+    CursorPosition {
+        x: Coord,
+        y: Coord,
+    },
     CursorVisible(bool),
 }
 
@@ -239,11 +271,19 @@ struct MCell {
 
 impl MCell {
     fn empty() -> Self {
-        Self { sym: SPACE.clone(), style: TerminalStyle::new(), occ: CellOccupancy::Single }
+        Self {
+            sym: SPACE.clone(),
+            style: TerminalStyle::new(),
+            occ: CellOccupancy::Single,
+        }
     }
 
     fn from_cell(cell: &TerminalCell) -> Self {
-        Self { sym: cell.symbol().into(), style: cell.style, occ: cell.occupancy() }
+        Self {
+            sym: cell.symbol().into(),
+            style: cell.style,
+            occ: cell.occupancy(),
+        }
     }
 
     fn columns(&self) -> usize {
@@ -262,7 +302,9 @@ fn occupancy(columns: usize) -> CellOccupancy {
     if columns <= 1 {
         CellOccupancy::Single
     } else {
-        CellOccupancy::Wide { columns: columns as u16 }
+        CellOccupancy::Wide {
+            columns: columns as u16,
+        }
     }
 }
 
@@ -331,9 +373,16 @@ impl Model {
         let mut changed = false;
         for col in lo..hi {
             let target = if col == x {
-                MCell { occ: occupancy(span), ..cell.clone() }
+                MCell {
+                    occ: occupancy(span),
+                    ..cell.clone()
+                }
             } else if col > x && col < x + span {
-                MCell { sym: SPACE.clone(), style: cell.style, occ: CellOccupancy::Continuation }
+                MCell {
+                    sym: SPACE.clone(),
+                    style: cell.style,
+                    occ: CellOccupancy::Continuation,
+                }
             } else {
                 MCell::empty()
             };
@@ -351,7 +400,8 @@ impl Model {
             return false;
         }
         let clamp = |p: CellPosition| {
-            usize::from(p.y.min(self.h - 1)) * usize::from(self.w) + usize::from(p.x.min(self.w - 1))
+            usize::from(p.y.min(self.h - 1)) * usize::from(self.w)
+                + usize::from(p.x.min(self.w - 1))
         };
         let (si, ei) = (clamp(s), clamp(e));
         let w = usize::from(self.w);
@@ -430,7 +480,10 @@ fn apply(
             let (x, y) = (x.resolve(w), y.resolve(h));
             let cell = cell.build();
             assert_eq!(cell.occupancy(), MCell::from_cell(&cell).occ);
-            (update.set_cell((x, y), &cell), model.write(x, y, &MCell::from_cell(&cell)))
+            (
+                update.set_cell((x, y), &cell),
+                model.write(x, y, &MCell::from_cell(&cell)),
+            )
         }
         Op::SetRun { x, y, cells } => {
             let (mut x, y) = (x.resolve(w), y.resolve(h));
@@ -445,11 +498,19 @@ fn apply(
         }
         Op::CopyCell { sx, sy, x, y } => {
             let source = before.cell((sx.resolve(w), sy.resolve(h))).cloned();
-            let Some(cell) = source else { return (false, false) };
+            let Some(cell) = source else {
+                return (false, false);
+            };
             let (x, y) = (x.resolve(w), y.resolve(h));
-            (update.set_cell((x, y), &cell), model.write(x, y, &MCell::from_cell(&cell)))
+            (
+                update.set_cell((x, y), &cell),
+                model.write(x, y, &MCell::from_cell(&cell)),
+            )
         }
-        Op::Clear => (update.clear(), model.clear_range((0, 0).into(), (u16::MAX, u16::MAX).into())),
+        Op::Clear => (
+            update.clear(),
+            model.clear_range((0, 0).into(), (u16::MAX, u16::MAX).into()),
+        ),
         Op::ClearRow(row) => {
             let row = row.resolve(h);
             let want = row < h && model.clear_range((0, row).into(), (u16::MAX, row).into());
@@ -467,7 +528,11 @@ fn apply(
         Op::ScrollUp { start, end, count } | Op::ScrollDown { start, end, count } => {
             let down = matches!(op, Op::ScrollDown { .. });
             let (s, e, n) = (start.resolve(h), end.resolve(h), count.resolve(h));
-            let got = if down { update.scroll_down(s..e, n) } else { update.scroll_up(s..e, n) };
+            let got = if down {
+                update.scroll_down(s..e, n)
+            } else {
+                update.scroll_up(s..e, n)
+            };
             (got, model.scroll(s, e, n, down))
         }
         Op::CursorPosition { x, y } => {
@@ -503,7 +568,10 @@ fn check_structure(snap: &TerminalSnapshot) {
                 CellOccupancy::Single => x += 1,
                 CellOccupancy::Wide { columns } => {
                     let columns = usize::from(columns);
-                    assert!(columns >= 2, "wide anchor with {columns} columns at ({x},{y})");
+                    assert!(
+                        columns >= 2,
+                        "wide anchor with {columns} columns at ({x},{y})"
+                    );
                     assert!(x + columns <= w, "anchor at ({x},{y}) spans past row end");
                     for c in x + 1..x + columns {
                         assert!(row[c].is_continuation(), "({c},{y}) not a continuation");
@@ -530,7 +598,10 @@ fn check(surface: &TerminalSurface, model: &Model, full: bool) {
     assert_eq!(info.cursor_position, model.cursor, "info cursor");
     assert_eq!(info.cursor_visible, model.visible, "info visibility");
     assert_eq!(info.revision, model.revision, "info revision");
-    assert_eq!(info.resize_generation, model.resize_generation, "resize generation");
+    assert_eq!(
+        info.resize_generation, model.resize_generation,
+        "resize generation"
+    );
     if !full {
         return;
     }
@@ -541,7 +612,10 @@ fn check(surface: &TerminalSurface, model: &Model, full: bool) {
     assert_eq!(snap.revision(), info.revision);
     check_structure(&snap);
     for (i, (got, want)) in snap.cells().iter().zip(&model.cells).enumerate() {
-        assert!(want.matches(got), "cell {i}: surface {got:?} model {want:?}");
+        assert!(
+            want.matches(got),
+            "cell {i}: surface {got:?} model {want:?}"
+        );
     }
     // iter() positions agree with cell().
     if model.w > 0 {
@@ -598,22 +672,39 @@ fuzz_target!(|input: Input| {
     let surface = TerminalSurface::new((input.w.resolve(), input.h.resolve()));
     let handle = surface.clone();
     assert!(handle.shares_state_with(&surface));
-    check(&surface, &model, usize::from(model.w) * usize::from(model.h) <= 4096);
+    check(
+        &surface,
+        &model,
+        usize::from(model.w) * usize::from(model.h) <= 4096,
+    );
 
     for batch in input.batches.iter().take(24) {
         // Only batches that copy cells need the pre-batch snapshot.
         let copies = batch.ops.iter().any(|op| matches!(op, Op::CopyCell { .. }));
-        let before = if copies { surface.snapshot() } else { TerminalSurface::new((0, 0)).snapshot() };
+        let before = if copies {
+            surface.snapshot()
+        } else {
+            TerminalSurface::new((0, 0)).snapshot()
+        };
         let mut results = Vec::new();
         let mut working = model.clone();
-        let run = |update: &mut SurfaceUpdate<'_>, results: &mut Vec<(bool, bool)>, m: &mut Model| {
-            for op in batch.ops.iter().take(16) {
-                results.push(apply(op, update, m, &before));
-                assert_eq!(update.size(), GridSize::new(m.w, m.h), "update size after {op:?}");
-                assert_eq!(update.cursor_position(), m.cursor, "update cursor after {op:?}");
-                assert_eq!(update.cursor_visible(), m.visible);
-            }
-        };
+        let run =
+            |update: &mut SurfaceUpdate<'_>, results: &mut Vec<(bool, bool)>, m: &mut Model| {
+                for op in batch.ops.iter().take(16) {
+                    results.push(apply(op, update, m, &before));
+                    assert_eq!(
+                        update.size(),
+                        GridSize::new(m.w, m.h),
+                        "update size after {op:?}"
+                    );
+                    assert_eq!(
+                        update.cursor_position(),
+                        m.cursor,
+                        "update cursor after {op:?}"
+                    );
+                    assert_eq!(update.cursor_visible(), m.visible);
+                }
+            };
         let published = if batch.panic_after {
             EXPECT_PANIC.with(|f| f.set(true));
             let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -638,7 +729,11 @@ fuzz_target!(|input: Input| {
         };
 
         for (i, (got, want)) in results.iter().enumerate() {
-            assert_eq!(got, want, "op {i} {:?} reported change {got}, model {want}", batch.ops[i]);
+            assert_eq!(
+                got, want,
+                "op {i} {:?} reported change {got}, model {want}",
+                batch.ops[i]
+            );
         }
         let any = results.iter().any(|(got, _)| *got);
         if let Some(published) = published {

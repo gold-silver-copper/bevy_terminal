@@ -12,11 +12,11 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use arbitrary::Arbitrary;
-use bevy_terminal_ratatui::bevy_terminal;
-use bevy_terminal::bevy;
 use bevy::prelude::*;
 use bevy::text::{FontHinting, FontSource};
+use bevy_terminal::bevy;
 use bevy_terminal::prelude::*;
+use bevy_terminal_ratatui::bevy_terminal;
 use libfuzzer_sys::fuzz_target;
 
 const MAX_OPS: usize = 32;
@@ -116,9 +116,15 @@ impl Float {
 
 #[derive(Arbitrary, Clone, Copy, Debug)]
 enum Sizing {
-    FromFont { font_size: Float, line_height: Float },
+    FromFont {
+        font_size: Float,
+        line_height: Float,
+    },
     FitCellWidth(Float, Float),
-    Fixed { cell: (Float, Float), font_size: Float },
+    Fixed {
+        cell: (Float, Float),
+        font_size: Float,
+    },
     Default,
 }
 
@@ -132,7 +138,9 @@ impl Sizing {
                 font_size: font_size.value(),
                 line_height: line_height.value(),
             },
-            Self::FitCellWidth(x, y) => TerminalSizing::FitCellWidth(Vec2::new(x.value(), y.value())),
+            Self::FitCellWidth(x, y) => {
+                TerminalSizing::FitCellWidth(Vec2::new(x.value(), y.value()))
+            }
             Self::Fixed { cell, font_size } => TerminalSizing::Fixed {
                 cell_size: Vec2::new(cell.0.value(), cell.1.value()),
                 font_size: font_size.value(),
@@ -167,7 +175,9 @@ impl ColorSpec {
     fn value(self) -> Color {
         match self {
             Self::Srgb(r, g, b, a) => Color::srgba_u8(r, g, b, a),
-            Self::Weird(r, g, b, a) => Color::linear_rgba(r.value(), g.value(), b.value(), a.value()),
+            Self::Weird(r, g, b, a) => {
+                Color::linear_rgba(r.value(), g.value(), b.value(), a.value())
+            }
         }
     }
 }
@@ -177,11 +187,24 @@ enum ConfigChange {
     Sizing(Sizing),
     Scale(Float),
     Hinting(bool),
-    Cursor { style: u8, color: ColorSpec, blink: Hz },
-    Blink { slow: Hz, rapid: Hz },
-    Theme { slot: u8, color: ColorSpec },
+    Cursor {
+        style: u8,
+        color: ColorSpec,
+        blink: Hz,
+    },
+    Blink {
+        slow: Hz,
+        rapid: Hz,
+    },
+    Theme {
+        slot: u8,
+        color: ColorSpec,
+    },
     Synthesize(bool),
-    Face { slot: u8, source: Option<FaceSource> },
+    Face {
+        slot: u8,
+        source: Option<FaceSource>,
+    },
     /// Touch the component without changing it.
     Touch,
 }
@@ -233,7 +256,18 @@ impl Glyph {
                 _ => ch(0xFF01 + u32::from(v) % 0x5E).to_string(),
             },
             Self::Emoji(v) => [
-                "😀", "👍🏽", "👨‍👩‍👧", "🏳️‍🌈", "❤️", "🇺🇸", "🧑‍💻", "☺", "✅", "🔥", "#️⃣", "👩🏾‍🚀",
+                "😀",
+                "👍🏽",
+                "👨‍👩‍👧",
+                "🏳️‍🌈",
+                "❤️",
+                "🇺🇸",
+                "🧑‍💻",
+                "☺",
+                "✅",
+                "🔥",
+                "#️⃣",
+                "👩🏾‍🚀",
             ][usize::from(v) % 12]
                 .to_string(),
             Self::Combining(base, a, count) => {
@@ -869,7 +903,10 @@ impl Harness {
         // Images of terminals that stopped rendering are released.
         let images = self.app.world().resource::<Assets<Image>>();
         for image in &self.released {
-            assert!(images.get(*image).is_none(), "released terminal image leaked");
+            assert!(
+                images.get(*image).is_none(),
+                "released terminal image leaked"
+            );
         }
     }
 
@@ -886,10 +923,15 @@ impl Harness {
         let garbage = self.fonts.get(&FontChoice::Garbage).map(Handle::id);
         // The fidelity subsets hold only symbols (no "0" to measure), so
         // shaping with them as a face may legitimately fail.
-        let subset_ids: Vec<_> = [FontChoice::Cjk, FontChoice::Emoji, FontChoice::Nerd, FontChoice::Wide]
-            .iter()
-            .filter_map(|choice| self.fonts.get(choice).map(Handle::id))
-            .collect();
+        let subset_ids: Vec<_> = [
+            FontChoice::Cjk,
+            FontChoice::Emoji,
+            FontChoice::Nerd,
+            FontChoice::Wide,
+        ]
+        .iter()
+        .filter_map(|choice| self.fonts.get(choice).map(Handle::id))
+        .collect();
         let faces = std::iter::once(&config.font.regular)
             .chain(config.font.bold.iter())
             .chain(config.font.italic.iter())
@@ -962,8 +1004,15 @@ fn check_geometry(
     geometry: &TerminalGeometry,
 ) {
     let grid = geometry.grid();
-    assert_eq!(grid, surface.info().size, "measured grid differs from surface");
-    assert!(geometry.matches_surface(surface), "geometry does not match its surface");
+    assert_eq!(
+        grid,
+        surface.info().size,
+        "measured grid differs from surface"
+    );
+    assert!(
+        geometry.matches_surface(surface),
+        "geometry does not match its surface"
+    );
     let scale = resolved_scale(config.raster.scale);
     assert_eq!(geometry.raster_scale(), scale);
     let cell = geometry.physical_cell_size();
@@ -971,7 +1020,11 @@ fn check_geometry(
         cell.is_finite() && cell.cmpge(Vec2::ONE).all(),
         "bad physical cell {cell}"
     );
-    assert_eq!(cell, cell.round(), "physical cell size not whole pixels: {cell}");
+    assert_eq!(
+        cell,
+        cell.round(),
+        "physical cell size not whole pixels: {cell}"
+    );
     let logical = geometry.cell_size();
     assert!(logical.is_finite() && logical.cmpgt(Vec2::ZERO).all());
     let font = geometry.physical_font_size();
@@ -982,8 +1035,14 @@ fn check_geometry(
         (f32::from(grid.width) * cell.x).round().max(1.0) as u32,
         (f32::from(grid.height) * cell.y).round().max(1.0) as u32,
     );
-    assert_eq!(size, expected, "size is not grid × physical cell ({grid:?}, {cell})");
-    assert!(size.max_element() <= TEXTURE_LIMIT, "texture exceeds limit: {size}");
+    assert_eq!(
+        size, expected,
+        "size is not grid × physical cell ({grid:?}, {cell})"
+    );
+    assert!(
+        size.max_element() <= TEXTURE_LIMIT,
+        "texture exceeds limit: {size}"
+    );
     let logical_size = geometry.logical_size();
     assert!(logical_size.is_finite());
     match config.sizing {
@@ -996,8 +1055,14 @@ fn check_geometry(
         }
         TerminalSizing::FitCellWidth(cell_size) => {
             let requested = (cell_size * scale).round().max(Vec2::ONE);
-            assert_eq!(cell.x, requested.x, "fitted width must be the requested width");
-            assert!(cell.y >= requested.y, "fitted height must be at least the request");
+            assert_eq!(
+                cell.x, requested.x,
+                "fitted width must be the requested width"
+            );
+            assert!(
+                cell.y >= requested.y,
+                "fitted height must be at least the request"
+            );
         }
         TerminalSizing::FromFont { .. } => {}
     }

@@ -69,8 +69,32 @@ use ratatui::{
 // ---------------------------------------------------------------------------
 
 const SYMBOLS: &[&str] = &[
-    "a", "Z", " ", "", "世", "界", "あ", "😀", "👨‍👩‍👧‍👦", "🇺🇸", "❤️", "e\u{301}", "\u{301}", "\u{200B}",
-    "\u{200D}", "ab", "abc", "ｶﾞ", "─", "│", "█", "\u{FE0F}", "🧑🏽‍💻", "世界", "x\u{FE0F}", "#",
+    "a",
+    "Z",
+    " ",
+    "",
+    "世",
+    "界",
+    "あ",
+    "😀",
+    "👨‍👩‍👧‍👦",
+    "🇺🇸",
+    "❤️",
+    "e\u{301}",
+    "\u{301}",
+    "\u{200B}",
+    "\u{200D}",
+    "ab",
+    "abc",
+    "ｶﾞ",
+    "─",
+    "│",
+    "█",
+    "\u{FE0F}",
+    "🧑🏽‍💻",
+    "世界",
+    "x\u{FE0F}",
+    "#",
 ];
 
 #[derive(Arbitrary, Debug)]
@@ -262,7 +286,11 @@ impl BlockSpec {
 }
 
 fn words(syms: &[Sym]) -> String {
-    syms.iter().take(24).map(Sym::text).collect::<Vec<_>>().join(" ")
+    syms.iter()
+        .take(24)
+        .map(Sym::text)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Arbitrary, Debug)]
@@ -534,7 +562,9 @@ impl Backend for RefBackend {
     {
         let Size { width, height } = self.screen_size();
         // N6: TestBackend panics outside its buffer.
-        let cells: Vec<_> = content.filter(|(x, y, _)| *x < width && *y < height).collect();
+        let cells: Vec<_> = content
+            .filter(|(x, y, _)| *x < width && *y < height)
+            .collect();
         for (x, y, cell) in &cells {
             self.saw_wide |= cell.cell_width() > 1;
             self.screen.write(*x, *y, cell);
@@ -675,7 +705,11 @@ fn compare(reference: &mut RefBackend, actual: &mut RatatuiBackend, context: &st
 
     for y in 0..size.height {
         let row = snapshot.row(y);
-        assert_eq!(row.len(), usize::from(size.width), "{context}: row {y} length");
+        assert_eq!(
+            row.len(),
+            usize::from(size.width),
+            "{context}: row {y} length"
+        );
         let mut got = Vec::new();
         let mut anchor: Option<(u16, u16, TerminalStyle)> = None;
         for (x, cell) in (0..).zip(row) {
@@ -685,8 +719,14 @@ fn compare(reference: &mut RefBackend, actual: &mut RatatuiBackend, context: &st
                     let Some((a, span, style)) = anchor else {
                         panic!("{context}: orphan continuation at ({x}, {y})");
                     };
-                    assert!(x < a + span, "{context}: continuation past span at ({x}, {y})");
-                    assert_eq!(cell.style, style, "{context}: continuation style at ({x}, {y})");
+                    assert!(
+                        x < a + span,
+                        "{context}: continuation past span at ({x}, {y})"
+                    );
+                    assert_eq!(
+                        cell.style, style,
+                        "{context}: continuation style at ({x}, {y})"
+                    );
                 }
                 occupancy => {
                     if let Some((a, span, _)) = anchor {
@@ -705,7 +745,10 @@ fn compare(reference: &mut RefBackend, actual: &mut RatatuiBackend, context: &st
             assert!(a + span <= size.width, "{context}: span leaves row {y}");
         }
         let want = reference.screen.row(y);
-        assert_eq!(got, want, "{context}: row {y} differs from terminal model\n{snapshot}");
+        assert_eq!(
+            got, want,
+            "{context}: row {y} differs from terminal model\n{snapshot}"
+        );
     }
 }
 
@@ -716,7 +759,10 @@ fn check_screen_matches_test_backend(reference: &RefBackend, context: &str) {
         let Slot::Anchor(cell, 1) = slot else {
             panic!("{context}: narrow-only screen has {slot:?} at {i}");
         };
-        assert_eq!(cell, &buffer.content[i], "{context}: model vs TestBackend at {i}");
+        assert_eq!(
+            cell, &buffer.content[i],
+            "{context}: model vs TestBackend at {i}"
+        );
     }
 }
 
@@ -806,7 +852,11 @@ fn run_raw(dim: Dim, ops: &[RawOp]) {
             }
             RawOp::AppendLines(n, many) => {
                 // N8: bound TestBackend's scrollback growth.
-                let n = if *many && width <= 2 { u16::MAX } else { u16::from(*n) };
+                let n = if *many && width <= 2 {
+                    u16::MAX
+                } else {
+                    u16::from(*n)
+                };
                 let Ok(()) = reference.append_lines(n);
                 let Ok(()) = actual.append_lines(n);
             }
@@ -926,7 +976,8 @@ fn run_term(dim: Dim, inline: Option<u8>, ops: &[TermOp]) {
             viewport: viewport.clone(),
         },
     );
-    let Ok(mut actual) = Terminal::with_options(RatatuiBackend::new(w, h), TerminalOptions { viewport });
+    let Ok(mut actual) =
+        Terminal::with_options(RatatuiBackend::new(w, h), TerminalOptions { viewport });
     compare(reference.backend_mut(), actual.backend_mut(), "term init");
     let mut inserted = false;
     let check_intent = std::env::var_os("RB_INTENT").is_some();
@@ -978,7 +1029,8 @@ fn run_term(dim: Dim, inline: Option<u8>, ops: &[TermOp]) {
                     continue;
                 }
                 let n = u16::from(*n % 6);
-                let Ok(()) = reference.insert_before(n, |buf| render_widgets(buf.area, buf, widgets));
+                let Ok(()) =
+                    reference.insert_before(n, |buf| render_widgets(buf.area, buf, widgets));
                 let Ok(()) = actual.insert_before(n, |buf| render_widgets(buf.area, buf, widgets));
             }
         }
