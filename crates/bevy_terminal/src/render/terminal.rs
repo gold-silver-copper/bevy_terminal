@@ -1,58 +1,51 @@
 //! Public renderer components, measurement state, and coordinate helpers.
-use super::TerminalRenderConfig;
-use crate::{scene::GridSize, surface::TerminalSurface};
+use crate::{grid::TerminalGrid, scene::GridSize};
 use bevy::prelude::*;
 
-/// One independently rendered terminal: the surface it renders.
+/// A component the renderer can draw: it provides a [`TerminalGrid`].
 ///
-/// Spawn this component on an entity after adding [`super::TerminalPlugin`] once. A
-/// default [`TerminalRenderConfig`] is required and inserted automatically;
-/// insert your own to configure rendering, and mutate it later to rebuild
-/// only this terminal. The plugin attaches [`TerminalTexture`] and
-/// [`TerminalStats`]. Applications bind the output image to their own UI,
-/// sprites, or materials and choose layout and raster scale explicitly.
-/// Terminals may be spawned and despawned at any time; the images are released
-/// with the entity.
-#[derive(Clone, Component)]
-#[require(TerminalRenderConfig)]
-pub struct TerminalRenderer {
-    surface: TerminalSurface,
+/// [`TerminalGrid`] itself is a source, registered by
+/// [`super::TerminalPlugin`]. Register another with
+/// [`super::TerminalSourcePlugin`] (Ratatui terminals are registered by
+/// `bevy_terminal_ratatui`) and require
+/// [`TerminalRenderConfig`](super::TerminalRenderConfig) on it so each
+/// terminal has a configuration. Every entity with a registered source is
+/// drawn into its own [`TerminalTexture`].
+pub trait TerminalSource: Component {
+    /// The grid to draw.
+    fn grid(&self) -> &TerminalGrid;
 }
 
-impl TerminalRenderer {
-    /// Creates a terminal rendering `surface`.
-    #[must_use]
-    pub const fn new(surface: TerminalSurface) -> Self {
-        Self { surface }
-    }
-
-    /// Returns the surface this terminal renders.
-    #[must_use]
-    pub const fn surface(&self) -> &TerminalSurface {
-        &self.surface
+impl TerminalSource for TerminalGrid {
+    fn grid(&self) -> &TerminalGrid {
+        self
     }
 }
 
-impl From<TerminalSurface> for TerminalRenderer {
-    fn from(surface: TerminalSurface) -> Self {
-        Self::new(surface)
-    }
-}
-
-/// Current measurement state. Readiness describes main-world geometry, not
-/// completion of GPU commands; exports still require render-world readback.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Where a terminal's output stands. Geometry exists only while the output
+/// is [`Ready`](Self::Ready), and then it describes the image exactly.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum TerminalStatus {
     /// Waiting for configured fonts to load and register.
     #[default]
     Loading,
-    /// Geometry is measured and usable by layout consumers.
-    Ready,
+    /// The image holds the grid at this geometry. Readiness describes
+    /// main-world geometry, not completion of GPU commands; exports still
+    /// require render-world readback.
+    Ready(TerminalGeometry),
+    /// The terminal cannot be drawn. It stays idle until one of its inputs
+    /// changes: its grid or configuration, its fonts, or the render device.
+    Failed(TerminalFailure),
+}
+
+/// Why a terminal cannot be drawn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalFailure {
     /// The application's Bevy text resources are missing.
     MissingTextResources,
     /// A configured font asset failed to load.
     FontFailed,
-    /// Text shaping failed; the renderer retries without caching the failure.
+    /// Text shaping failed; the failure is logged once.
     ShapingFailed,
     /// A sizing dimension is non-finite or non-positive.
     InvalidSizing,
@@ -60,29 +53,27 @@ pub enum TerminalStatus {
     TextureTooLarge,
 }
 
-/// The renderer-owned terminal texture and its current dimensions.
+/// The renderer-owned terminal texture and its status.
 ///
-/// The image is `Rgba8UnormSrgb` (display-ready, straight alpha) and its
-/// handle is stable for the terminal's lifetime.
+/// The image is `Rgba8UnormSrgb` (display-ready, straight alpha). Its handle
+/// is stable for the terminal's lifetime: resizes reallocate the image in
+/// place, so applications bind it once to their UI, sprites or materials.
 ///
-/// Attached to every [`TerminalRenderer`] entity by [`super::TerminalPlugin`] as soon as
-/// the renderer is added (when the spawning commands apply), and removed with it.
-/// [`Self::measured`] exposes geometry once the selected
-/// fonts and cell metrics have been measured. The image handle
-/// stays the same for the lifetime of the terminal: resizes reallocate the
-/// image in place.
+/// Attached to every terminal entity by [`super::TerminalPlugin`] as soon as
+/// its [`TerminalSource`] is added, and removed with it. The component
+/// changes (for `Changed<TerminalTexture>`) only when the status does,
+/// including the geometry, never on content alone.
 #[derive(Clone, Debug, PartialEq, Component)]
 pub struct TerminalTexture {
-    pub(crate) status: TerminalStatus,
     pub(crate) image: Handle<Image>,
-    pub(super) geometry: TerminalGeometry,
+    pub(crate) status: TerminalStatus,
 }
 
 impl TerminalTexture {
-    /// Whether [`Self::measured`] geometry is currently authoritative, or why not.
+    /// Whether the image is ready, and its geometry, or why not.
     #[must_use]
-    pub const fn status(&self) -> TerminalStatus {
-        self.status
+    pub const fn status(&self) -> &TerminalStatus {
+        &self.status
     }
 
     /// Render-world image targeted by terminal rendering; GPU completion is separate.
@@ -93,38 +84,25 @@ impl TerminalTexture {
 
     /// Returns the measured geometry, or `None` while loading or failed.
     ///
-    /// Readiness is recorded by the renderer when it syncs
-    /// ([`super::TerminalSystems::Sync`]), so this is a plain field check and
-    /// the component changes (for `Changed<TerminalTexture>`) only when the
-    /// geometry or status does. It describes the surface as of the last sync:
-    /// a producer that resizes the surface after `Sync` sees the previous
-    /// geometry here until the next one. [`TerminalGeometry::is_current`]
-    /// and [`TerminalGeometry::matches_surface`] check retained geometry
-    /// against the live surface.
+    /// It describes the grid as of the last [`super::TerminalSystems::Sync`]:
+    /// a producer that resizes the grid after `Sync` sees the previous
+    /// geometry until the next one; compare [`TerminalGeometry::grid`] with
+    /// the grid's size to tell.
     #[must_use]
-    pub fn measured(&self) -> Option<&TerminalGeometry> {
-        (self.status == TerminalStatus::Ready).then_some(&self.geometry)
+    pub const fn measured(&self) -> Option<&TerminalGeometry> {
+        match &self.status {
+            TerminalStatus::Ready(geometry) => Some(geometry),
+            _ => None,
+        }
     }
 }
 
-/// One coherent measurement of a particular surface and grid generation.
+/// One coherent measurement of a terminal: its grid, cell and font size, and
+/// the size of the image holding it.
 ///
-/// Keep the last accepted value if application layout must remain stable while
-/// a newer measurement is pending. It cannot be adopted by a backend after a
-/// resize, even when the grid later returns to the same dimensions. Different
-/// renderers may legitimately measure the same surface at different scales.
-/// Retaining geometry does not keep the source surface or its cells alive.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TerminalGeometry {
-    pub(super) surface: crate::surface::WeakSurface,
-    pub(super) measurement: Measurement,
-}
-
-/// The measured values of a [`TerminalGeometry`], without the surface
-/// identity: plain data the sync system updates without cloning handles.
+/// Only the renderer creates geometry, together with the image it describes.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Measurement {
-    pub(super) resize_generation: u64,
+pub struct TerminalGeometry {
     pub(super) grid: GridSize,
     pub(super) size: UVec2,
     pub(super) physical_cell_size: Vec2,
@@ -132,81 +110,61 @@ pub(super) struct Measurement {
     pub(super) raster_scale: f32,
 }
 
-impl Measurement {
-    /// Logical presentation dimensions.
-    pub(super) fn logical_size(&self) -> Vec2 {
-        self.size.as_vec2() / self.raster_scale
-    }
-}
-
 impl TerminalGeometry {
     /// Measured dimensions in cells.
     #[must_use]
     pub const fn grid(&self) -> GridSize {
-        self.measurement.grid
+        self.grid
     }
 
     /// Physical image dimensions in pixels.
     #[must_use]
     pub const fn size(&self) -> UVec2 {
-        self.measurement.size
+        self.size
     }
 
     /// Logical presentation dimensions.
     #[must_use]
     pub fn logical_size(&self) -> Vec2 {
-        self.measurement.logical_size()
+        self.size.as_vec2() / self.raster_scale
     }
 
     /// Physical pixels per logical pixel.
     #[must_use]
     pub const fn raster_scale(&self) -> f32 {
-        self.measurement.raster_scale
+        self.raster_scale
     }
 
     /// Effective logical cell dimensions, after physical-pixel snapping.
     #[must_use]
     pub fn cell_size(&self) -> Vec2 {
-        self.measurement.physical_cell_size / self.measurement.raster_scale
+        self.physical_cell_size / self.raster_scale
     }
 
     /// Effective logical font size.
     #[must_use]
     pub fn font_size(&self) -> f32 {
-        self.measurement.physical_font_size / self.measurement.raster_scale
+        self.physical_font_size / self.raster_scale
     }
 
     /// Physical font size glyphs are rasterized at; exact, unlike
     /// `font_size() * raster_scale()`.
     #[must_use]
     pub const fn physical_font_size(&self) -> f32 {
-        self.measurement.physical_font_size
+        self.physical_font_size
     }
 
     /// Physical cell size in whole pixels; exact, unlike
     /// `cell_size() * raster_scale()`. `size()` is the grid times this.
     #[must_use]
     pub const fn physical_cell_size(&self) -> Vec2 {
-        self.measurement.physical_cell_size
-    }
-
-    /// Whether this measurement belongs to this surface's current grid.
-    /// Text and cursor changes do not invalidate it.
-    #[must_use]
-    pub fn matches_surface(&self, surface: &TerminalSurface) -> bool {
-        self.surface.matches(surface) && self.is_current()
-    }
-
-    /// Whether the source surface has retained its measured grid generation.
-    #[must_use]
-    pub fn is_current(&self) -> bool {
-        self.surface.is_current(self.measurement.resize_generation)
+        self.physical_cell_size
     }
 }
 
 /// Returns the grid that fits `logical_size` with cells of `cell_size`
 /// (floor, at least 1×1, each dimension at most `u16::MAX`, and total cells
-/// bounded by [`TerminalSurface::MAX_CELLS`]), such as
+/// bounded by [`TerminalGrid::MAX_CELLS`]), such as
 /// `grid_for(available, geometry.cell_size())` for a measured [`TerminalGeometry`].
 #[must_use]
 pub fn grid_for(logical_size: Vec2, cell_size: Vec2) -> GridSize {
@@ -228,14 +186,12 @@ pub fn grid_for(logical_size: Vec2, cell_size: Vec2) -> GridSize {
     .bounded()
 }
 
-/// Counters for the most recent scene update of one [`TerminalRenderer`]; all zero on
+/// Counters for the most recent scene update of one terminal; all zero on
 /// frames that produced no terminal work.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Component)]
 pub struct TerminalStats {
     /// Rows rebuilt into the latest payload.
     pub changed_rows: u32,
-    /// Cells copied while updating the retained snapshot.
-    pub snapshot_cells: u32,
     /// Solid rectangles (backgrounds, decorations, cursor) in the latest payload.
     pub solid_quads: u32,
     /// Glyph rectangles in the latest payload.
@@ -244,9 +200,6 @@ pub struct TerminalStats {
     pub draw_batches: u32,
     /// Shape-cache misses in the latest update.
     pub shape_misses: u32,
-    /// Nanoseconds spent updating the retained terminal snapshot.
-    #[cfg(feature = "timings")]
-    pub snapshot_ns: u64,
     /// Nanoseconds spent generating the compact CPU scene.
     #[cfg(feature = "timings")]
     pub scene_ns: u64,
@@ -256,21 +209,15 @@ impl std::fmt::Display for TerminalStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "rows {} · cells {} · quads {} solid + {} glyph in {} batches · {} shape misses",
+            "rows {} · quads {} solid + {} glyph in {} batches · {} shape misses",
             self.changed_rows,
-            self.snapshot_cells,
             self.solid_quads,
             self.glyph_quads,
             self.draw_batches,
             self.shape_misses,
         )?;
         #[cfg(feature = "timings")]
-        write!(
-            f,
-            " · snapshot {} µs · scene {} µs",
-            self.snapshot_ns / 1000,
-            self.scene_ns / 1000,
-        )?;
+        write!(f, " · scene {} µs", self.scene_ns / 1000,)?;
         Ok(())
     }
 }

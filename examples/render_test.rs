@@ -33,10 +33,9 @@ use bevy::{
     window::{PrimaryWindow, WindowResolution},
 };
 use bevy_image_export::ImageExportPlugin;
-use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::prelude::{
-    BlinkConfig, CursorConfig, FontFaces, RasterConfig, TerminalPlugin, TerminalRenderConfig,
-    TerminalSizing, TerminalSystems, TerminalTexture, TerminalTheme,
+    BlinkConfig, CursorConfig, FontFaces, RasterConfig, RatatuiPlugin, RatatuiTerminal,
+    TerminalRenderConfig, TerminalSizing, TerminalSystems, TerminalTexture, TerminalTheme,
 };
 use ratatui::{
     layout::Position,
@@ -114,7 +113,6 @@ impl LoadedFamily {
 struct FontCycle {
     families: Vec<LoadedFamily>,
     current: usize,
-    terminal: RatatuiTerminal,
     /// First scene line shown at the top of the grid.
     scroll: u16,
     /// Grid rows of the last draw, the distance a page scroll moves.
@@ -122,9 +120,16 @@ struct FontCycle {
 }
 
 impl FontCycle {
-    fn redraw(&mut self) {
+    fn redraw(&mut self, terminal: &mut RatatuiTerminal) {
         let name = self.families[self.current].name;
-        self.page = draw_render_test(&mut self.terminal, name, &mut self.scroll);
+        self.page = draw_render_test(terminal, name, &mut self.scroll);
+    }
+
+    /// The terminal at the scene's full size, drawn in the current family.
+    fn terminal(&mut self) -> RatatuiTerminal {
+        let mut terminal = RatatuiTerminal::new(COLUMNS, ROWS);
+        self.redraw(&mut terminal);
+        terminal
     }
 }
 
@@ -162,7 +167,6 @@ fn main() {
         .position(|argument| argument == "--font")
         .and_then(|index| args.get(index + 1).cloned())
         .or_else(|| std::env::var("RENDER_TEST_FONT").ok());
-    let (terminal, renderer) = RatatuiTerminal::new(COLUMNS, ROWS).with_renderer();
     let theme = TerminalTheme {
         background: if transparent {
             bevy::color::Color::srgba(0.05, 0.05, 0.1, 0.6)
@@ -237,26 +241,26 @@ fn main() {
     let mut config = config;
     families[initial].apply(&mut config);
     let output_dir = format!("target/render-test/{}", FAMILIES[initial].1);
-    let mut cycle = FontCycle {
-        families,
-        current: initial,
-        terminal,
-        scroll: 0,
-        page: ROWS,
-    };
-    cycle.redraw();
-    app.add_plugins(TerminalPlugin)
+    app.add_plugins(RatatuiPlugin)
         .add_plugins((common::app::presentation, common::app::window_scale))
-        .insert_resource(cycle);
+        .insert_resource(FontCycle {
+            families,
+            current: initial,
+            scroll: 0,
+            page: ROWS,
+        });
     if export {
         common::export::export_terminals_on_ready(&mut app, output_dir);
         app.add_plugins(export_plugin)
-            .add_systems(Startup, move |mut commands: Commands| {
-                commands.spawn(common::app::headless_terminal(
-                    renderer.clone(),
-                    config.clone(),
-                ));
-            })
+            .add_systems(
+                Startup,
+                move |mut commands: Commands, mut cycle: ResMut<FontCycle>| {
+                    commands.spawn(common::app::headless_terminal(
+                        cycle.terminal(),
+                        config.clone(),
+                    ));
+                },
+            )
             .add_systems(Update, common::export::exit_after(10))
             .run();
         export_threads.finish();
@@ -264,14 +268,17 @@ fn main() {
         if transparent {
             app.insert_resource(ClearColor(bevy::color::Color::srgb(0.35, 0.1, 0.4)));
         }
-        app.add_systems(Startup, move |mut commands: Commands| {
-            commands.spawn(Camera2d);
-            commands.spawn(common::app::ui_terminal(
-                renderer.clone(),
-                config.clone(),
-                Vec2::splat(MARGIN),
-            ));
-        })
+        app.add_systems(
+            Startup,
+            move |mut commands: Commands, mut cycle: ResMut<FontCycle>| {
+                commands.spawn(Camera2d);
+                commands.spawn(common::app::ui_terminal(
+                    cycle.terminal(),
+                    config.clone(),
+                    Vec2::splat(MARGIN),
+                ));
+            },
+        )
         .add_systems(
             Update,
             (cycle_fonts, scroll, fit_to_window).before(TerminalSystems::Sync),
@@ -284,11 +291,12 @@ fn main() {
 /// 132×62 cells and is cropped in smaller windows.
 fn fit_to_window(
     mut cycle: ResMut<FontCycle>,
+    mut terminal: Single<&mut RatatuiTerminal>,
     textures: Query<&TerminalTexture>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
-    if common::app::fit_grid_to_window(&mut cycle.terminal, &textures, &windows, MARGIN) {
-        cycle.redraw();
+    if common::app::fit_grid_to_window(&mut terminal, &textures, &windows, MARGIN) {
+        cycle.redraw(&mut terminal);
     }
 }
 
@@ -298,6 +306,7 @@ fn scroll(
     keys: Res<ButtonInput<KeyCode>>,
     mut wheel: MessageReader<MouseWheel>,
     mut cycle: ResMut<FontCycle>,
+    mut terminal: Single<&mut RatatuiTerminal>,
 ) {
     let page = i32::from(cycle.page.max(1));
     let mut lines: i32 = wheel
@@ -325,7 +334,7 @@ fn scroll(
     if scroll != cycle.scroll {
         // `redraw` clamps past the last line back to it.
         cycle.scroll = scroll;
-        cycle.redraw();
+        cycle.redraw(&mut terminal);
     }
 }
 
@@ -333,6 +342,7 @@ fn scroll(
 fn cycle_fonts(
     keys: Res<ButtonInput<KeyCode>>,
     mut cycle: ResMut<FontCycle>,
+    mut terminal: Single<&mut RatatuiTerminal>,
     mut configs: Query<&mut TerminalRenderConfig>,
     mut windows: Query<&mut Window>,
 ) {
@@ -356,7 +366,7 @@ fn cycle_fonts(
     for mut window in &mut windows {
         window.title = format!("bevy_terminal_ratatui · render test · {}", family.name);
     }
-    cycle.redraw();
+    cycle.redraw(&mut terminal);
 }
 
 fn heading(text: &str) -> Line<'static> {

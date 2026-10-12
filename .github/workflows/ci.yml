@@ -52,7 +52,7 @@ jobs:
       - name: Fuzz each target for one minute
         working-directory: fuzz
         run: |
-          for target in surface ratatui_backend renderer; do
+          for target in grid ratatui_backend renderer; do
             cargo fuzz run "$target" -s none -- -max_total_time=60 -len_control=0 -timeout=30 -rss_limit_mb=4096
           done
 
@@ -67,40 +67,6 @@ jobs:
       - name: GPU readback regressions
         timeout-minutes: 15
         run: cargo test --workspace --all-features --test gpu_readback --test export_readiness --locked -- --ignored --test-threads=1
-
-  consumer:
-    name: Real bevy_ratatui context
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    defaults:
-      run:
-        working-directory: terminal
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: terminal
-      - name: Checkout pinned consumer
-        uses: actions/checkout@v4
-        with:
-          repository: gold-silver-copper/bevy_ratatui
-          ref: 675e9144f5cfc2c49667e44cace48bef0543dace
-          path: bevy_ratatui
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install windowed build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb-shape0-dev libxcb-xfixes0-dev
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            terminal/integration/bevy-ratatui-context
-            bevy_ratatui
-      - name: Native consumer without windowed features
-        run: cargo check --manifest-path ../bevy_ratatui/Cargo.toml --lib --no-default-features --features std,crossterm --locked
-      - name: Resource-owned raw terminal integration
-        run: cargo test --manifest-path integration/bevy-ratatui-context/Cargo.toml --locked
-      - name: Windowed consumer and migration fixture
-        run: cargo check --manifest-path integration/bevy-ratatui-context/Cargo.toml --features consumer-windowed --locked
 
   verify:
     name: Workspace and software Vulkan

@@ -4,12 +4,12 @@ A Ratatui backend for the low-level `bevy_terminal` GPU renderer.
 
 The renderer turns terminal cells and configuration into an image, validated
 geometry, and status. Applications own UI layout, windows, cameras, raster scale,
-and 3D materials. The adapter translates Ratatui buffers into the neutral surface;
-it does not emulate a terminal, manage a PTY, or forward input.
+and 3D materials. The adapter translates Ratatui buffers into the neutral cell
+grid; it does not emulate a terminal, manage a PTY, or forward input.
 
 | Crate | Responsibility |
 | --- | --- |
-| `bevy_terminal` | Shared terminal surface, font measurement, rendering, output geometry |
+| `bevy_terminal` | Terminal grid component, font measurement, rendering, output geometry |
 | `bevy_terminal_ratatui` | Ratatui backend and optional ergonomic terminal wrapper |
 
 Version 0.8.1 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.95 or newer.
@@ -27,7 +27,7 @@ use bevy_terminal_ratatui::prelude::*;
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, TerminalPlugin))
+        .add_plugins((DefaultPlugins, RatatuiPlugin))
         .add_systems(Startup, setup)
         .add_systems(Update, present.after(TerminalSystems::Sync))
         .run();
@@ -40,7 +40,7 @@ fn setup(mut commands: Commands) {
         frame.render_widget("Hello from Ratatui", frame.area());
     });
     commands.spawn((
-        terminal.with_renderer(),
+        terminal,
         TerminalRenderConfig {
             sizing: TerminalSizing::font(18.0),
             raster: RasterConfig { scale: 1.0, ..default() },
@@ -64,52 +64,53 @@ fn present(mut terminals: Query<(&TerminalTexture, &mut ImageNode, &mut Node)>) 
 
 The default font is Bevy's generic monospace source. Enable system font discovery
 or supply a loaded `Font` asset. The runnable examples use bundled font faces.
-Each terminal has an independent surface and texture. Keep the wrapper as a
-component or resource and draw again when application content changes.
+Each terminal entity has its own grid and texture. Query the `RatatuiTerminal`
+component and draw again when application content changes.
 
 ## Owning a normal Ratatui terminal
 
-The wrapper is optional. Libraries such as `bevy_ratatui` can own an ordinary
-`ratatui::Terminal<RatatuiBackend>` and retain Ratatui's native viewport APIs:
+The wrapper is optional. Code that owns an ordinary
+`ratatui::Terminal<RatatuiBackend>` keeps Ratatui's native viewport APIs. The
+backend owns its grid:
 
 ```rust
 use bevy_terminal_ratatui::prelude::*;
 
-let backend = RatatuiBackend::new(80, 24);
-let renderer = TerminalRenderer::new(backend.surface());
-let mut terminal = ratatui::Terminal::new(backend).unwrap();
+let mut terminal = ratatui::Terminal::new(RatatuiBackend::new(80, 24)).unwrap();
 terminal.draw(|frame| frame.render_widget("raw backend", frame.area())).unwrap();
-assert_eq!(renderer.surface().snapshot().row_text(0).trim_end(), "raw backend");
+assert_eq!(terminal.backend().grid().row_text(0).trim_end(), "raw backend");
 ```
 
-See `integration/bevy-ratatui-context` for a fixture implementing the actual
-consumer's `TerminalContext` trait without requiring the wrapper.
+Terminals are drawn from entities. To render one owned by your own component,
+implement `TerminalSource` for it (its grid is `self.backend().grid()`) and add
+`TerminalSourcePlugin::<YourComponent>`.
 
 ## Output and resizing
 
-Read `TerminalTexture::measured()` after `TerminalSystems::Sync`. It returns
-`None` while fonts load, measurement fails, or a shared surface resize makes the
-old geometry stale. Status remains queryable. A late consumer can read current
-output without having observed any earlier frames.
+Read `TerminalTexture::measured()` after `TerminalSystems::Sync`. It returns the
+geometry while the status is `Ready`, and `None` while fonts load or after a
+failure; `texture.status()` says which. A late consumer can read current output
+without having observed any earlier frames.
 
 `TerminalGeometry` exposes logical cell/font sizes, logical output dimensions,
-physical image dimensions, raster scale, and the measured grid. Geometry is bound
-to its source surface and resize generation. Its image handle remains stable
-across remeasurement; applications retain their last useful presentation while
+physical image dimensions, raster scale, and the measured grid. It always
+describes the image exactly. The image handle remains stable across
+remeasurement; applications retain their last useful presentation while
 replacement geometry is unavailable.
 
-Applications choose available space and when to resize. Read `texture.measured()`
-and adopt it with `backend.set_geometry(geometry)`, which rejects stale or foreign
-measurements and updates Ratatui pixel dimensions even when the grid stays the same.
-Compute `grid_for(available_logical_size, geometry.cell_size())` and use the wrapper's
+Applications choose available space and when to resize. Compute
+`grid_for(available_logical_size, geometry.cell_size())` and use the wrapper's
 `resize_grid` when dimensions change. With a raw backend, resize it and call
 `Terminal::autoresize()` for fullscreen/inline viewports. Fixed viewports require
 an explicit `Terminal::resize()` for the application-owned area. Compare sizes
-before resizing to avoid a feedback loop.
+before resizing to avoid a feedback loop; a geometry whose `grid()` differs from
+the terminal's size was measured before the last resize.
 
-For `Backend::window_size().pixels`, explicitly pass measured geometry to
-`backend_mut().set_geometry(geometry)`. Foreign or stale geometry is rejected.
-A resize invalidates the backend's pixel measurement until fresh geometry arrives.
+`RatatuiPlugin` hands each `RatatuiTerminal` its measured geometry, so
+`Backend::window_size().pixels` reports it. A raw backend adopts geometry with
+`backend.set_geometry(geometry)`, which rejects geometry measured for another
+grid size; a resize hides the pixel size until geometry for the new size
+arrives.
 
 Measurement readiness is **not GPU completion**. Readback consumers must wait
 for their render-world readback result and establish that it represents the
@@ -168,18 +169,18 @@ should run after registration, or be repeated when the font collection changes.
 
 - `system_fonts` (default): discover host fonts. Disable defaults when supplying
   explicit assets and avoiding host font discovery.
-- `timings` (opt-in): populate CPU snapshot and scene timing fields.
+- `timings` (opt-in): populate the CPU scene timing field.
 - `scrolling-regions` (adapter only, opt-in): enable Ratatui's extended backend
   trait. Leave disabled when coexisting with backends implementing the standard
   trait, such as `soft_ratatui`.
 
 `TerminalStats` counters remain available without timing instrumentation and are
-zero on idle frames; timing fields are zero when `timings` is disabled.
+zero on idle frames.
 
-The adapter exports `RatatuiBackend`, `RatatuiTerminal`, `TerminalRenderer`, the
-`bevy_terminal` crate, and a curated `prelude`. Advanced renderer modules are
-accessed through `bevy_terminal_ratatui::bevy_terminal`, rather than mirrored
-across both crate roots.
+The adapter exports `RatatuiBackend`, `RatatuiTerminal`, `RatatuiPlugin`, the
+`bevy_terminal` crate, and a `prelude` that also re-exports the renderer's.
+Advanced renderer modules are accessed through `bevy_terminal_ratatui::bevy_terminal`,
+rather than mirrored across both crate roots.
 
 ## Render QA
 

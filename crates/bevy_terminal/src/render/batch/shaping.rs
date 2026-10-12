@@ -32,6 +32,8 @@ pub(super) struct ShapedRun {
     pub(super) ascent: f32,
     pub(super) descent: f32,
     pub(super) advance: f32,
+    /// The vertical metrics of the face that shaped the run.
+    pub(super) face: Option<super::metrics::FaceLineMetrics>,
 }
 
 /// How runs are laid out: the configuration, the physical raster metrics,
@@ -129,6 +131,17 @@ pub(super) fn shape_run(
     }
     let line = computed.buffer().lines().next()?;
     let metrics = line.metrics();
+    let face = line.runs().next().and_then(|run| {
+        let face = run.metrics();
+        super::metrics::FaceLineMetrics::new(
+            face.ascent,
+            face.descent,
+            face.leading,
+            face.cap_height,
+            face.x_height,
+            face.underline_size,
+        )
+    });
     Some(ShapedRun {
         glyphs: layout.glyphs,
         baseline: super::metrics::snap(metrics.baseline),
@@ -139,6 +152,7 @@ pub(super) fn shape_run(
         ascent: metrics.ascent,
         descent: metrics.descent,
         advance: metrics.advance,
+        face,
     })
 }
 

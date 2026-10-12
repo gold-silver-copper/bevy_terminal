@@ -1,11 +1,11 @@
 use bevy_terminal::bevy::math::Vec2;
-use bevy_terminal::prelude::{TerminalSurface, TerminalTexture};
+use bevy_terminal::prelude::{TerminalGrid, TerminalTexture};
 
-pub fn measure(surface: TerminalSurface, cell_size: Vec2) -> TerminalTexture {
-    measure_at_scale(surface, cell_size, 1.0)
+pub fn measure(grid: TerminalGrid, cell_size: Vec2) -> TerminalTexture {
+    measure_at_scale(grid, cell_size, 1.0)
 }
 
-pub fn measure_at_scale(surface: TerminalSurface, cell_size: Vec2, scale: f32) -> TerminalTexture {
+pub fn measure_at_scale(grid: TerminalGrid, cell_size: Vec2, scale: f32) -> TerminalTexture {
     use bevy_terminal::bevy::prelude::*;
     use bevy_terminal::prelude::*;
     let mut app = App::new();
@@ -28,7 +28,7 @@ pub fn measure_at_scale(surface: TerminalSurface, cell_size: Vec2, scale: f32) -
     let entity = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(surface),
+            grid,
             TerminalRenderConfig {
                 font: FontFaces::regular(font),
                 raster: RasterConfig { scale, ..default() },

@@ -18,16 +18,7 @@ use bevy_terminal::prelude::*;
 #[derive(Resource, Default)]
 struct ExportsFinished(u32);
 
-#[derive(Resource)]
-struct Surfaces {
-    main: TerminalSurface,
-    status: TerminalSurface,
-}
-
 fn main() {
-    let main = common::scene_surface();
-    let status = common::status_surface();
-
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -61,13 +52,12 @@ fn main() {
         },
     );
     app.add_plugins(TerminalPlugin)
-        .insert_resource(Surfaces {
-            main: main.clone(),
-            status: status.clone(),
-        })
         .add_systems(Startup, move |mut commands: Commands| {
-            for surface in [&main, &status] {
-                commands.spawn((TerminalRenderer::new(surface.clone()), config.clone()));
+            for (name, grid) in [
+                ("scene", common::scene_grid()),
+                ("status", common::status_grid()),
+            ] {
+                commands.spawn((grid, config.clone(), Name::new(name)));
             }
         })
         .init_resource::<ExportsFinished>()
@@ -84,22 +74,15 @@ fn main() {
 /// asset preparation may take any number of frames. This check is specific to
 /// this example, not a completion signal for arbitrary changing terminals.
 fn export_when_ready(
-    surfaces: Res<Surfaces>,
-    terminals: Query<(Entity, &TerminalRenderer, &TerminalTexture), Without<ExportStarted>>,
+    terminals: Query<(Entity, &Name, &TerminalTexture), Without<ExportStarted>>,
     mut commands: Commands,
 ) {
-    for (entity, terminal, texture) in &terminals {
+    for (entity, name, texture) in &terminals {
         let Some(geometry) = texture.measured() else {
             continue;
         };
         commands.entity(entity).insert(ExportStarted);
-        let name = if terminal.surface().shares_state_with(&surfaces.main) {
-            "scene"
-        } else if terminal.surface().shares_state_with(&surfaces.status) {
-            "status"
-        } else {
-            return;
-        };
+        let name = name.to_string();
         let size = geometry.size();
         let row_bytes = size.x as usize * 4;
         let stride = row_bytes.next_multiple_of(256);

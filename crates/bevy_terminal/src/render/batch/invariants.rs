@@ -5,13 +5,14 @@
 //! terminals do no work.
 
 use super::*;
+use crate::grid::TerminalGrid;
 use crate::render::{FontFaces, TerminalSizing};
 use crate::scene::TerminalCell;
 
 /// A headless app with `terminals` 40×12 terminals of JetBrains Mono at
 /// `font_size` in cells 1.5 times as tall, with only the bundled fallback
 /// fonts (so results do not depend on the host), settled for five updates.
-fn app(terminals: usize, font_size: f32) -> (App, Vec<(Entity, TerminalSurface)>) {
+fn app(terminals: usize, font_size: f32) -> (App, Vec<Entity>) {
     let mut app = App::new();
     app.add_plugins((
         MinimalPlugins,
@@ -27,13 +28,11 @@ fn app(terminals: usize, font_size: f32) -> (App, Vec<(Entity, TerminalSurface)>
         .add(Font::from_bytes(super::probe::asset(
             "jetbrains-mono/JetBrainsMono-Regular.ttf",
         )));
-    let surfaces = (0..terminals)
+    let entities = (0..terminals)
         .map(|_| {
-            let surface = TerminalSurface::new((40, 12));
-            let entity = app
-                .world_mut()
+            app.world_mut()
                 .spawn((
-                    TerminalRenderer::new(surface.clone()),
+                    TerminalGrid::new((40, 12)),
                     TerminalRenderConfig {
                         font: FontFaces::regular(font.clone()),
                         sizing: TerminalSizing::Fixed {
@@ -43,32 +42,29 @@ fn app(terminals: usize, font_size: f32) -> (App, Vec<(Entity, TerminalSurface)>
                         ..default()
                     },
                 ))
-                .id();
-            (entity, surface)
+                .id()
         })
         .collect();
     for _ in 0..5 {
         app.update();
     }
-    (app, surfaces)
+    (app, entities)
 }
 
 /// Fills the 40×12 grid with consecutive codepoints from `first`
 /// (their glyphs need not exist: every distinct symbol is shaped once).
-fn fill(surface: &TerminalSurface, first: u32) {
-    fill_with(surface, (first..).filter_map(char::from_u32));
+fn fill(app: &mut App, entity: Entity, first: u32) {
+    fill_with(app, entity, (first..).filter_map(char::from_u32));
 }
 
-fn fill_with(surface: &TerminalSurface, symbols: impl Iterator<Item = char>) {
-    let mut symbols = symbols;
-    surface.update(|update| {
-        for y in 0..12u16 {
-            for x in 0..40u16 {
-                let symbol = symbols.next().unwrap_or(' ');
-                update.set_cell((x, y), &TerminalCell::from(symbol));
-            }
+fn fill_with(app: &mut App, entity: Entity, mut symbols: impl Iterator<Item = char>) {
+    let mut grid = app.world_mut().get_mut::<TerminalGrid>(entity).unwrap();
+    for y in 0..12u16 {
+        for x in 0..40u16 {
+            let symbol = symbols.next().unwrap_or(' ');
+            grid.set_cell((x, y), &TerminalCell::from(symbol));
         }
-    });
+    }
 }
 
 /// Latin, Greek and Cyrillic letters JetBrains Mono draws, so every
@@ -106,8 +102,8 @@ fn shape_misses(app: &App, entity: Entity) -> u32 {
 fn adding_glyphs_never_modifies_terminal_owned_images() {
     #[derive(Resource, Default)]
     struct Modified(Vec<AssetId<Image>>);
-    let (mut app, surfaces) = app(1, 8.0);
-    let (entity, surface) = &surfaces[0];
+    let (mut app, entities) = app(1, 8.0);
+    let entity = &entities[0];
     app.init_resource::<Modified>().add_systems(
         Last,
         |mut events: MessageReader<AssetEvent<Image>>, mut modified: ResMut<Modified>| {
@@ -128,7 +124,7 @@ fn adding_glyphs_never_modifies_terminal_owned_images() {
     // Every step shows 80 letters never seen before.
     let letters = repertoire();
     for (step, chunk) in letters.chunks(80).take(6).enumerate() {
-        fill_with(surface, chunk.iter().copied());
+        fill_with(&mut app, *entity, chunk.iter().copied());
         app.update();
         assert!(
             shape_misses(&app, *entity) > 0,
@@ -163,18 +159,17 @@ fn adding_glyphs_never_modifies_terminal_owned_images() {
 fn terminals_retain_no_cpu_copy_of_their_images() {
     let text = "The quick brown fox jumps over 13 lazy dogs";
     let show = |terminals: usize| {
-        let (mut app, surfaces) = app(terminals, 8.0);
-        for (_, surface) in &surfaces {
-            surface.update(|update| {
-                for (x, c) in text.chars().enumerate() {
-                    update.set_cell((x as u16 % 40, 0), &TerminalCell::from(c));
-                }
-            });
+        let (mut app, entities) = app(terminals, 8.0);
+        for entity in &entities {
+            let mut grid = app.world_mut().get_mut::<TerminalGrid>(*entity).unwrap();
+            for (x, c) in text.chars().enumerate() {
+                grid.set_cell((x as u16 % 40, 0), &TerminalCell::from(c));
+            }
         }
         for _ in 0..3 {
             app.update();
         }
-        for (entity, _) in &surfaces {
+        for entity in &entities {
             let output = &app.world().get::<TerminalTexture>(*entity).unwrap().image;
             let image = app.world().resource::<Assets<Image>>().get(output).unwrap();
             assert!(
@@ -191,14 +186,14 @@ fn terminals_retain_no_cpu_copy_of_their_images() {
 
 #[test]
 fn alternating_working_sets_keep_their_shape_cache_misses() {
-    let (mut app, surfaces) = app(1, 8.0);
-    let (entity, surface) = &surfaces[0];
+    let (mut app, entities) = app(1, 8.0);
+    let entity = &entities[0];
     // Two working sets of 2880 glyphs (six frames each), together larger
     // than the shape cache, shown in turn: A, B, then A again.
     let mut phases = [0; 3];
     for step in 0..18u32 {
         let base = if (step / 6) % 2 == 0 { 0x4e00 } else { 0x5b00 };
-        fill(surface, base + (step % 6) * 480);
+        fill(&mut app, *entity, base + (step % 6) * 480);
         app.update();
         phases[(step / 6) as usize] += shape_misses(&app, *entity);
     }
@@ -212,15 +207,19 @@ fn alternating_working_sets_keep_their_shape_cache_misses() {
 fn queued_atlas_uploads_never_exceed_one_atlas() {
     // Large glyphs, no render world to take scenes: uploads accumulate
     // across superseded scenes and the atlas overflows and restarts.
-    let (mut app, surfaces) = app(1, 200.0);
+    let (mut app, entities) = app(1, 200.0);
     let letters = repertoire();
-    let (entity, surface) = &surfaces[0];
+    let entity = &entities[0];
     let limit = u64::from(GLYPH_ATLAS_SIZE) * u64::from(GLYPH_ATLAS_SIZE);
     let mut restarts = 0;
     let mut previous = UVec2::ZERO;
     for step in 0..12 {
         let offset = step * 160 % letters.len();
-        fill_with(surface, letters.iter().cycle().skip(offset).copied());
+        fill_with(
+            &mut app,
+            *entity,
+            letters.iter().cycle().skip(offset).copied(),
+        );
         app.update();
         let state = app.world().get::<BatchMainState>(*entity).unwrap();
         let cursor = state.glyph_atlas.cursor;
@@ -244,7 +243,7 @@ fn idle_terminals_build_no_scene_and_change_no_component() {
     #[derive(Resource, Default)]
     struct Changes(usize);
     type Published = Or<(Changed<TerminalTexture>, Changed<TerminalStats>)>;
-    let (mut app, surfaces) = app(4, 8.0);
+    let (mut app, entities) = app(4, 8.0);
     // Published components, and Bevy's text resources, which only shaping
     // borrows mutably.
     app.init_resource::<Changes>().add_systems(
@@ -259,13 +258,13 @@ fn idle_terminals_build_no_scene_and_change_no_component() {
         })
         .after(super::super::TerminalSystems::Sync),
     );
-    for (_, surface) in &surfaces {
-        fill(surface, 0x41);
+    for entity in &entities {
+        fill(&mut app, *entity, 0x41);
     }
     app.update();
-    let generations: Vec<u64> = surfaces
+    let generations: Vec<u64> = entities
         .iter()
-        .map(|(entity, _)| {
+        .map(|entity| {
             app.world()
                 .get::<BatchMainState>(*entity)
                 .unwrap()
@@ -274,7 +273,7 @@ fn idle_terminals_build_no_scene_and_change_no_component() {
         })
         .collect();
     // The drawn scenes are taken, as extraction would.
-    for (entity, _) in &surfaces {
+    for entity in &entities {
         take_queued(app.world_mut(), *entity);
     }
     // The first idle update zeroes the statistics of the drawing one.
@@ -283,7 +282,7 @@ fn idle_terminals_build_no_scene_and_change_no_component() {
     for _ in 0..10 {
         app.update();
     }
-    for ((entity, _), generation) in surfaces.iter().zip(generations) {
+    for (entity, generation) in entities.iter().zip(generations) {
         let state = app.world().get::<BatchMainState>(*entity).unwrap();
         assert_eq!(
             state.submissions.generation, generation,

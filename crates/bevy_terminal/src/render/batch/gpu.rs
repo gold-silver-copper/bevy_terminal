@@ -75,15 +75,6 @@ pub(super) fn collect_batch_scenes(main_world: &mut World, pending: &mut Pending
         }
         pending.scenes.insert(destination, scene);
     }
-    // A scene not yet drawn whose surface has been resized since it was built
-    // (by a producer after `TerminalSystems::Sync`) is withdrawn; the next
-    // sync repaints the new grid. Only waiting scenes are checked, not idle
-    // terminals.
-    for scene in pending.scenes.values_mut() {
-        if !scene.is_current() {
-            scene.withdraw();
-        }
-    }
 }
 
 /// The terminal pipelines (alpha-blended and replacing) and their bind
@@ -181,7 +172,8 @@ pub(super) fn init_batch_pipelines(
 pub(super) struct BatchGpuState {
     /// Instance buffers, one per upload chunk: a single one unless a frame's
     /// instances exceed the device's maximum buffer size.
-    instances: Vec<RawBufferVec<QuadInstance>>,
+    /// Each instance's [`QuadInstance::floats`].
+    instances: Vec<RawBufferVec<f32>>,
     /// Terminals' glyph atlases, created on their first entry.
     atlases: HashMap<AssetId<Image>, GpuAtlas>,
     /// Binding for scenes whose atlas holds nothing yet (solid quads only).
@@ -446,12 +438,15 @@ pub(super) fn render_batch_scenes(
                 .get(slice.scene)
                 .and_then(|scene| scene.instances.get(slice.instances.clone()))
             {
-                buffer.values_mut().extend_from_slice(scene_instances);
+                buffer
+                    .values_mut()
+                    .extend(scene_instances.iter().flat_map(QuadInstance::floats));
             }
         }
         if !buffer.is_empty() {
-            let capacity = buffer_capacity(buffer.len() as u64, instance_limit as u64);
-            buffer.reserve(capacity as usize, &device);
+            let count = (buffer.len() / QuadInstance::FLOATS) as u64;
+            let capacity = buffer_capacity(count, instance_limit as u64);
+            buffer.reserve(capacity as usize * QuadInstance::FLOATS, &device);
             buffer.write_buffer(&device, &queue);
         }
     }

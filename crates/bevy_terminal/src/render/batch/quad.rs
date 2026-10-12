@@ -11,7 +11,7 @@ use bevy::prelude::*;
 /// background no correction); [`QuadInstance::solid`] and
 /// [`QuadInstance::glyph`] are the only ways to build one, so those
 /// encodings stay here.
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 pub(super) struct QuadInstance {
     /// Clip-space `[left, top, right, bottom]`.
@@ -36,6 +36,30 @@ pub(super) enum Ink {
 }
 
 impl QuadInstance {
+    /// The floats of one instance as uploaded, in the shader's order.
+    pub(super) const FLOATS: usize = 13;
+
+    /// This instance as uploaded.
+    pub(super) const fn floats(&self) -> [f32; Self::FLOATS] {
+        let ([r0, r1, r2, r3], [u0, u1, u2, u3], [c0, c1, c2, c3]) =
+            (self.rect, self.uv, self.color);
+        [
+            r0,
+            r1,
+            r2,
+            r3,
+            u0,
+            u1,
+            u2,
+            u3,
+            c0,
+            c1,
+            c2,
+            c3,
+            self.background,
+        ]
+    }
+
     /// A solid rectangle of `color`, snapped to whole pixels of a
     /// `target`-sized texture.
     pub(super) fn solid(geometry: Rect, color: impl Into<LinearRgba>, target: Vec2) -> Self {

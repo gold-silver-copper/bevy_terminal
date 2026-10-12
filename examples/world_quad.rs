@@ -8,30 +8,17 @@ mod common;
 use bevy::prelude::*;
 use bevy_terminal_ratatui::prelude::*;
 
-#[derive(Resource)]
-struct Screen {
-    terminal: RatatuiTerminal,
-    wide: bool,
-}
-
 fn main() {
-    let mut terminal = RatatuiTerminal::new(60, 18);
-    terminal.draw(common::draw_demo_frame);
-    let (terminal, renderer) = terminal.with_renderer();
     let mut app = App::new();
-    app.add_plugins((DefaultPlugins, TerminalPlugin));
+    app.add_plugins((DefaultPlugins, RatatuiPlugin));
     let fonts = common::fonts::load(&mut app);
-    app.insert_resource(Screen {
-        terminal,
-        wide: false,
-    })
-    .add_systems(
+    app.add_systems(
         Startup,
         move |mut commands: Commands,
               mut meshes: ResMut<Assets<Mesh>>,
               mut materials: ResMut<Assets<StandardMaterial>>| {
             commands.spawn((
-                renderer.clone(),
+                RatatuiTerminal::new(60, 18),
                 fonts.configure(default()),
                 Mesh3d(meshes.add(Rectangle::default())),
                 MeshMaterial3d(materials.add(StandardMaterial {
@@ -52,13 +39,17 @@ fn main() {
     .run();
 }
 
-fn draw(keys: Res<ButtonInput<KeyCode>>, mut screen: ResMut<Screen>) {
+fn draw(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut terminal: Single<&mut RatatuiTerminal>,
+    mut wide: Local<bool>,
+) {
     if keys.just_pressed(KeyCode::Space) {
-        screen.wide = !screen.wide;
-        let columns = if screen.wide { 90 } else { 60 };
-        screen.terminal.resize_grid(columns, 18);
+        *wide = !*wide;
+        let columns = if *wide { 90 } else { 60 };
+        terminal.resize_grid(columns, 18);
     }
-    common::draw_demo(&mut screen.terminal);
+    common::draw_demo(&mut terminal);
 }
 
 fn present(

@@ -1,5 +1,4 @@
 use bevy_terminal_ratatui::RatatuiTerminal;
-use bevy_terminal_ratatui::prelude::TerminalSurface;
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
@@ -15,12 +14,8 @@ pub mod fonts;
 pub const COLUMNS: u16 = 72;
 pub const ROWS: u16 = 22;
 
-#[allow(dead_code)]
-pub fn demo_surface() -> TerminalSurface {
-    demo_terminal().surface()
-}
-
 /// A Ratatui terminal showing the representative scene at the default grid.
+#[allow(dead_code)]
 pub fn demo_terminal() -> RatatuiTerminal {
     let mut terminal = RatatuiTerminal::new(COLUMNS, ROWS);
     terminal.draw(draw_demo_frame);

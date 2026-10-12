@@ -41,11 +41,6 @@ bevy = { version = "0.20", default-features = false, features = [
     "bevy_text",
 ] }
 
-# Font line metrics (ascent, descent, leading) for font-driven cell heights.
-skrifa = { version = "0.44", default-features = false, features = ["std"] }
-# Already in the graph through bevy_render; derives `Pod` for GPU instances.
-bytemuck = { version = "1.5", features = ["derive"] }
-
 [dev-dependencies]
 bevy = { version = "0.20", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
 # Host-independent font collections for the glyph placement probe.

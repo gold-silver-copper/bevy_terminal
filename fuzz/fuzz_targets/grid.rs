@@ -1,26 +1,22 @@
-//! Drives `TerminalSurface` with structured batches of operations and checks
-//! it against an independent reference model of the documented semantics
-//! after every `update` call.
+//! Drives `TerminalGrid` with structured batches of operations and checks it
+//! against an independent reference model of the documented semantics after
+//! every batch.
 
 #![no_main]
 
-use std::{
-    cell::Cell,
-    panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, LazyLock, Once},
-};
+use std::sync::{Arc, LazyLock};
 
 use arbitrary::Arbitrary;
 use bevy_terminal_ratatui::bevy_terminal::{
+    grid::TerminalGrid,
     scene::{
         CellOccupancy, CellPosition, GridSize, StyleFlags, TerminalCell, TerminalColor,
-        TerminalSnapshot, TerminalStyle,
+        TerminalStyle,
     },
-    surface::{SurfaceUpdate, TerminalSurface},
 };
 use libfuzzer_sys::fuzz_target;
 
-const MAX_CELLS: usize = TerminalSurface::MAX_CELLS;
+const MAX_CELLS: usize = TerminalGrid::MAX_CELLS;
 
 /// Symbols chosen to stress grapheme storage and width handling.
 const SYMBOLS: &[&str] = &[
@@ -206,7 +202,7 @@ enum Op {
         y: Coord,
         cells: Vec<CellSpec>,
     },
-    /// Writes a cell read back from the pre-batch snapshot (possibly a continuation).
+    /// Writes a cell read back from the pre-batch grid (possibly a continuation).
     CopyCell {
         sx: Coord,
         sy: Coord,
@@ -245,8 +241,6 @@ enum Op {
 #[derive(Arbitrary, Debug)]
 struct Batch {
     ops: Vec<Op>,
-    /// Unwind out of the update closure after the ops.
-    panic_after: bool,
 }
 
 #[derive(Arbitrary, Debug)]
@@ -324,8 +318,6 @@ struct Model {
     cells: Vec<MCell>,
     cursor: CellPosition,
     visible: bool,
-    revision: u64,
-    resize_generation: u64,
 }
 
 impl Model {
@@ -337,8 +329,6 @@ impl Model {
             cells: vec![MCell::empty(); usize::from(w) * usize::from(h)],
             cursor: CellPosition::new(0, 0),
             visible: false,
-            revision: 0,
-            resize_generation: 0,
         }
     }
 
@@ -418,9 +408,7 @@ impl Model {
             return false;
         }
         let old = std::mem::replace(self, Model::new(w, h));
-        self.revision = old.revision;
         self.visible = old.visible;
-        self.resize_generation = old.resize_generation.wrapping_add(1);
         for y in 0..old.h.min(h) {
             for x in 0..old.w.min(w) {
                 let cell = &old.cells[old.idx(usize::from(x), usize::from(y))];
@@ -430,11 +418,16 @@ impl Model {
                 }
             }
         }
-        self.cursor = CellPosition::new(
-            old.cursor.x.min(w.saturating_sub(1)),
-            old.cursor.y.min(h.saturating_sub(1)),
-        );
+        self.cursor = self.clamp(old.cursor);
         true
+    }
+
+    /// The documented cursor clamp: into the grid, the origin when empty.
+    fn clamp(&self, p: CellPosition) -> CellPosition {
+        CellPosition::new(
+            p.x.min(self.w.saturating_sub(1)),
+            p.y.min(self.h.saturating_sub(1)),
+        )
     }
 
     fn scroll(&mut self, start: u16, end: u16, count: u16, down: bool) -> bool {
@@ -470,9 +463,9 @@ impl Model {
 
 fn apply(
     op: &Op,
-    update: &mut SurfaceUpdate<'_>,
+    grid: &mut TerminalGrid,
     model: &mut Model,
-    before: &TerminalSnapshot,
+    before: &TerminalGrid,
 ) -> (bool, bool) {
     let (w, h) = (model.w, model.h);
     match op {
@@ -481,7 +474,7 @@ fn apply(
             let cell = cell.build();
             assert_eq!(cell.occupancy(), MCell::from_cell(&cell).occ);
             (
-                update.set_cell((x, y), &cell),
+                grid.set_cell((x, y), &cell),
                 model.write(x, y, &MCell::from_cell(&cell)),
             )
         }
@@ -490,7 +483,7 @@ fn apply(
             let (mut got, mut want) = (false, false);
             for spec in cells.iter().take(32) {
                 let cell = spec.build();
-                got |= update.set_cell((x, y), &cell);
+                got |= grid.set_cell((x, y), &cell);
                 want |= model.write(x, y, &MCell::from_cell(&cell));
                 x = x.saturating_add(cell.occupancy().columns());
             }
@@ -503,54 +496,54 @@ fn apply(
             };
             let (x, y) = (x.resolve(w), y.resolve(h));
             (
-                update.set_cell((x, y), &cell),
+                grid.set_cell((x, y), &cell),
                 model.write(x, y, &MCell::from_cell(&cell)),
             )
         }
         Op::Clear => (
-            update.clear(),
+            grid.clear(),
             model.clear_range((0, 0).into(), (u16::MAX, u16::MAX).into()),
         ),
         Op::ClearRow(row) => {
             let row = row.resolve(h);
             let want = row < h && model.clear_range((0, row).into(), (u16::MAX, row).into());
-            (update.clear_row(row), want)
+            (grid.clear_row(row), want)
         }
         Op::ClearRange { x0, y0, x1, y1 } => {
             let s = CellPosition::new(x0.resolve(w), y0.resolve(h));
             let e = CellPosition::new(x1.resolve(w), y1.resolve(h));
-            (update.clear_range(s, e), model.clear_range(s, e))
+            (grid.clear_range(s, e), model.clear_range(s, e))
         }
         Op::Resize { w: nw, h: nh } => {
             let (nw, nh) = (nw.resolve(), nh.resolve());
-            (update.resize((nw, nh)), model.resize(nw, nh))
+            (grid.resize((nw, nh)), model.resize(nw, nh))
         }
         Op::ScrollUp { start, end, count } | Op::ScrollDown { start, end, count } => {
             let down = matches!(op, Op::ScrollDown { .. });
             let (s, e, n) = (start.resolve(h), end.resolve(h), count.resolve(h));
             let got = if down {
-                update.scroll_down(s..e, n)
+                grid.scroll_down(s..e, n)
             } else {
-                update.scroll_up(s..e, n)
+                grid.scroll_up(s..e, n)
             };
             (got, model.scroll(s, e, n, down))
         }
         Op::CursorPosition { x, y } => {
-            let p = CellPosition::new(x.resolve(w), y.resolve(h));
+            let p = model.clamp(CellPosition::new(x.resolve(w), y.resolve(h)));
             let want = model.cursor != p;
             model.cursor = p;
-            (update.set_cursor_position(p), want)
+            (grid.set_cursor_position(p), want)
         }
         Op::CursorVisible(v) => {
             let want = model.visible != *v;
             model.visible = *v;
-            (update.set_cursor_visible(*v), want)
+            (grid.set_cursor_visible(*v), want)
         }
     }
 }
 
-/// Structural invariants that hold for any snapshot, independent of the model.
-fn check_structure(snap: &TerminalSnapshot) {
+/// Structural invariants that hold for any grid, independent of the model.
+fn check_structure(snap: &TerminalGrid) {
     let GridSize { width, height } = snap.size();
     let (w, h) = (usize::from(width), usize::from(height));
     assert!(w * h <= MAX_CELLS, "grid {w}x{h} exceeds MAX_CELLS");
@@ -592,30 +585,16 @@ fn check_structure(snap: &TerminalSnapshot) {
     }
 }
 
-fn check(surface: &TerminalSurface, model: &Model, full: bool) {
-    let info = surface.info();
-    assert_eq!(info.size, GridSize::new(model.w, model.h), "info size");
-    assert_eq!(info.cursor_position, model.cursor, "info cursor");
-    assert_eq!(info.cursor_visible, model.visible, "info visibility");
-    assert_eq!(info.revision, model.revision, "info revision");
-    assert_eq!(
-        info.resize_generation, model.resize_generation,
-        "resize generation"
-    );
+fn check(snap: &TerminalGrid, model: &Model, full: bool) {
+    assert_eq!(snap.size(), GridSize::new(model.w, model.h), "size");
+    assert_eq!(snap.cursor_position(), model.cursor, "cursor");
+    assert_eq!(snap.cursor_visible(), model.visible, "visibility");
     if !full {
         return;
     }
-    let snap = surface.snapshot();
-    assert_eq!(snap.size(), info.size);
-    assert_eq!(snap.cursor_position(), info.cursor_position);
-    assert_eq!(snap.cursor_visible(), info.cursor_visible);
-    assert_eq!(snap.revision(), info.revision);
     check_structure(&snap);
     for (i, (got, want)) in snap.cells().iter().zip(&model.cells).enumerate() {
-        assert!(
-            want.matches(got),
-            "cell {i}: surface {got:?} model {want:?}"
-        );
+        assert!(want.matches(got), "cell {i}: grid {got:?} model {want:?}");
     }
     // iter() positions agree with cell().
     if model.w > 0 {
@@ -650,101 +629,36 @@ fn check(surface: &TerminalSurface, model: &Model, full: bool) {
     assert!(snap.cell((0, model.h)).is_none());
 }
 
-thread_local! {
-    static EXPECT_PANIC: Cell<bool> = const { Cell::new(false) };
-}
-
-fn install_hook() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            if !EXPECT_PANIC.with(Cell::get) {
-                previous(info);
-            }
-        }));
-    });
-}
-
 fuzz_target!(|input: Input| {
-    install_hook();
     let mut model = Model::new(input.w.resolve(), input.h.resolve());
-    let surface = TerminalSurface::new((input.w.resolve(), input.h.resolve()));
-    let handle = surface.clone();
-    assert!(handle.shares_state_with(&surface));
+    let mut grid = TerminalGrid::new((input.w.resolve(), input.h.resolve()));
     check(
-        &surface,
+        &grid,
         &model,
         usize::from(model.w) * usize::from(model.h) <= 4096,
     );
 
     for batch in input.batches.iter().take(24) {
-        // Only batches that copy cells need the pre-batch snapshot.
+        // Only batches that copy cells need the pre-batch grid.
         let copies = batch.ops.iter().any(|op| matches!(op, Op::CopyCell { .. }));
         let before = if copies {
-            surface.snapshot()
+            grid.clone()
         } else {
-            TerminalSurface::new((0, 0)).snapshot()
+            TerminalGrid::new((0, 0))
         };
-        let mut results = Vec::new();
-        let mut working = model.clone();
-        let run =
-            |update: &mut SurfaceUpdate<'_>, results: &mut Vec<(bool, bool)>, m: &mut Model| {
-                for op in batch.ops.iter().take(16) {
-                    results.push(apply(op, update, m, &before));
-                    assert_eq!(
-                        update.size(),
-                        GridSize::new(m.w, m.h),
-                        "update size after {op:?}"
-                    );
-                    assert_eq!(
-                        update.cursor_position(),
-                        m.cursor,
-                        "update cursor after {op:?}"
-                    );
-                    assert_eq!(update.cursor_visible(), m.visible);
-                }
-            };
-        let published = if batch.panic_after {
-            EXPECT_PANIC.with(|f| f.set(true));
-            let outcome = catch_unwind(AssertUnwindSafe(|| {
-                handle.update(|u| {
-                    run(u, &mut results, &mut working);
-                    std::panic::panic_any("producer failure");
-                })
-            }));
-            EXPECT_PANIC.with(|f| f.set(false));
-            match outcome {
-                Ok(_) => panic!("update swallowed the panic"),
-                // A real assertion failure inside the closure must still be a finding.
-                Err(payload) => assert!(
-                    payload.downcast_ref::<&str>() == Some(&"producer failure"),
-                    "assertion inside update: {:?}",
-                    payload.downcast_ref::<String>()
-                ),
-            }
-            None
-        } else {
-            Some(handle.update(|u| run(u, &mut results, &mut working)))
-        };
-
-        for (i, (got, want)) in results.iter().enumerate() {
+        for op in batch.ops.iter().take(16) {
+            let (got, want) = apply(op, &mut grid, &mut model, &before);
+            assert_eq!(got, want, "{op:?} reported change {got}, model {want}");
             assert_eq!(
-                got, want,
-                "op {i} {:?} reported change {got}, model {want}",
-                batch.ops[i]
+                grid.size(),
+                GridSize::new(model.w, model.h),
+                "size after {op:?}"
             );
-        }
-        let any = results.iter().any(|(got, _)| *got);
-        if let Some(published) = published {
-            assert_eq!(published, any, "update return");
-        }
-        model = working;
-        if any {
-            model.revision = model.revision.wrapping_add(1);
+            assert_eq!(grid.cursor_position(), model.cursor, "cursor after {op:?}");
+            assert_eq!(grid.cursor_visible(), model.visible);
         }
         let small = usize::from(model.w) * usize::from(model.h) <= 4096;
-        check(&surface, &model, small);
+        check(&grid, &model, small);
     }
-    check(&surface, &model, true);
+    check(&grid, &model, true);
 });

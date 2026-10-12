@@ -197,7 +197,6 @@ impl Atlas {
 pub(super) struct Replay {
     pub(super) app: App,
     pub(super) entity: Entity,
-    pub(super) surface: TerminalSurface,
     pub(super) canvas: Canvas,
     pub(super) atlas: Atlas,
     pub(super) scenes: usize,
@@ -217,11 +216,10 @@ impl Replay {
         .init_asset::<Image>();
         isolate_fonts(&mut app);
         let faces = load_faces(&mut app, family);
-        let surface = TerminalSurface::new(grid);
         let entity = app
             .world_mut()
             .spawn((
-                TerminalRenderer::new(surface.clone()),
+                TerminalGrid::new(grid),
                 TerminalRenderConfig {
                     sizing,
                     font: faces,
@@ -238,7 +236,6 @@ impl Replay {
         let mut replay = Self {
             app,
             entity,
-            surface,
             canvas: Canvas::new(UVec2::ONE),
             atlas: Atlas::default(),
             scenes: 0,
@@ -278,9 +275,15 @@ impl Replay {
         self.canvas.apply(&scene, &self.atlas, images);
     }
 
-    /// The canvas a full scene of the current snapshot produces, built with
+    /// The canvas a full scene of the current grid produces, built with
     /// the terminal's own shapes, atlas and metrics but fresh scene state.
     pub(super) fn full_reference(&mut self) -> Canvas {
+        let grid = self
+            .app
+            .world()
+            .get::<TerminalGrid>(self.entity)
+            .unwrap()
+            .clone();
         let mut system = SystemState::<(
             TextResources,
             Query<(&mut BatchMainState, &TerminalRenderConfig)>,
@@ -288,9 +291,8 @@ impl Replay {
         let (mut text, mut states) = system.get_mut(self.app.world_mut()).unwrap();
         let (mut state, config) = states.get_mut(self.entity).unwrap();
         let config = config.clone();
-        let snapshot = state.snapshot().cloned().expect("retained snapshot");
         let destination = state.output.id();
-        let blink = state.retained.as_ref().unwrap().blink;
+        let blink = state.retained.blink;
         let raster = state.raster();
         let BatchMainState {
             palette,
@@ -303,8 +305,7 @@ impl Replay {
         let mut stats = TerminalStats::default();
         let mut cx = text.context();
         let input = SceneInput {
-            snapshot: &snapshot,
-            surface: &self.surface,
+            grid: &grid,
             config: &config,
             palette,
             raster,
@@ -340,23 +341,30 @@ impl Replay {
         );
     }
 
-    pub(super) fn write(&self, row: u16, text: &str, style: TerminalStyle) {
+    /// The terminal's grid, to write to between updates.
+    pub(super) fn grid(&mut self) -> Mut<'_, TerminalGrid> {
+        self.app
+            .world_mut()
+            .get_mut::<TerminalGrid>(self.entity)
+            .unwrap()
+    }
+
+    pub(super) fn write(&mut self, row: u16, text: &str, style: TerminalStyle) {
         use unicode_segmentation::UnicodeSegmentation;
         use unicode_width::UnicodeWidthStr;
-        self.surface.update(|update| {
-            update.clear_row(row);
-            let mut column = 0;
-            for grapheme in text.graphemes(true) {
-                let width = grapheme.width().max(1) as u16;
-                let cell = if width > 1 {
-                    TerminalCell::wide(grapheme, width)
-                } else {
-                    TerminalCell::new(grapheme)
-                };
-                update.set_cell((column, row), &cell.with_style(style));
-                column += width;
-            }
-        });
+        let mut grid = self.grid();
+        grid.clear_row(row);
+        let mut column = 0;
+        for grapheme in text.graphemes(true) {
+            let width = grapheme.width().max(1) as u16;
+            let cell = if width > 1 {
+                TerminalCell::wide(grapheme, width)
+            } else {
+                TerminalCell::new(grapheme)
+            };
+            grid.set_cell((column, row), &cell.with_style(style));
+            column += width;
+        }
     }
 }
 
@@ -411,10 +419,11 @@ fn overflowing_ink_reaches_neighbours_and_partial_repaints_match_full_scenes() {
 
     // The cursor moves through overflowed rows.
     for row in [2, 3, 4, 0] {
-        replay.surface.update(|update| {
+        {
+            let mut update = replay.grid();
             update.set_cursor_visible(true);
             update.set_cursor_position((5, row));
-        });
+        }
         replay.assert_matches_full("cursor moved");
     }
 
@@ -446,9 +455,10 @@ fn overflowing_ink_reaches_neighbours_and_partial_repaints_match_full_scenes() {
     replay.assert_matches_full("row between a two-row reach rewritten");
 
     // Scrolling moves overflowing rows; style-only changes repaint.
-    replay.surface.update(|update| {
+    {
+        let mut update = replay.grid();
         update.scroll_up(0..7, 1);
-    });
+    }
     replay.assert_matches_full("scrolled");
     replay.write(
         2,
@@ -626,10 +636,11 @@ fn wide_and_translucent_block_elements_cover_their_cells_once() {
         .theme
         .foreground = Color::srgba(1.0, 1.0, 1.0, 0.5);
     let black = TerminalStyle::new().bg(TerminalColor::Rgb(0, 0, 0));
-    replay.surface.update(|update| {
+    {
+        let mut update = replay.grid();
         update.set_cell((0, 0), &TerminalCell::wide("█", 2).with_style(black));
         update.set_cell((3, 0), &TerminalCell::new("▙").with_style(black));
-    });
+    }
     replay.assert_matches_full("blocks");
     let cell = replay
         .app

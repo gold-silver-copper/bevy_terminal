@@ -22,16 +22,16 @@ struct Captured(Arc<Mutex<Option<Capture>>>);
 
 type Capture = (Vec<u8>, UVec2);
 
-/// Renders `surface` headlessly with `config` and returns the texture's RGBA8
+/// Renders `grid` headlessly with `config` and returns the texture's RGBA8
 /// bytes (sRGB-encoded, straight alpha) and its size.
-fn render_headless(surface: TerminalSurface, config: TerminalRenderConfig) -> (Vec<u8>, UVec2) {
-    render_headless_with(surface, move |_| config)
+fn render_headless(grid: TerminalGrid, config: TerminalRenderConfig) -> (Vec<u8>, UVec2) {
+    render_headless_with(grid, move |_| config)
 }
 
 /// Like [`render_headless`], but builds the configuration inside the app so it
 /// can reference font assets registered there.
 fn render_headless_with(
-    surface: TerminalSurface,
+    grid: TerminalGrid,
     config: impl FnOnce(&mut Assets<Font>) -> TerminalRenderConfig + Send + Sync + 'static,
 ) -> (Vec<u8>, UVec2) {
     let mut config = Some(config);
@@ -62,7 +62,7 @@ fn render_headless_with(
         Startup,
         move |mut commands: Commands, mut fonts: ResMut<Assets<Font>>| {
             let config = config.take().expect("startup runs once")(&mut fonts);
-            commands.spawn((TerminalRenderer::new(surface.clone()), config));
+            commands.spawn((grid.clone(), config));
         },
     )
     .add_systems(
@@ -127,15 +127,16 @@ fn texel(data: &[u8], size: UVec2, x: u32, y: u32) -> [u8; 4] {
 #[test]
 #[ignore = "requires a GPU"]
 fn translucent_background_and_srgb_texture() {
-    let surface = TerminalSurface::new((4, 2));
-    surface.update(|u| {
+    let mut terminal = TerminalGrid::new((4, 2));
+    {
+        let u = &mut terminal;
         u.set_cell((0, 0), &TerminalCell::new("█"));
         u.set_cell(
             (1, 0),
             &TerminalCell::new("█")
                 .with_style(TerminalStyle::new().fg(TerminalColor::Rgb(255, 0, 0))),
         );
-    });
+    }
     let theme = TerminalTheme {
         background: Color::srgba(0.0, 0.0, 0.0, 0.5),
         ..default()
@@ -153,7 +154,7 @@ fn translucent_background_and_srgb_texture() {
         blink: BlinkConfig::NONE,
         ..default()
     };
-    let (data, size) = render_headless(surface, config);
+    let (data, size) = render_headless(terminal, config);
     assert_eq!(size, UVec2::new(40, 40));
     // An empty cell shows the translucent background.
     let empty = texel(&data, size, 35, 30);
@@ -185,15 +186,16 @@ fn inked_columns(data: &[u8], size: UVec2, y: u32, x0: u32, width: u32) -> Vec<u
 #[test]
 #[ignore = "requires a GPU"]
 fn box_drawing_overshoot_keeps_stems_aligned() {
-    let surface = TerminalSurface::new((3, 2));
-    surface.update(|u| {
+    let mut terminal = TerminalGrid::new((3, 2));
+    {
+        let u = &mut terminal;
         u.set_cell((0, 0), &TerminalCell::new("┌"));
         u.set_cell((1, 0), &TerminalCell::new("─"));
         u.set_cell((2, 0), &TerminalCell::new("┐"));
         u.set_cell((0, 1), &TerminalCell::new("│"));
         u.set_cell((2, 1), &TerminalCell::new("│"));
-    });
-    let (data, size) = render_headless_with(surface, |fonts| {
+    }
+    let (data, size) = render_headless_with(terminal, |fonts| {
         let bytes = include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf");
         let handle = fonts.add(Font::from_bytes(bytes.to_vec()));
         TerminalRenderConfig {
@@ -264,14 +266,15 @@ fn font_driven_config(handle: Handle<Font>, font_size: f32) -> TerminalRenderCon
 #[test]
 #[ignore = "requires a GPU"]
 fn font_driven_cell_is_at_least_the_font_line_box() {
-    let surface = TerminalSurface::new((2, 2));
-    surface.update(|u| {
+    let mut terminal = TerminalGrid::new((2, 2));
+    {
+        let u = &mut terminal;
         u.set_cell((0, 0), &TerminalCell::new("A"));
         u.set_cell((1, 0), &TerminalCell::new("g"));
         u.set_cell((0, 1), &TerminalCell::new("A"));
         u.set_cell((1, 1), &TerminalCell::new("g"));
-    });
-    let (data, size) = render_headless_with(surface, |fonts| {
+    }
+    let (data, size) = render_headless_with(terminal, |fonts| {
         let bytes = include_bytes!("../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
         font_driven_config(fonts.add(Font::from_bytes(bytes.to_vec())), 24.0)
     });
@@ -296,16 +299,17 @@ fn font_driven_cell_is_at_least_the_font_line_box() {
 #[test]
 #[ignore = "requires a GPU"]
 fn block_elements_tile_the_cell_from_geometry() {
-    let surface = TerminalSurface::new((3, 2));
-    surface.update(|u| {
+    let mut terminal = TerminalGrid::new((3, 2));
+    {
+        let u = &mut terminal;
         u.set_cell((0, 0), &TerminalCell::new("█"));
         u.set_cell((0, 1), &TerminalCell::new("█"));
         u.set_cell((1, 0), &TerminalCell::new("▄"));
         u.set_cell((1, 1), &TerminalCell::new("▀"));
         u.set_cell((2, 0), &TerminalCell::new("▐"));
         u.set_cell((2, 1), &TerminalCell::new("▌"));
-    });
-    let (data, size) = render_headless_with(surface, |fonts| {
+    }
+    let (data, size) = render_headless_with(terminal, |fonts| {
         let bytes = include_bytes!("../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
         font_driven_config(fonts.add(Font::from_bytes(bytes.to_vec())), 24.0)
     });
@@ -337,12 +341,13 @@ fn block_elements_tile_the_cell_from_geometry() {
 #[ignore = "requires a GPU"]
 fn line_height_scales_the_font_driven_cell() {
     for (line_height, expected_rows) in [(0.8_f32, 22_u32), (1.0, 28), (1.25, 34)] {
-        let surface = TerminalSurface::new((2, 2));
-        surface.update(|u| {
+        let mut terminal = TerminalGrid::new((2, 2));
+        {
+            let u = &mut terminal;
             u.set_cell((0, 0), &TerminalCell::new("A"));
             u.set_cell((1, 1), &TerminalCell::new("█"));
-        });
-        let (data, size) = render_headless_with(surface, move |fonts| {
+        }
+        let (data, size) = render_headless_with(terminal, move |fonts| {
             let bytes = include_bytes!("../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
             let mut config = font_driven_config(fonts.add(Font::from_bytes(bytes.to_vec())), 24.0);
             if let TerminalSizing::FromFont {
@@ -370,10 +375,10 @@ fn line_height_scales_the_font_driven_cell() {
 /// A change applied to the world between frames.
 type Step = Box<dyn FnMut(&mut World) + Send + Sync>;
 
-/// Renders `surface` headlessly, running each of `steps` on the world twelve
+/// Renders `grid` headlessly, running each of `steps` on the world twelve
 /// frames apart, and reads the texture back twelve frames after the last.
 fn render_after_steps(
-    surface: TerminalSurface,
+    grid: TerminalGrid,
     config: impl FnOnce(&mut Assets<Font>) -> TerminalRenderConfig + Send + Sync + 'static,
     steps: Vec<Step>,
 ) -> (Vec<u8>, UVec2) {
@@ -405,7 +410,7 @@ fn render_after_steps(
         Startup,
         move |mut commands: Commands, mut fonts: ResMut<Assets<Font>>| {
             let config = config.take().expect("startup runs once")(&mut fonts);
-            commands.spawn((TerminalRenderer::new(surface.clone()), config));
+            commands.spawn((grid.clone(), config));
         },
     );
     let mut steps = steps;
@@ -459,19 +464,15 @@ fn render_after_steps(
 fn atlas_entries_survive_font_switches_and_partial_repaints() {
     let dejavu = include_bytes!("../assets/fonts/dejavu-sans-mono/DejaVuSansMono.ttf");
     let jetbrains = include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf");
-    let write = |surface: &TerminalSurface, row: u16, text: &str| {
-        surface.update(|u| {
-            for (x, c) in text.chars().enumerate() {
-                u.set_cell((x as u16, row), &TerminalCell::new(&c.to_string()));
-            }
-        });
+    let write = |grid: &mut TerminalGrid, row: u16, text: &str| {
+        for (x, c) in text.chars().enumerate() {
+            grid.set_cell((x as u16, row), &TerminalCell::new(&c.to_string()));
+        }
     };
-    let surface = TerminalSurface::new((6, 2));
-    write(&surface, 0, "WMQ@#&");
-    let switched = surface.clone();
-    let replaced = surface.clone();
+    let mut grid = TerminalGrid::new((6, 2));
+    write(&mut grid, 0, "WMQ@#&");
     let (data, size) = render_after_steps(
-        surface,
+        grid,
         |fonts| font_driven_config(fonts.add(Font::from_bytes(dejavu.to_vec())), 24.0),
         vec![
             Box::new(move |world: &mut World| {
@@ -483,14 +484,19 @@ fn atlas_entries_survive_font_switches_and_partial_repaints() {
                     .single_mut(world)
                     .unwrap();
                 config.font = FontFaces::regular(FontSource::Handle(handle));
-                let _ = &switched;
             }),
-            Box::new(move |_: &mut World| write(&replaced, 1, "gjq&%$")),
+            Box::new(move |world: &mut World| {
+                let mut grid = world
+                    .query::<&mut TerminalGrid>()
+                    .single_mut(world)
+                    .unwrap();
+                write(&mut grid, 1, "gjq&%$");
+            }),
         ],
     );
-    let fresh = TerminalSurface::new((6, 2));
-    write(&fresh, 0, "WMQ@#&");
-    write(&fresh, 1, "gjq&%$");
+    let mut fresh = TerminalGrid::new((6, 2));
+    write(&mut fresh, 0, "WMQ@#&");
+    write(&mut fresh, 1, "gjq&%$");
     let (expected, expected_size) = render_headless_with(fresh, |fonts| {
         font_driven_config(fonts.add(Font::from_bytes(jetbrains.to_vec())), 24.0)
     });

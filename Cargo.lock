@@ -1768,9 +1768,7 @@ name = "bevy_terminal"
 version = "0.8.1"
 dependencies = [
  "bevy",
- "bytemuck",
  "fontique",
- "skrifa",
  "unicode-segmentation",
  "unicode-width",
 ]

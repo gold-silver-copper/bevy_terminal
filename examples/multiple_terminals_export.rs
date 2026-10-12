@@ -18,10 +18,9 @@ use bevy::{
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::prelude::{
-    CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
-    TerminalSystems,
+    CursorConfig, RasterConfig, RatatuiPlugin, RatatuiTerminal, TerminalRenderConfig,
+    TerminalSizing, TerminalSystems,
 };
-use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text as RatatuiText},
@@ -32,20 +31,14 @@ const WIDTH: u32 = 900;
 const HEIGHT: u32 = 360;
 const EXPORT_FRAMES: u32 = 10;
 
-#[derive(Resource)]
-struct QaTerminals {
-    left: RatatuiTerminal,
-    right: RatatuiTerminal,
+/// Which of the two terminals an entity is.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Left,
+    Right,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut terminals = QaTerminals {
-        left: RatatuiTerminal::new(37, 12),
-        right: RatatuiTerminal::new(32, 10),
-    };
-    draw_terminals(&mut terminals, 0);
-    let left_surface = terminals.left.surface();
-    let right_surface = terminals.right.surface();
     let export_plugin = ImageExportPlugin::default();
     let export_threads = export_plugin.threads.clone();
 
@@ -80,18 +73,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..default()
     });
     app.insert_resource(fonts)
-        .add_plugins((export_plugin, TerminalPlugin, app::presentation))
-        .insert_resource(terminals)
+        .add_plugins((export_plugin, RatatuiPlugin, app::presentation))
         .add_systems(Startup, move |mut commands: Commands| {
-            for (surface, origin) in [
-                (&left_surface, Vec2::new(20.0, 62.0)),
-                (&right_surface, Vec2::new(450.0, 62.0)),
+            for (side, columns, rows, origin) in [
+                (Side::Left, 37, 12, Vec2::new(20.0, 62.0)),
+                (Side::Right, 32, 10, Vec2::new(450.0, 62.0)),
             ] {
-                commands.spawn(app::ui_terminal(
-                    TerminalRenderer::new(surface.clone()),
-                    config.clone(),
-                    origin,
-                ));
+                let mut terminal = RatatuiTerminal::new(columns, rows);
+                draw_terminal(&mut terminal, side, 0);
+                commands.spawn(app::ui_terminal((terminal, side), config.clone(), origin));
             }
         })
         .add_systems(Startup, setup_export)
@@ -161,18 +151,29 @@ fn setup_export(
     ));
 }
 
-fn mutate_for_qa(mut terminals: ResMut<QaTerminals>, mut frame: Local<u32>) {
+fn mutate_for_qa(mut terminals: Query<(&mut RatatuiTerminal, &Side)>, mut frame: Local<u32>) {
     *frame += 1;
     if *frame != 5 {
         return;
     }
 
-    terminals.right.resize_grid(36, 12);
-    draw_terminals(&mut terminals, 5);
+    for (mut terminal, &side) in &mut terminals {
+        if side == Side::Right {
+            terminal.resize_grid(36, 12);
+        }
+        draw_terminal(&mut terminal, side, 5);
+    }
 }
 
-fn draw_terminals(terminals: &mut QaTerminals, revision: u64) {
-    terminals.left.draw(|frame| {
+fn draw_terminal(terminal: &mut RatatuiTerminal, side: Side, revision: u64) {
+    match side {
+        Side::Left => draw_left(terminal, revision),
+        Side::Right => draw_right(terminal, revision),
+    }
+}
+
+fn draw_left(terminal: &mut RatatuiTerminal, revision: u64) {
+    terminal.draw(|frame| {
         let area = frame.area();
         frame.render_widget(
             Paragraph::new(RatatuiText::from(vec![
@@ -184,7 +185,7 @@ fn draw_terminals(terminals: &mut QaTerminals, revision: u64) {
                 )),
                 Line::from(format!("revision {revision}")),
                 Line::default(),
-                Line::from("This surface keeps its 37 × 12 grid."),
+                Line::from("This one keeps its 37 × 12 grid."),
             ]))
             .block(Block::new().borders(Borders::ALL).title(" terminal A ")),
             area,
@@ -198,8 +199,10 @@ fn draw_terminals(terminals: &mut QaTerminals, revision: u64) {
             gauge_area,
         );
     });
+}
 
-    terminals.right.draw(|frame| {
+fn draw_right(terminal: &mut RatatuiTerminal, revision: u64) {
+    terminal.draw(|frame| {
         let items = [
             ListItem::new("independent texture handle"),
             ListItem::new("independent dirty rows"),

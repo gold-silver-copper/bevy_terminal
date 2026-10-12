@@ -11,9 +11,9 @@
     )
 )]
 
+pub mod grid;
 pub mod render;
 pub mod scene;
-pub mod surface;
 
 /// The Bevy version this crate is built against, re-exported so dependents that
 /// do not depend on `bevy` directly can name its types.
@@ -24,15 +24,16 @@ pub mod prelude {
     pub use bevy::text::{FontHinting, FontSource};
 
     pub use crate::{
+        grid::TerminalGrid,
         render::{
-            BlinkConfig, CursorConfig, CursorStyle, FontFaces, RasterConfig, TerminalGeometry,
-            TerminalPlugin, TerminalRenderConfig, TerminalRenderer, TerminalSizing, TerminalStats,
-            TerminalStatus, TerminalSystems, TerminalTexture, TerminalTheme,
+            BlinkConfig, CursorConfig, CursorStyle, FontFaces, RasterConfig, TerminalFailure,
+            TerminalGeometry, TerminalPlugin, TerminalRenderConfig, TerminalSizing, TerminalSource,
+            TerminalSourcePlugin, TerminalStats, TerminalStatus, TerminalSystems, TerminalTexture,
+            TerminalTheme,
         },
         scene::{
             CellOccupancy, CellPosition, GridSize, StyleFlags, TerminalCell, TerminalColor,
-            TerminalSnapshot, TerminalStyle,
+            TerminalStyle,
         },
-        surface::{SurfaceInfo, SurfaceUpdate, TerminalSurface},
     };
 }

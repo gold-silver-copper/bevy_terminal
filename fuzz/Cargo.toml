@@ -18,8 +18,8 @@ bevy = { version = "0.20", default-features = false, features = ["std", "bevy_as
 ratatui = { version = "0.30.2", default-features = false, features = ["std", "underline-color"] }
 
 [[bin]]
-name = "surface"
-path = "fuzz_targets/surface.rs"
+name = "grid"
+path = "fuzz_targets/grid.rs"
 test = false
 doc = false
 bench = false

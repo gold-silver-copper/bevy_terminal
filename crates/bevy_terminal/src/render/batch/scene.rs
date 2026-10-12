@@ -8,11 +8,11 @@ use super::shaping::{
 use super::sprite::{self, sprite_codepoint};
 use super::{
     BatchScene, Blend, BlinkPhases, DrawBatch, Palette, QuadInstance, RasterMetrics, ResolvedStyle,
-    TerminalRenderConfig, TerminalSnapshot, TerminalStats, TextContext, cell_span,
-    cursor_should_be_visible, terminal_pixel_size,
+    TerminalRenderConfig, TerminalStats, TextContext, cell_span, cursor_should_be_visible,
+    terminal_pixel_size,
 };
+use crate::grid::TerminalGrid;
 use crate::scene::{StyleFlags, TerminalCell};
-use crate::surface::TerminalSurface;
 use bevy::prelude::*;
 
 #[derive(Default)]
@@ -227,8 +227,7 @@ pub(super) fn build_scene(
     stats: &mut TerminalStats,
 ) -> BatchScene {
     let SceneInput {
-        snapshot,
-        surface,
+        grid,
         config,
         palette,
         raster,
@@ -237,8 +236,8 @@ pub(super) fn build_scene(
         destination,
         blink,
     } = input;
-    let size = terminal_pixel_size(snapshot.size(), &raster).as_vec2();
-    let height = snapshot.size().height;
+    let size = terminal_pixel_size(grid.size(), &raster).as_vec2();
+    let height = grid.size().height;
     scratch.clear();
     // The probe records full scenes only.
     #[cfg(test)]
@@ -269,7 +268,7 @@ pub(super) fn build_scene(
     } = scratch;
     painting.resize_with(usize::from(height), RowPaint::default);
     let mut painter = RowPainter {
-        snapshot,
+        grid,
         palette,
         raster,
         size,
@@ -491,13 +490,13 @@ pub(super) fn build_scene(
     quads.extend(primary_atlas, Blend::Alpha, decorations.iter().copied());
     let mut solid_quads = background_quads + decorations.len();
 
-    if cursor_should_be_visible(snapshot)
+    if cursor_should_be_visible(grid)
         && !blink.cursor_hidden
         && painting
-            .get(usize::from(snapshot.cursor_position().y))
+            .get(usize::from(grid.cursor_position().y))
             .is_some_and(|paint| paint.repaint)
     {
-        let position = snapshot.cursor_position();
+        let position = grid.cursor_position();
         let cursor_thickness = raster.scale.round().max(1.0) * 2.0;
         let (x, y, width, height) = match config.cursor.style {
             super::super::CursorStyle::Block => (0.0, 0.0, raster.cell_size.x, raster.cell_size.y),
@@ -546,8 +545,6 @@ pub(super) fn build_scene(
         atlas: glyph_atlas.id,
         atlas_uploads,
         atlas_fresh,
-        surface: surface.downgrade(),
-        resize_generation: snapshot.resize_generation,
         destination_size: size.as_uvec2(),
         instances,
         batches,
@@ -556,13 +553,12 @@ pub(super) fn build_scene(
     }
 }
 
-/// What a scene draws: a snapshot of `surface` with its configuration,
+/// What a scene draws: a grid with its configuration,
 /// resolved theme and raster metrics, the rows to repaint (ignored when
 /// `full`), the target texture and the blink phases.
 #[derive(Clone, Copy)]
 pub(super) struct SceneInput<'a> {
-    pub(super) snapshot: &'a TerminalSnapshot,
-    pub(super) surface: &'a TerminalSurface,
+    pub(super) grid: &'a TerminalGrid,
     pub(super) config: &'a TerminalRenderConfig,
     pub(super) palette: &'a Palette,
     pub(super) raster: RasterMetrics,
@@ -574,7 +570,7 @@ pub(super) struct SceneInput<'a> {
 
 /// Lays out the rows of one scene.
 struct RowPainter<'a, 'w> {
-    snapshot: &'a TerminalSnapshot,
+    grid: &'a TerminalGrid,
     palette: &'a Palette,
     raster: RasterMetrics,
     size: Vec2,
@@ -597,7 +593,7 @@ impl RowPainter<'_, '_> {
         self.styles_row = Some(row);
         self.styles.clear();
         self.styles.extend(
-            self.snapshot
+            self.grid
                 .row(row)
                 .iter()
                 .map(|cell| ResolvedStyle::new(cell, self.palette)),
@@ -681,7 +677,7 @@ impl RowPainter<'_, '_> {
         self.resolve_styles(row);
         let raster = self.raster;
         let size = self.size;
-        let cells = self.snapshot.row(row);
+        let cells = self.grid.row(row);
         let mut column = 0;
         while let (Some(cell), Some(style)) = (cells.get(column), self.styles.get(column)) {
             if cell.is_continuation() {

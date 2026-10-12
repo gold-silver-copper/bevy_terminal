@@ -1,10 +1,9 @@
 //! Fuzzes the renderer's main-world pipeline in a headless Bevy app (no GPU):
-//! surface writes, resizes, configuration changes (including invalid values),
-//! font swaps and removals, terminal spawns/despawns and shared surfaces, with
-//! frames advanced in between. After the input ends the app settles and the
-//! documented guarantees are checked: status per configuration, measured
-//! geometry consistent with the surface and image, and idle terminals doing no
-//! work.
+//! grid writes, resizes, configuration changes (including invalid values),
+//! font swaps and removals, terminal spawns/despawns and replaced grids,
+//! with frames advanced in between. After the input ends the app settles and the documented
+//! guarantees are checked: status per configuration, measured geometry
+//! consistent with the grid and image, and idle terminals doing no work.
 
 #![no_main]
 
@@ -336,35 +335,35 @@ impl Style {
 #[derive(Arbitrary, Clone, Debug)]
 enum Op {
     Write {
-        surface: u8,
+        grid: u8,
         x: u8,
         y: u8,
         glyphs: Vec<(Glyph, u8, Style)>,
     },
     Fill {
-        surface: u8,
+        grid: u8,
         glyph: Glyph,
         style: Style,
     },
     Clear {
-        surface: u8,
+        grid: u8,
         row: Option<u8>,
     },
     Scroll {
-        surface: u8,
+        grid: u8,
         up: bool,
         start: u8,
         end: u8,
         count: u8,
     },
     Cursor {
-        surface: u8,
+        grid: u8,
         x: u8,
         y: u8,
         visible: bool,
     },
     Resize {
-        surface: u8,
+        grid: u8,
         width: Dim,
         height: Dim,
     },
@@ -374,21 +373,25 @@ enum Op {
     },
     RemoveFont(FontChoice),
     RestoreFont(FontChoice),
+    /// Spawns a terminal owning a clone of the picked terminal's grid.
     Spawn {
-        surface: u8,
+        grid: u8,
         changes: Vec<ConfigChange>,
     },
     Despawn {
         terminal: u8,
     },
+    /// Removes a terminal's source, which stops it rendering.
     RemoveRenderer {
         terminal: u8,
     },
-    SetSurface {
+    /// Replaces a terminal's own grid with a clone of the picked grid.
+    SetGrid {
         terminal: u8,
-        surface: u8,
+        grid: u8,
     },
-    NewSurface {
+    /// Spawns a terminal owning a new grid.
+    NewGrid {
         width: Dim,
         height: Dim,
     },
@@ -427,8 +430,7 @@ struct Harness {
     fonts: HashMap<FontChoice, Handle<Font>>,
     /// Font assets removed from `Assets<Font>` (their handles stay alive).
     removed: Vec<FontChoice>,
-    surfaces: Vec<TerminalSurface>,
-    /// Live entities with their renderer and the image handle id they got.
+    /// Live entities with the image handle id they got.
     terminals: Vec<(Entity, AssetId<Image>)>,
     /// Images of terminals that stopped rendering; they must be released.
     released: Vec<AssetId<Image>>,
@@ -452,7 +454,6 @@ impl Harness {
             app,
             fonts: HashMap::new(),
             removed: Vec::new(),
-            surfaces: Vec::new(),
             terminals: Vec::new(),
             released: Vec::new(),
             frames: 0,
@@ -482,13 +483,22 @@ impl Harness {
         }
     }
 
-    fn surface(&self, index: u8) -> Option<TerminalSurface> {
-        if self.surfaces.is_empty() {
-            return None;
+    /// The grid a terminal draws.
+    fn grid(&self, entity: Entity) -> &TerminalGrid {
+        self.app.world().get::<TerminalGrid>(entity).unwrap()
+    }
+
+    /// Writes to the grid of the terminal `index` picks.
+    fn write(&mut self, index: u8, write: impl FnOnce(&mut TerminalGrid)) {
+        if let Some(entity) = self.terminal(index) {
+            write(
+                &mut self
+                    .app
+                    .world_mut()
+                    .get_mut::<TerminalGrid>(entity)
+                    .unwrap(),
+            );
         }
-        self.surfaces
-            .get(usize::from(index) % self.surfaces.len())
-            .cloned()
     }
 
     fn terminal(&self, index: u8) -> Option<Entity> {
@@ -550,7 +560,7 @@ impl Harness {
         }
     }
 
-    fn spawn(&mut self, surface: TerminalSurface, regular: FontChoice, changes: &[ConfigChange]) {
+    fn spawn(&mut self, grid: TerminalGrid, regular: FontChoice, changes: &[ConfigChange]) {
         if self.terminals.len() >= MAX_TERMINALS {
             return;
         }
@@ -563,11 +573,7 @@ impl Harness {
         for change in changes.iter().take(8) {
             self.apply_change(&mut config, change);
         }
-        let entity = self
-            .app
-            .world_mut()
-            .spawn((TerminalRenderer::new(surface), config))
-            .id();
+        let entity = self.app.world_mut().spawn((grid, config)).id();
         let image = self.image_of(entity);
         self.terminals.push((entity, image));
     }
@@ -578,7 +584,7 @@ impl Harness {
             .app
             .world()
             .get::<TerminalTexture>(entity)
-            .expect("TerminalTexture attached when the renderer is added");
+            .expect("TerminalTexture attached when the source is added");
         texture.image().id()
     }
 
@@ -598,7 +604,7 @@ impl Harness {
             self.app
                 .world_mut()
                 .entity_mut(entity)
-                .remove::<TerminalRenderer>();
+                .remove::<TerminalGrid>();
             let world = self.app.world();
             assert!(world.get::<TerminalTexture>(entity).is_none());
             assert!(world.get::<TerminalStats>(entity).is_none());
@@ -621,7 +627,6 @@ impl Harness {
         let world = self.app.world();
         let images = world.resource::<Assets<Image>>();
         for &(entity, image) in &self.terminals {
-            let renderer = world.get::<TerminalRenderer>(entity).unwrap();
             let texture = world
                 .get::<TerminalTexture>(entity)
                 .expect("texture on a live renderer");
@@ -631,10 +636,9 @@ impl Harness {
             assert_eq!(texture.image().id(), image, "texture handle changed");
             assert!(images.get(image).is_some(), "terminal image missing");
             let Some(geometry) = texture.measured() else {
-                assert!(texture.status() != TerminalStatus::Ready);
                 continue;
             };
-            check_geometry(renderer.surface(), config, geometry);
+            check_geometry(self.grid(entity), config, geometry);
             let image_size = images.get(image).unwrap().size();
             assert_eq!(
                 image_size,
@@ -646,9 +650,7 @@ impl Harness {
 
     fn run(&mut self, input: &Input) {
         let size = (input.width.value(40), input.height.value(12));
-        self.surfaces.push(TerminalSurface::new(size));
-        let surface = self.surfaces[0].clone();
-        self.spawn(surface, input.regular, &input.initial);
+        self.spawn(TerminalGrid::new(size), input.regular, &input.initial);
         for op in input.ops.iter().take(MAX_OPS) {
             if self.frames >= MAX_FRAMES {
                 break;
@@ -660,16 +662,8 @@ impl Harness {
 
     fn apply(&mut self, op: &Op) {
         match op {
-            Op::Write {
-                surface,
-                x,
-                y,
-                glyphs,
-            } => {
-                let Some(surface) = self.surface(*surface) else {
-                    return;
-                };
-                surface.update(|update| {
+            Op::Write { grid, x, y, glyphs } => {
+                self.write(*grid, |update| {
                     let mut x = u16::from(*x);
                     let y = u16::from(*y) % update.size().height.max(1);
                     for (glyph, columns, style) in glyphs.iter().take(64) {
@@ -686,16 +680,9 @@ impl Harness {
                     }
                 });
             }
-            Op::Fill {
-                surface,
-                glyph,
-                style,
-            } => {
-                let Some(surface) = self.surface(*surface) else {
-                    return;
-                };
+            Op::Fill { grid, glyph, style } => {
                 let cell = TerminalCell::new(&glyph.text()).with_style(style.value());
-                surface.update(|update| {
+                self.write(*grid, |update| {
                     let size = update.size();
                     if size.width as usize * size.height as usize > 4096 {
                         return;
@@ -707,11 +694,8 @@ impl Harness {
                     }
                 });
             }
-            Op::Clear { surface, row } => {
-                let Some(surface) = self.surface(*surface) else {
-                    return;
-                };
-                surface.update(|update| {
+            Op::Clear { grid, row } => {
+                self.write(*grid, |update| {
                     match row {
                         Some(row) => update.clear_row(u16::from(*row)),
                         None => update.clear(),
@@ -719,17 +703,14 @@ impl Harness {
                 });
             }
             Op::Scroll {
-                surface,
+                grid,
                 up,
                 start,
                 end,
                 count,
             } => {
-                let Some(surface) = self.surface(*surface) else {
-                    return;
-                };
                 let region = u16::from(*start)..u16::from(*end);
-                surface.update(|update| {
+                self.write(*grid, |update| {
                     if *up {
                         update.scroll_up(region, u16::from(*count));
                     } else {
@@ -738,28 +719,22 @@ impl Harness {
                 });
             }
             Op::Cursor {
-                surface,
+                grid,
                 x,
                 y,
                 visible,
             } => {
-                let Some(surface) = self.surface(*surface) else {
-                    return;
-                };
-                surface.update(|update| {
+                self.write(*grid, |update| {
                     update.set_cursor_position((u16::from(*x), u16::from(*y)));
                     update.set_cursor_visible(*visible);
                 });
             }
             Op::Resize {
-                surface,
+                grid,
                 width,
                 height,
             } => {
-                let Some(surface) = self.surface(*surface) else {
-                    return;
-                };
-                surface.update(|update| {
+                self.write(*grid, |update| {
                     update.resize((width.value(40), height.value(12)));
                 });
             }
@@ -804,38 +779,31 @@ impl Harness {
                         .unwrap();
                 }
             }
-            Op::Spawn { surface, changes } => {
-                let Some(surface) = self.surface(*surface) else {
-                    return;
+            Op::Spawn { grid, changes } => {
+                let grid = match self.terminal(*grid) {
+                    Some(entity) => self.grid(entity).clone(),
+                    None => TerminalGrid::new((40, 12)),
                 };
-                self.spawn(surface, FontChoice::JetBrainsRegular, changes);
+                self.spawn(grid, FontChoice::JetBrainsRegular, changes);
             }
             Op::Despawn { terminal } => self.stop(*terminal, true),
             Op::RemoveRenderer { terminal } => self.stop(*terminal, false),
-            Op::SetSurface { terminal, surface } => {
-                let (Some(entity), Some(surface)) =
-                    (self.terminal(*terminal), self.surface(*surface))
+            Op::SetGrid { terminal, grid } => {
+                let (Some(entity), Some(source)) = (self.terminal(*terminal), self.terminal(*grid))
                 else {
                     return;
                 };
-                self.app
+                let replacement = self.grid(source).clone();
+                // Assigning a grid keeps the component, so the texture stays.
+                *self
+                    .app
                     .world_mut()
-                    .entity_mut(entity)
-                    .insert(TerminalRenderer::new(surface));
-                // Replacing the renderer must keep (or at least publish) a texture.
-                let image = self.image_of(entity);
-                if let Some(slot) = self.terminals.iter_mut().find(|(e, _)| *e == entity) {
-                    if slot.1 != image {
-                        self.released.push(slot.1);
-                    }
-                    slot.1 = image;
-                }
+                    .get_mut::<TerminalGrid>(entity)
+                    .unwrap() = replacement;
             }
-            Op::NewSurface { width, height } => {
-                if self.surfaces.len() < 4 {
-                    self.surfaces
-                        .push(TerminalSurface::new((width.value(40), height.value(12))));
-                }
+            Op::NewGrid { width, height } => {
+                let grid = TerminalGrid::new((width.value(40), height.value(12)));
+                self.spawn(grid, FontChoice::JetBrainsRegular, &[]);
             }
             Op::Frames { count, millis } => {
                 for _ in 0..(count % 4 + 1) {
@@ -863,8 +831,9 @@ impl Harness {
                     .world()
                     .get::<TerminalTexture>(entity)
                     .unwrap()
-                    .status();
-                self.check_status(entity, status);
+                    .status()
+                    .clone();
+                self.check_status(entity, &status);
                 status
             })
             .collect();
@@ -877,22 +846,18 @@ impl Harness {
             for (&(entity, _), status) in self.terminals.iter().zip(&statuses) {
                 let world = self.app.world();
                 let texture = world.get::<TerminalTexture>(entity).unwrap();
-                assert_eq!(texture.status(), *status, "status changed while idle");
-                // Shaping failures are documented to retry every update.
-                if *status != TerminalStatus::ShapingFailed {
-                    assert_eq!(
-                        *world.get::<TerminalStats>(entity).unwrap(),
-                        TerminalStats::default(),
-                        "idle terminal did work ({status:?})"
-                    );
-                }
+                assert_eq!(texture.status(), status, "status changed while idle");
+                // Failed terminals wait for an input to change, like idle ones.
+                assert_eq!(
+                    *world.get::<TerminalStats>(entity).unwrap(),
+                    TerminalStats::default(),
+                    "idle terminal did work ({status:?})"
+                );
             }
         }
-        if !statuses.contains(&TerminalStatus::ShapingFailed) {
-            let changes = self.app.world().resource::<Changes>();
-            assert_eq!(changes.stats, 0, "TerminalStats changed while idle");
-            assert_eq!(changes.textures, 0, "TerminalTexture changed while idle");
-        }
+        let changes = self.app.world().resource::<Changes>();
+        assert_eq!(changes.stats, 0, "TerminalStats changed while idle");
+        assert_eq!(changes.textures, 0, "TerminalTexture changed while idle");
         // Images of terminals that stopped rendering are released.
         let images = self.app.world().resource::<Assets<Image>>();
         for image in &self.released {
@@ -904,12 +869,15 @@ impl Harness {
     }
 
     /// Checks the settled status against the configuration.
-    fn check_status(&self, entity: Entity, status: TerminalStatus) {
+    fn check_status(&self, entity: Entity, status: &TerminalStatus) {
         let world = self.app.world();
         let config = world.get::<TerminalRenderConfig>(entity).unwrap();
-        let surface = world.get::<TerminalRenderer>(entity).unwrap().surface();
+        let grid = self.grid(entity).size();
         if !config.sizing.is_valid() {
-            assert_eq!(status, TerminalStatus::InvalidSizing);
+            assert_eq!(
+                *status,
+                TerminalStatus::Failed(TerminalFailure::InvalidSizing)
+            );
             return;
         }
         let fonts = world.resource::<Assets<Font>>();
@@ -944,19 +912,18 @@ impl Harness {
             }
         }
         if invalid {
-            assert_eq!(status, TerminalStatus::FontFailed);
+            assert_eq!(*status, TerminalStatus::Failed(TerminalFailure::FontFailed));
             return;
         }
         if missing {
-            assert_eq!(status, TerminalStatus::Loading);
+            assert_eq!(*status, TerminalStatus::Loading);
             return;
         }
         match status {
-            TerminalStatus::Ready => {}
-            TerminalStatus::TextureTooLarge => {
+            TerminalStatus::Ready(_) => {}
+            TerminalStatus::Failed(TerminalFailure::TextureTooLarge) => {
                 // Only plausible when the request is large.
                 let scale = resolved_scale(config.raster.scale);
-                let grid = surface.info().size;
                 let (cell, font_size) = match config.sizing {
                     TerminalSizing::Fixed {
                         cell_size,
@@ -976,7 +943,7 @@ impl Harness {
                     "TextureTooLarge for a small request: {bound}"
                 );
             }
-            TerminalStatus::ShapingFailed if may_fail_shaping => {}
+            TerminalStatus::Failed(TerminalFailure::ShapingFailed) if may_fail_shaping => {}
             other => panic!("unexpected settled status {other:?} for loaded fonts"),
         }
     }
@@ -992,20 +959,12 @@ fn resolved_scale(scale: f32) -> f32 {
 
 /// Documented properties of a measured geometry.
 fn check_geometry(
-    surface: &TerminalSurface,
+    source: &TerminalGrid,
     config: &TerminalRenderConfig,
     geometry: &TerminalGeometry,
 ) {
     let grid = geometry.grid();
-    assert_eq!(
-        grid,
-        surface.info().size,
-        "measured grid differs from surface"
-    );
-    assert!(
-        geometry.matches_surface(surface),
-        "geometry does not match its surface"
-    );
+    assert_eq!(grid, source.size(), "measured grid differs from the grid");
     let scale = resolved_scale(config.raster.scale);
     assert_eq!(geometry.raster_scale(), scale);
     let cell = geometry.physical_cell_size();
