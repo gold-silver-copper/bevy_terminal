@@ -1,0 +1,42 @@
+[package]
+name = "bevy_terminal_fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Kept out of the main workspace: libFuzzer targets build only on nightly.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+bevy_terminal_ratatui = { path = "..", default-features = false }
+bevy = { version = "0.20", default-features = false, features = ["std", "bevy_asset", "bevy_text", "bevy_image"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["std", "underline-color"] }
+
+[[bin]]
+name = "surface"
+path = "fuzz_targets/surface.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ratatui_backend"
+path = "fuzz_targets/ratatui_backend.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "renderer"
+path = "fuzz_targets/renderer.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
