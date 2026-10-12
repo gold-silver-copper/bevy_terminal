@@ -1199,6 +1199,7 @@ version = "0.8.1"
 dependencies = [
  "bevy",
  "bytemuck",
+ "parking_lot",
  "skrifa",
 ]
 

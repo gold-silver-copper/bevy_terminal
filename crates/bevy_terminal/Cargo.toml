@@ -45,6 +45,8 @@ bevy = { version = "0.20", default-features = false, features = [
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # Already in the graph through bevy_render; derives `Pod` for GPU instances.
 bytemuck = { version = "1.5", features = ["derive"] }
+# Already in the graph through Bevy; a lock the updating thread can take again.
+parking_lot = "0.12"
 
 [dev-dependencies]
 bevy = { version = "0.20", default-features = false, features = ["2d", "ui", "system_font_discovery"] }
