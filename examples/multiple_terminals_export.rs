@@ -185,7 +185,7 @@ fn draw_left(terminal: &mut RatatuiTerminal, revision: u64) {
                 )),
                 Line::from(format!("revision {revision}")),
                 Line::default(),
-                Line::from("This terminal keeps its 37 × 12 grid."),
+                Line::from("This one keeps its 37 × 12 grid."),
             ]))
             .block(Block::new().borders(Borders::ALL).title(" terminal A ")),
             area,

@@ -138,7 +138,7 @@ fn spawn_right_terminal(
 fn setup(mut commands: Commands, fonts: Res<fonts::ExampleFonts>) {
     commands.spawn(Camera2d);
     commands.spawn((
-        Text::new("Two Ratatui surfaces · two textures · one Bevy app"),
+        Text::new("Two Ratatui terminals · two textures · one Bevy app"),
         fonts.text_font(22.0),
         TextColor(bevy::prelude::Color::WHITE),
         Node {
