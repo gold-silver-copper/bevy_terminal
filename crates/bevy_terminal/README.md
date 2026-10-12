@@ -63,9 +63,8 @@ fn write(mut grids: Query<&mut TerminalGrid>) {
 
 Other components can own a grid: implement `TerminalSource` for them and add
 `TerminalSourcePlugin::<T>` (the Ratatui adapter does this for its terminal).
-A grid kept in a resource is drawn into every entity marked
-`ResourceTerminal<R>` after adding `TerminalResourcePlugin::<R>`; each of those
-entities has its own configuration and texture.
+Every terminal is an entity with one texture; show that image in as many places
+as needed.
 
 Producers on other threads, such as a PTY reader, send their output over a
 channel that a system drains into the grid before `TerminalSystems::Sync`.

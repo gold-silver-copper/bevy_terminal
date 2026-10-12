@@ -1,8 +1,8 @@
 use super::*;
 use super::{gpu::collect_batch_scenes, metrics::*, scene::*, shaping::*};
 use crate::grid::TerminalGrid;
+use crate::render::TerminalFailure;
 use crate::render::grid_for;
-use crate::render::{ResourceTerminal, TerminalFailure, TerminalResourcePlugin, TerminalSource};
 use crate::render::{TerminalSizing, pixel_rect};
 use crate::scene::{GridSize, StyleFlags, TerminalCell, TerminalStyle};
 
@@ -460,71 +460,6 @@ fn replacing_a_grid_with_equal_revision_refreshes_retained_content() {
         app.world().get::<TerminalTexture>(entity).unwrap().image,
         handle
     );
-}
-
-/// A grid kept in a resource is drawn into every entity marked to draw it,
-/// each with its own configuration and texture, and an edit repaints all.
-#[test]
-fn a_resource_grid_is_drawn_by_every_marked_entity() {
-    #[derive(Resource)]
-    struct Screen(TerminalGrid);
-    impl TerminalSource for Screen {
-        fn grid(&self) -> &TerminalGrid {
-            &self.0
-        }
-    }
-    let mut app = text_app();
-    app.add_plugins(TerminalResourcePlugin::<Screen>::default());
-    let mut screen = TerminalGrid::new((4, 2));
-    write_text(&mut screen, "AAAA");
-    app.insert_resource(Screen(screen));
-    let entities = [10.0, 20.0].map(|width| {
-        app.world_mut()
-            .spawn((
-                ResourceTerminal::<Screen>::default(),
-                TerminalRenderConfig {
-                    sizing: TerminalSizing::Fixed {
-                        cell_size: Vec2::new(width, 24.0),
-                        font_size: 16.0,
-                    },
-                    ..default()
-                },
-            ))
-            .id()
-    });
-    for _ in 0..4 {
-        app.update();
-    }
-    let images = entities.map(|entity| {
-        app.world()
-            .get::<TerminalTexture>(entity)
-            .unwrap()
-            .image
-            .clone()
-    });
-    assert_ne!(images[0], images[1]);
-    drain_pending(&mut app);
-    app.world_mut()
-        .resource_mut::<Screen>()
-        .0
-        .set_cell((0, 1), &TerminalCell::new("B"));
-    app.update();
-    for (entity, width) in entities.into_iter().zip([10.0, 20.0]) {
-        let geometry = *app
-            .world()
-            .get::<TerminalTexture>(entity)
-            .unwrap()
-            .measured()
-            .unwrap();
-        assert_eq!(geometry.size(), UVec2::new(width as u32 * 4, 48));
-        let stats = app.world().get::<TerminalStats>(entity).unwrap();
-        assert_eq!(stats.changed_rows, 1);
-    }
-    // Removing the marker releases that terminal's renderer state.
-    app.world_mut()
-        .entity_mut(entities[0])
-        .remove::<ResourceTerminal<Screen>>();
-    assert!(app.world().get::<TerminalTexture>(entities[0]).is_none());
 }
 
 #[test]

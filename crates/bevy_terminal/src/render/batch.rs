@@ -114,14 +114,14 @@ impl<S> Default for TerminalSourcePlugin<S> {
     }
 }
 
-impl<S: TerminalSource + Component> Plugin for TerminalSourcePlugin<S> {
+impl<S: TerminalSource> Plugin for TerminalSourcePlugin<S> {
     fn build(&self, app: &mut App) {
         app.add_plugins(TerminalPlugin);
         register_source::<S>(app);
     }
 }
 
-fn register_source<S: TerminalSource + Component>(app: &mut App) {
+fn register_source<S: TerminalSource>(app: &mut App) {
     app.add_observer(initialize_terminal::<S>)
         .add_observer(release_terminal::<S>)
         .add_systems(
@@ -132,49 +132,11 @@ fn register_source<S: TerminalSource + Component>(app: &mut App) {
         );
 }
 
-/// Draws the grid of the [`TerminalSource`] resource `R` into every entity
-/// marked with [`ResourceTerminal<R>`], for producers that keep their
-/// terminal in a resource. Adds the [`TerminalPlugin`] if it is missing.
-pub struct TerminalResourcePlugin<R>(PhantomData<fn() -> R>);
-
-impl<R> Default for TerminalResourcePlugin<R> {
-    fn default() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl<R: TerminalSource + Resource> Plugin for TerminalResourcePlugin<R> {
-    fn build(&self, app: &mut App) {
-        app.add_plugins(TerminalPlugin)
-            .add_observer(initialize_resource_terminal::<R>)
-            .add_observer(release_terminal::<ResourceTerminal<R>>)
-            .add_systems(
-                Update,
-                sync_resource_terminals::<R>
-                    .in_set(super::TerminalSystems::Sync)
-                    .after(refresh_font_catalog),
-            );
-    }
-}
-
-/// Draws the grid of the resource `R` into this entity's [`TerminalTexture`],
-/// after adding [`TerminalResourcePlugin<R>`]. Several entities may draw the
-/// same resource, each with its own [`TerminalRenderConfig`].
-#[derive(Component)]
-#[require(TerminalRenderConfig)]
-pub struct ResourceTerminal<R: Send + Sync + 'static>(PhantomData<fn() -> R>);
-
-impl<R: Send + Sync + 'static> Default for ResourceTerminal<R> {
-    fn default() -> Self {
-        Self(PhantomData)
-    }
-}
-
 /// Drops the renderer's components when a terminal stops rendering (its
 /// source is removed or the entity despawned), and has the render world drop
 /// its scene and free its atlas.
-fn release_terminal<C: Component>(
-    remove: On<Remove<C>>,
+fn release_terminal<S: TerminalSource>(
+    remove: On<Remove<S>>,
     states: Query<&BatchMainState>,
     mut queue: ResMut<SceneQueue>,
     mut commands: Commands,
@@ -197,17 +159,8 @@ type TerminalQuery<'w, S> = (
     &'w mut TerminalStats,
 );
 
-/// What the sync system touches on a terminal entity besides its source.
-type RendererQuery<'w> = (
-    Entity,
-    Ref<'w, TerminalRenderConfig>,
-    &'w mut BatchMainState,
-    &'w mut TerminalTexture,
-    &'w mut TerminalStats,
-);
-
-/// One [`RendererQuery`] item.
-type RendererItem<'w> = (
+/// A terminal's parts besides its source, as [`sync_entity`] takes them.
+type TerminalParts<'w> = (
     Entity,
     Ref<'w, TerminalRenderConfig>,
     Mut<'w, BatchMainState>,
@@ -311,7 +264,7 @@ impl TextResources<'_> {
 
 /// Gives a terminal its texture, statistics and renderer state as soon as
 /// its source is added.
-fn initialize_terminal<S: TerminalSource + Component>(
+fn initialize_terminal<S: TerminalSource>(
     add: On<Add<S>>,
     terminals: Query<(&S, &TerminalRenderConfig)>,
     images: ResMut<Assets<Image>>,
@@ -320,22 +273,6 @@ fn initialize_terminal<S: TerminalSource + Component>(
 ) {
     if let Ok((terminal, config)) = terminals.get(add.entity) {
         let grid = terminal.grid().size();
-        initialize(add.entity, grid, config, images, device, commands);
-    }
-}
-
-/// [`initialize_terminal`] for a terminal drawing a resource, which may not
-/// exist yet.
-fn initialize_resource_terminal<R: TerminalSource + Resource>(
-    add: On<Add<ResourceTerminal<R>>>,
-    source: Option<Res<R>>,
-    configs: Query<&TerminalRenderConfig>,
-    images: ResMut<Assets<Image>>,
-    device: Option<Res<RenderDevice>>,
-    commands: Commands,
-) {
-    if let Ok(config) = configs.get(add.entity) {
-        let grid = source.map_or(GridSize::new(1, 1), |source| source.grid().size());
         initialize(add.entity, grid, config, images, device, commands);
     }
 }
@@ -829,7 +766,7 @@ struct SyncResources<'w> {
     queue: ResMut<'w, SceneQueue>,
 }
 
-fn sync_terminals<S: TerminalSource + Component>(
+fn sync_terminals<S: TerminalSource>(
     mut terminals: Query<TerminalQuery<S>>,
     resources: SyncResources,
 ) {
@@ -839,21 +776,6 @@ fn sync_terminals<S: TerminalSource + Component>(
     resources.run(|frame| {
         for (entity, source, config, state, output, stats) in &mut terminals {
             let terminal = (entity, config, state, output, stats);
-            sync_entity(terminal, source.grid(), source.is_changed(), frame);
-        }
-    });
-}
-
-fn sync_resource_terminals<R: TerminalSource + Resource>(
-    mut terminals: Query<RendererQuery, With<ResourceTerminal<R>>>,
-    source: Option<Res<R>>,
-    resources: SyncResources,
-) {
-    let Some(source) = source.filter(|_| !terminals.is_empty()) else {
-        return;
-    };
-    resources.run(|frame| {
-        for terminal in &mut terminals {
             sync_entity(terminal, source.grid(), source.is_changed(), frame);
         }
     });
@@ -904,7 +826,7 @@ impl SyncResources<'_> {
 /// Brings one terminal drawing `grid` up to date, and writes its status
 /// and statistics.
 fn sync_entity(
-    (entity, config, mut state, mut output, mut stats): RendererItem<'_>,
+    (entity, config, mut state, mut output, mut stats): TerminalParts<'_>,
     grid: &TerminalGrid,
     source_changed: bool,
     frame: &mut Frame<'_, '_>,

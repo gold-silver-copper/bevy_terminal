@@ -2,17 +2,16 @@
 use crate::{grid::TerminalGrid, scene::GridSize};
 use bevy::prelude::*;
 
-/// Something the renderer can draw: it provides a [`TerminalGrid`].
+/// A component the renderer can draw: it provides a [`TerminalGrid`].
 ///
-/// A component source is drawn into its own entity's [`TerminalTexture`].
-/// [`TerminalGrid`] itself is one, registered by [`super::TerminalPlugin`];
-/// register another with [`super::TerminalSourcePlugin`] (Ratatui terminals
-/// are registered by `bevy_terminal_ratatui`) and require
+/// [`TerminalGrid`] itself is a source, registered by
+/// [`super::TerminalPlugin`]. Register another with
+/// [`super::TerminalSourcePlugin`] (Ratatui terminals are registered by
+/// `bevy_terminal_ratatui`) and require
 /// [`TerminalRenderConfig`](super::TerminalRenderConfig) on it so each
-/// terminal has a configuration. A resource source, registered with
-/// [`super::TerminalResourcePlugin`], is drawn into every entity marked with
-/// [`super::ResourceTerminal`].
-pub trait TerminalSource: Send + Sync + 'static {
+/// terminal has a configuration. Every entity with a registered source is
+/// drawn into its own [`TerminalTexture`].
+pub trait TerminalSource: Component {
     /// The grid to draw.
     fn grid(&self) -> &TerminalGrid;
 }

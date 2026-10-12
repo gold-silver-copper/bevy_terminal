@@ -69,9 +69,9 @@ component and draw again when application content changes.
 
 ## Owning a normal Ratatui terminal
 
-The wrapper is optional. Libraries such as `bevy_ratatui` can own an ordinary
-`ratatui::Terminal<RatatuiBackend>` and retain Ratatui's native viewport APIs.
-The backend owns its grid:
+The wrapper is optional. Code that owns an ordinary
+`ratatui::Terminal<RatatuiBackend>` keeps Ratatui's native viewport APIs. The
+backend owns its grid:
 
 ```rust
 use bevy_terminal_ratatui::prelude::*;
@@ -81,12 +81,9 @@ terminal.draw(|frame| frame.render_widget("raw backend", frame.area())).unwrap()
 assert_eq!(terminal.backend().grid().row_text(0).trim_end(), "raw backend");
 ```
 
-To render a terminal kept in a resource, implement `TerminalSource` for the
-resource (its grid is `self.backend().grid()`), add
-`TerminalResourcePlugin::<Resource>`, and spawn an entity with
-`ResourceTerminal::<Resource>::default()`; several entities may draw the same
-resource. See `integration/bevy-ratatui-context` for a fixture implementing the
-actual consumer's `TerminalContext` trait this way.
+Terminals are drawn from entities. To render one owned by your own component,
+implement `TerminalSource` for it (its grid is `self.backend().grid()`) and add
+`TerminalSourcePlugin::<YourComponent>`.
 
 ## Output and resizing
 

@@ -19,7 +19,7 @@ mod batch;
 mod color;
 mod terminal;
 
-pub use batch::{ResourceTerminal, TerminalPlugin, TerminalResourcePlugin, TerminalSourcePlugin};
+pub use batch::{TerminalPlugin, TerminalSourcePlugin};
 use color::Palette;
 pub use color::TerminalTheme;
 pub use terminal::{

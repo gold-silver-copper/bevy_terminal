@@ -1,8 +1,7 @@
 //! Fuzzes the renderer's main-world pipeline in a headless Bevy app (no GPU):
 //! grid writes, resizes, configuration changes (including invalid values),
-//! font swaps and removals, terminal spawns/despawns, replaced grids and a
-//! grid kept in a resource drawn by several terminals, with frames advanced in
-//! between. After the input ends the app settles and the documented
+//! font swaps and removals, terminal spawns/despawns and replaced grids,
+//! with frames advanced in between. After the input ends the app settles and the documented
 //! guarantees are checked: status per configuration, measured geometry
 //! consistent with the grid and image, and idle terminals doing no work.
 
@@ -374,8 +373,7 @@ enum Op {
     },
     RemoveFont(FontChoice),
     RestoreFont(FontChoice),
-    /// Spawns a terminal drawing the shared grid, or one owning a clone of
-    /// the picked terminal's grid.
+    /// Spawns a terminal owning a clone of the picked terminal's grid.
     Spawn {
         grid: u8,
         changes: Vec<ConfigChange>,
@@ -427,23 +425,6 @@ fn count_changes(
     changes.stats += stats.iter().count();
 }
 
-/// A grid kept in a resource, drawn by every `ResourceTerminal<Shared>`.
-#[derive(Resource)]
-struct Shared(TerminalGrid);
-
-impl TerminalSource for Shared {
-    fn grid(&self) -> &TerminalGrid {
-        &self.0
-    }
-}
-
-/// Where a grid lives.
-#[derive(Clone, Copy)]
-enum Source {
-    Shared,
-    Owned(Entity),
-}
-
 struct Harness {
     app: App,
     fonts: HashMap<FontChoice, Handle<Font>>,
@@ -467,7 +448,7 @@ impl Harness {
         .init_asset::<Image>()
         .init_resource::<Time>()
         .init_resource::<Changes>()
-        .add_plugins((TerminalPlugin, TerminalResourcePlugin::<Shared>::default()))
+        .add_plugins(TerminalPlugin)
         .add_systems(Update, count_changes.after(TerminalSystems::Sync));
         Self {
             app,
@@ -502,42 +483,22 @@ impl Harness {
         }
     }
 
-    /// The grid `index` picks: the shared one, or a terminal's own.
-    fn source(&self, index: u8) -> Source {
-        let owned: Vec<Entity> = self
-            .terminals
-            .iter()
-            .map(|(entity, _)| *entity)
-            .filter(|entity| self.app.world().get::<TerminalGrid>(*entity).is_some())
-            .collect();
-        match usize::from(index) % (owned.len() + 1) {
-            0 => Source::Shared,
-            i => Source::Owned(owned[i - 1]),
-        }
-    }
-
-    fn grid(&self, source: Source) -> &TerminalGrid {
-        match source {
-            Source::Shared => &self.app.world().resource::<Shared>().0,
-            Source::Owned(entity) => self.app.world().get::<TerminalGrid>(entity).unwrap(),
-        }
-    }
-
-    fn write(&mut self, index: u8, write: impl FnOnce(&mut TerminalGrid)) {
-        let source = self.source(index);
-        let world = self.app.world_mut();
-        match source {
-            Source::Shared => write(&mut world.resource_mut::<Shared>().0),
-            Source::Owned(entity) => write(&mut world.get_mut::<TerminalGrid>(entity).unwrap()),
-        }
-    }
-
     /// The grid a terminal draws.
-    fn grid_of(&self, entity: Entity) -> &TerminalGrid {
-        let world = self.app.world();
-        world
-            .get::<TerminalGrid>(entity)
-            .unwrap_or_else(|| &world.resource::<Shared>().0)
+    fn grid(&self, entity: Entity) -> &TerminalGrid {
+        self.app.world().get::<TerminalGrid>(entity).unwrap()
+    }
+
+    /// Writes to the grid of the terminal `index` picks.
+    fn write(&mut self, index: u8, write: impl FnOnce(&mut TerminalGrid)) {
+        if let Some(entity) = self.terminal(index) {
+            write(
+                &mut self
+                    .app
+                    .world_mut()
+                    .get_mut::<TerminalGrid>(entity)
+                    .unwrap(),
+            );
+        }
     }
 
     fn terminal(&self, index: u8) -> Option<Entity> {
@@ -599,12 +560,7 @@ impl Harness {
         }
     }
 
-    fn spawn(
-        &mut self,
-        source: Option<TerminalGrid>,
-        regular: FontChoice,
-        changes: &[ConfigChange],
-    ) {
+    fn spawn(&mut self, grid: TerminalGrid, regular: FontChoice, changes: &[ConfigChange]) {
         if self.terminals.len() >= MAX_TERMINALS {
             return;
         }
@@ -617,12 +573,7 @@ impl Harness {
         for change in changes.iter().take(8) {
             self.apply_change(&mut config, change);
         }
-        let mut terminal = self.app.world_mut().spawn(config);
-        match source {
-            Some(grid) => terminal.insert(grid),
-            None => terminal.insert(ResourceTerminal::<Shared>::default()),
-        };
-        let entity = terminal.id();
+        let entity = self.app.world_mut().spawn((grid, config)).id();
         let image = self.image_of(entity);
         self.terminals.push((entity, image));
     }
@@ -653,7 +604,7 @@ impl Harness {
             self.app
                 .world_mut()
                 .entity_mut(entity)
-                .remove::<(TerminalGrid, ResourceTerminal<Shared>)>();
+                .remove::<TerminalGrid>();
             let world = self.app.world();
             assert!(world.get::<TerminalTexture>(entity).is_none());
             assert!(world.get::<TerminalStats>(entity).is_none());
@@ -687,7 +638,7 @@ impl Harness {
             let Some(geometry) = texture.measured() else {
                 continue;
             };
-            check_geometry(self.grid_of(entity), config, geometry);
+            check_geometry(self.grid(entity), config, geometry);
             let image_size = images.get(image).unwrap().size();
             assert_eq!(
                 image_size,
@@ -699,8 +650,7 @@ impl Harness {
 
     fn run(&mut self, input: &Input) {
         let size = (input.width.value(40), input.height.value(12));
-        self.app.insert_resource(Shared(TerminalGrid::new(size)));
-        self.spawn(None, input.regular, &input.initial);
+        self.spawn(TerminalGrid::new(size), input.regular, &input.initial);
         for op in input.ops.iter().take(MAX_OPS) {
             if self.frames >= MAX_FRAMES {
                 break;
@@ -830,27 +780,30 @@ impl Harness {
                 }
             }
             Op::Spawn { grid, changes } => {
-                let grid = match self.source(*grid) {
-                    Source::Shared => None,
-                    source => Some(self.grid(source).clone()),
+                let grid = match self.terminal(*grid) {
+                    Some(entity) => self.grid(entity).clone(),
+                    None => TerminalGrid::new((40, 12)),
                 };
                 self.spawn(grid, FontChoice::JetBrainsRegular, changes);
             }
             Op::Despawn { terminal } => self.stop(*terminal, true),
             Op::RemoveRenderer { terminal } => self.stop(*terminal, false),
             Op::SetGrid { terminal, grid } => {
-                let Some(entity) = self.terminal(*terminal) else {
+                let (Some(entity), Some(source)) = (self.terminal(*terminal), self.terminal(*grid))
+                else {
                     return;
                 };
-                let replacement = self.grid(self.source(*grid)).clone();
+                let replacement = self.grid(source).clone();
                 // Assigning a grid keeps the component, so the texture stays.
-                if let Some(mut grid) = self.app.world_mut().get_mut::<TerminalGrid>(entity) {
-                    *grid = replacement;
-                }
+                *self
+                    .app
+                    .world_mut()
+                    .get_mut::<TerminalGrid>(entity)
+                    .unwrap() = replacement;
             }
             Op::NewGrid { width, height } => {
                 let grid = TerminalGrid::new((width.value(40), height.value(12)));
-                self.spawn(Some(grid), FontChoice::JetBrainsRegular, &[]);
+                self.spawn(grid, FontChoice::JetBrainsRegular, &[]);
             }
             Op::Frames { count, millis } => {
                 for _ in 0..(count % 4 + 1) {
@@ -919,7 +872,7 @@ impl Harness {
     fn check_status(&self, entity: Entity, status: &TerminalStatus) {
         let world = self.app.world();
         let config = world.get::<TerminalRenderConfig>(entity).unwrap();
-        let grid = self.grid_of(entity).size();
+        let grid = self.grid(entity).size();
         if !config.sizing.is_valid() {
             assert_eq!(
                 *status,
