@@ -257,76 +257,33 @@ pub(super) struct FaceLineMetrics {
     pub(super) underline_thickness: f32,
 }
 
-/// The regular face's line box (ascent + descent + leading) and cap height
-/// in physical pixels at `font_size`, read from the font's metrics tables the
-/// way terminal emulators size their rows (`OS/2` typographic metrics when the
-/// font asks for them, `hhea` otherwise). `None` when the face cannot be
-/// resolved or loaded, in which case the block-glyph measurement stands alone.
-pub(super) fn font_line_box(
-    config: &TerminalRenderConfig,
-    font_size: f32,
-    fonts: &Assets<Font>,
-    font_cx: &mut FontCx,
-) -> Option<FaceLineMetrics> {
-    use skrifa::MetadataProvider as _;
-    // A font asset is registered in the collection under its alias; every
-    // other source resolves through Bevy's generic-family mapping.
-    let family = match &config.font.regular {
-        FontSource::Handle(handle) => fonts.get(handle.id()).map(|font| font.alias.clone()),
-        source => font_cx.get_family(source).map(str::to_owned),
-    };
-    let Some(family) = family.filter(|family| !family.is_empty()) else {
-        debug!(
-            "bevy_terminal: line box: no family for {:?}",
-            config.font.regular
-        );
-        return None;
-    };
-    let Some(family_info) = font_cx.context.collection.family_by_name(&family) else {
-        debug!("bevy_terminal: line box: family {family:?} not in the collection");
-        return None;
-    };
-    let Some(info) = family_info.default_font().cloned() else {
-        debug!("bevy_terminal: line box: family {family:?} has no fonts");
-        return None;
-    };
-    let Some(blob) = info.load(Some(&mut font_cx.context.source_cache)) else {
-        debug!("bevy_terminal: line box: font data of {family:?} could not be loaded");
-        return None;
-    };
-    let Ok(font) = skrifa::FontRef::from_index(blob.as_ref(), info.index()) else {
-        debug!("bevy_terminal: line box: font data of {family:?} could not be parsed");
-        return None;
-    };
-    let metrics = font.metrics(
-        skrifa::instance::Size::new(font_size),
-        skrifa::instance::LocationRef::default(),
-    );
-    let line_gap = metrics.leading.max(0.0);
-    let height = metrics.ascent + metrics.descent.abs() + line_gap;
-    debug!(
-        "bevy_terminal: line box of {family:?} at {font_size:.2}px: ascent {} descent {} leading {} upem {} -> {height:.2}px",
-        metrics.ascent, metrics.descent, metrics.leading, metrics.units_per_em
-    );
-    let cap_height = metrics
-        .cap_height
-        .filter(|cap| *cap > 0.0)
-        .unwrap_or(0.75 * metrics.ascent);
-    let x_height = metrics
-        .x_height
-        .filter(|x| *x > 0.0)
-        .unwrap_or(0.75 * cap_height);
-    let underline_thickness = metrics
-        .underline
-        .map(|underline| underline.thickness)
-        .filter(|thickness| *thickness > 0.0)
-        .unwrap_or(0.15 * x_height);
-    (height.is_finite() && height > 0.0).then_some(FaceLineMetrics {
-        height,
-        line_gap,
-        cap_height,
-        underline_thickness,
-    })
+impl FaceLineMetrics {
+    /// The face's metrics as Bevy's text layout reports them for a shaped run
+    /// (`OS/2` typographic metrics when the font asks for them, `hhea`
+    /// otherwise, the way terminal emulators size their rows); `None` when
+    /// they describe no line.
+    pub(super) fn new(
+        ascent: f32,
+        descent: f32,
+        leading: f32,
+        cap_height: Option<f32>,
+        x_height: Option<f32>,
+        underline_thickness: f32,
+    ) -> Option<Self> {
+        let line_gap = leading.max(0.0);
+        let height = ascent + descent.abs() + line_gap;
+        let cap_height = cap_height.filter(|cap| *cap > 0.0).unwrap_or(0.75 * ascent);
+        let x_height = x_height.filter(|x| *x > 0.0).unwrap_or(0.75 * cap_height);
+        let underline_thickness = Some(underline_thickness)
+            .filter(|thickness| *thickness > 0.0)
+            .unwrap_or(0.15 * x_height);
+        (height.is_finite() && height > 0.0).then_some(Self {
+            height,
+            line_gap,
+            cap_height,
+            underline_thickness,
+        })
+    }
 }
 
 /// Upper bound on cell-height refinement rounds.
@@ -356,7 +313,12 @@ pub(super) fn refine_metrics(
     // row, so the text box does not grow it back.
     let may_grow = matches!(config.sizing, super::super::TerminalSizing::FitCellWidth(_))
         || (font_driven && line_height >= 1.0);
-    let face_line = font_line_box(config, raster.font_size, cx.fonts, cx.font_cx);
+    let layout = RunLayout {
+        config,
+        raster,
+        viewport: Vec2::splat(4096.0),
+    };
+    let face_line = shape_run("0", Face::Regular, layout, cx).and_then(|run| run.face);
     if (may_grow || font_driven)
         && let Some(face_line) = face_line
     {

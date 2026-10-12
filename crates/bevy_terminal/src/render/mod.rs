@@ -1,7 +1,8 @@
-//! Rendering: the [`TerminalPlugin`], the [`TerminalRenderer`] component and its
-//! configuration, the renderer-owned [`TerminalTexture`], per-terminal
-//! [`TerminalStats`], and the [`TerminalTheme`]. Add the plugin once and spawn
-//! a `TerminalRenderer` per rendered surface; applications present its image.
+//! Rendering: the [`TerminalPlugin`], the [`TerminalRenderConfig`], the
+//! renderer-owned [`TerminalTexture`], per-terminal [`TerminalStats`], and the
+//! [`TerminalTheme`]. Add the plugin once and spawn a
+//! [`TerminalGrid`] (or another [`TerminalSource`])
+//! per terminal; applications present its image.
 
 use bevy::{
     ecs::schedule::SystemSet,
@@ -9,17 +10,21 @@ use bevy::{
     text::{FontHinting, FontSource, FontStyle, FontWeight},
 };
 
-use crate::scene::{StyleFlags, TerminalCell, TerminalSnapshot};
+use crate::{
+    grid::TerminalGrid,
+    scene::{StyleFlags, TerminalCell},
+};
 
 mod batch;
 mod color;
 mod terminal;
 
-pub use batch::TerminalPlugin;
+pub use batch::{ResourceTerminal, TerminalPlugin, TerminalResourcePlugin, TerminalSourcePlugin};
 use color::Palette;
 pub use color::TerminalTheme;
 pub use terminal::{
-    TerminalGeometry, TerminalRenderer, TerminalStats, TerminalStatus, TerminalTexture, grid_for,
+    TerminalFailure, TerminalGeometry, TerminalSource, TerminalStats, TerminalStatus,
+    TerminalTexture, grid_for,
 };
 
 /// Visual shape used for the terminal cursor.
@@ -249,8 +254,9 @@ impl Default for TerminalSizing {
 /// every Unicode glyph; text runs are anchored to cell coordinates to prevent
 /// cumulative drift either way.
 ///
-/// This is a component: every [`TerminalRenderer`] entity requires one (a default is
-/// inserted automatically). Mutating it rebuilds only that terminal.
+/// This is a component: every terminal ([`TerminalGrid`] or another
+/// [`TerminalSource`]) requires one (a default is inserted automatically).
+/// Mutating it rebuilds only that terminal.
 #[derive(Clone, Component, Debug, Default, PartialEq)]
 pub struct TerminalRenderConfig {
     /// Requested sizing policy; effective geometry is exposed by the texture.
@@ -299,9 +305,10 @@ impl Default for RasterConfig {
 /// Public system set for ordering application systems around terminal syncing.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, SystemSet)]
 pub enum TerminalSystems {
-    /// Copies the latest surface state into the renderer and builds the frame's scene.
-    /// Newly spawned terminals are initialized earlier, by an observer that
-    /// runs when their [`TerminalRenderer`] is added.
+    /// Reads each terminal's grid and builds the frame's scene. Producers that
+    /// write before it are drawn this frame. Newly spawned terminals get their
+    /// [`TerminalTexture`] earlier, from an observer that runs when their
+    /// [`TerminalSource`] is added.
     Sync,
 }
 
@@ -363,7 +370,7 @@ fn pixel_rect(x: f32, y: f32, width: f32, height: f32) -> Rect {
 }
 
 /// Returns the number of columns rendered for the cell at `column`. The
-/// surface keeps every wide anchor followed by its continuation cells, so this
+/// grid keeps every wide anchor followed by its continuation cells, so this
 /// is its span, clipped to the row.
 fn cell_span(cells: &[TerminalCell], column: usize) -> usize {
     let remaining = cells.len().saturating_sub(column);
@@ -372,8 +379,8 @@ fn cell_span(cells: &[TerminalCell], column: usize) -> usize {
     })
 }
 
-fn cursor_should_be_visible(snapshot: &TerminalSnapshot) -> bool {
-    snapshot.cursor_visible() && snapshot.size().contains(snapshot.cursor_position())
+fn cursor_should_be_visible(grid: &TerminalGrid) -> bool {
+    grid.cursor_visible() && grid.size().contains(grid.cursor_position())
 }
 
 fn blink_hidden(elapsed: f64, frequency_hz: Option<f32>) -> bool {

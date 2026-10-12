@@ -19,10 +19,9 @@ use bevy::{
     window::WindowResolution,
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
-use bevy_terminal_ratatui::TerminalRenderer;
 use bevy_terminal_ratatui::prelude::{
-    BlinkConfig, CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
-    TerminalSystems,
+    BlinkConfig, CursorConfig, RasterConfig, RatatuiPlugin, RatatuiTerminal, TerminalRenderConfig,
+    TerminalSizing, TerminalSystems,
 };
 
 const CELL_WIDTH: f32 = 10.0;
@@ -47,7 +46,6 @@ fn main() {
         return;
     }
 
-    let surface = catalog::draw_surface(&catalog::EXAMPLES[0]);
     let config = TerminalRenderConfig {
         sizing: TerminalSizing::FitCellWidth(Vec2::new(CELL_WIDTH, CELL_HEIGHT)),
         raster: RasterConfig {
@@ -86,12 +84,12 @@ fn main() {
         example_index: 0,
         frames_on_example: 0,
     })
-    .add_plugins((export_plugin, TerminalPlugin, app::presentation))
+    .add_plugins((export_plugin, RatatuiPlugin, app::presentation))
     .add_systems(Startup, {
         let config = fonts.configure(config);
         move |mut commands: Commands| {
             commands.spawn(app::ui_terminal(
-                TerminalRenderer::new(surface.clone()),
+                catalog::draw_terminal(&catalog::EXAMPLES[0]),
                 config.clone(),
                 Vec2::splat(MARGIN),
             ));
@@ -163,7 +161,7 @@ fn setup_export(
 }
 
 fn advance_capture(
-    terminals: Query<&TerminalRenderer>,
+    mut terminal: Single<&mut RatatuiTerminal>,
     mut sequence: ResMut<CaptureSequence>,
     mut settings: Query<&mut ImageExportSettings>,
     mut exit: MessageWriter<AppExit>,
@@ -180,10 +178,7 @@ fn advance_capture(
         return;
     };
 
-    let terminal = terminals
-        .single()
-        .expect("the exporter creates exactly one terminal");
-    catalog::redraw_surface(terminal.surface(), spec);
+    catalog::redraw_terminal(&mut terminal, spec);
     for mut settings in &mut settings {
         settings.output_dir = output_dir(spec.slug);
     }

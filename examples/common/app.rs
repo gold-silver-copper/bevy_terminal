@@ -3,20 +3,20 @@
 #![allow(dead_code)]
 
 use bevy::{prelude::*, window::PrimaryWindow};
+use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::bevy_terminal::render::grid_for;
 use bevy_terminal_ratatui::prelude::{TerminalRenderConfig, TerminalSystems, TerminalTexture};
-use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 
 /// A terminal presented through a Bevy UI image node positioned absolutely at
 /// `origin` (logical pixels). The example presentation system sizes the node; place it however
 /// you like — this helper just uses absolute positioning.
 pub fn ui_terminal(
-    renderer: TerminalRenderer,
+    terminal: impl Bundle,
     config: TerminalRenderConfig,
     origin: Vec2,
 ) -> impl Bundle {
     (
-        renderer,
+        terminal,
         config,
         ImageNode::default(),
         Node {
@@ -29,12 +29,13 @@ pub fn ui_terminal(
 }
 
 /// A headless terminal: only the texture is produced.
-pub fn headless_terminal(renderer: TerminalRenderer, config: TerminalRenderConfig) -> impl Bundle {
-    (renderer, config)
+pub fn headless_terminal(terminal: impl Bundle, config: TerminalRenderConfig) -> impl Bundle {
+    (terminal, config)
 }
 
-/// Adopts current pixel geometry and fits the example's grid to logical space.
-/// Returns whether the grid changed, so callers can redraw only when needed.
+/// Fits the example's grid to logical space at the measured cell size, once
+/// the geometry describes the current grid. Returns whether the grid changed,
+/// so callers can redraw only when needed.
 pub fn fit_grid(
     terminal: &mut RatatuiTerminal,
     texture: &TerminalTexture,
@@ -43,11 +44,11 @@ pub fn fit_grid(
     let Some(geometry) = texture.measured() else {
         return false;
     };
-    if !terminal.backend_mut().set_geometry(geometry) {
+    if geometry.grid() != terminal.grid().size() {
         return false;
     }
     let grid = grid_for(available, geometry.cell_size());
-    if terminal.surface().info().size == grid {
+    if terminal.grid().size() == grid {
         return false;
     }
     terminal.resize_grid(grid.width, grid.height);

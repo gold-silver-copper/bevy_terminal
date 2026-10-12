@@ -4,9 +4,8 @@ mod common;
 
 use bevy::{prelude::*, render::RenderPlugin, window::WindowResolution};
 use bevy_image_export::ImageExportPlugin;
-use bevy_terminal_ratatui::TerminalRenderer;
 use bevy_terminal_ratatui::prelude::{
-    CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
+    CursorConfig, RasterConfig, RatatuiPlugin, TerminalRenderConfig, TerminalSizing,
 };
 
 const EXPORT_FRAMES: u32 = 8;
@@ -46,10 +45,10 @@ fn main() {
     let fonts = common::fonts::load(&mut app);
     let config = fonts.configure(config);
     common::export::export_terminals_on_ready(&mut app, "target/render-qa-2x");
-    app.add_plugins((export_plugin, TerminalPlugin))
+    app.add_plugins((export_plugin, RatatuiPlugin))
         .add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(common::app::headless_terminal(
-                TerminalRenderer::new(common::demo_surface()),
+                common::demo_terminal(),
                 config.clone(),
             ));
         })

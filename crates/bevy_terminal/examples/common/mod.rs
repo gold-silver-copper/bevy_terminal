@@ -1,7 +1,7 @@
 //! Shared scene and font setup for the `bevy_terminal` examples.
 //!
-//! Everything here writes cells directly through the neutral surface API; no
-//! terminal UI library is involved.
+//! Everything here writes cells directly into a `TerminalGrid`; no terminal UI
+//! library is involved.
 
 #![allow(dead_code)]
 
@@ -36,17 +36,16 @@ pub fn configure_fonts(app: &mut App, mut config: TerminalRenderConfig) -> Termi
 }
 
 /// Builds a representative scene: a box, styled text, a wide glyph, colors and a cursor.
-pub fn scene_surface() -> TerminalSurface {
-    let surface = TerminalSurface::new((COLUMNS, ROWS));
-    surface.update(draw_scene);
-    surface
+pub fn scene_grid() -> TerminalGrid {
+    let mut grid = TerminalGrid::new((COLUMNS, ROWS));
+    draw_scene(&mut grid);
+    grid
 }
 
 /// Draws the representative scene into `update` at its current size: the frame
 /// follows the grid, the content keeps its layout (cells outside a smaller grid
-/// are ignored by the surface).
-pub fn draw_scene(update: &mut SurfaceUpdate<'_>) {
-    let update = &mut *update;
+/// are ignored by the grid).
+pub fn draw_scene(update: &mut TerminalGrid) {
     let size = update.size();
     update.clear();
     let border = TerminalStyle::new().fg(TerminalColor::CYAN);
@@ -157,14 +156,14 @@ pub fn draw_scene(update: &mut SurfaceUpdate<'_>) {
     update.set_cursor_visible(true);
 }
 
-/// A second, smaller scene demonstrating an independent surface.
-pub fn status_surface() -> TerminalSurface {
-    let surface = TerminalSurface::new((24, 5));
-    surface.update(draw_status);
-    surface
+/// A second, smaller scene demonstrating an independent terminal.
+pub fn status_grid() -> TerminalGrid {
+    let mut grid = TerminalGrid::new((24, 5));
+    draw_status(&mut grid);
+    grid
 }
 
-fn draw_status(update: &mut SurfaceUpdate<'_>) {
+fn draw_status(update: &mut TerminalGrid) {
     draw_box(
         update,
         0,
@@ -177,7 +176,7 @@ fn draw_status(update: &mut SurfaceUpdate<'_>) {
         update,
         2,
         1,
-        "second surface",
+        "second terminal",
         TerminalStyle::new().with(StyleFlags::BOLD),
     );
     write_text(
@@ -197,13 +196,7 @@ fn draw_status(update: &mut SurfaceUpdate<'_>) {
 }
 
 /// Writes ASCII/BMP text one cell per `char`.
-pub fn write_text(
-    update: &mut SurfaceUpdate<'_>,
-    x: u16,
-    y: u16,
-    text: &str,
-    style: TerminalStyle,
-) {
+pub fn write_text(update: &mut TerminalGrid, x: u16, y: u16, text: &str, style: TerminalStyle) {
     for (offset, symbol) in text.chars().enumerate() {
         let cell = TerminalCell::from(symbol).with_style(style);
         update.set_cell((x + offset as u16, y), &cell);
@@ -212,7 +205,7 @@ pub fn write_text(
 
 /// Draws a light box-drawing frame.
 pub fn draw_box(
-    update: &mut SurfaceUpdate<'_>,
+    update: &mut TerminalGrid,
     x: u16,
     y: u16,
     width: u16,

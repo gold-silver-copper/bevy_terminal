@@ -1,7 +1,7 @@
-//! The renderer-neutral scene model: grid coordinates, cells, symbols, styles,
-//! colors, wide-glyph occupancy and owned snapshots. Producers translate their
-//! own representation into these types once, when submitting cells to a
-//! [`crate::surface::TerminalSurface`].
+//! The renderer-neutral cell model: grid coordinates, cells, symbols, styles,
+//! colors and wide-glyph occupancy. Producers translate their own
+//! representation into these types once, when writing cells to a
+//! [`crate::grid::TerminalGrid`].
 
 use std::fmt;
 
@@ -27,9 +27,9 @@ impl GridSize {
     }
 
     /// Drops rows until the grid holds at most
-    /// [`TerminalSurface::MAX_CELLS`](crate::surface::TerminalSurface::MAX_CELLS).
+    /// [`TerminalGrid::MAX_CELLS`](crate::grid::TerminalGrid::MAX_CELLS).
     pub(crate) fn bounded(self) -> Self {
-        let rows = crate::surface::TerminalSurface::MAX_CELLS / usize::from(self.width.max(1));
+        let rows = crate::grid::TerminalGrid::MAX_CELLS / usize::from(self.width.max(1));
         let rows = u16::try_from(rows).unwrap_or(u16::MAX);
         Self::new(self.width, self.height.min(rows))
     }
@@ -368,7 +368,7 @@ impl fmt::Debug for CellSymbol {
 /// The occupancy is set by the constructors ([`TerminalCell::new`],
 /// [`TerminalCell::wide`]) and read through
 /// [`TerminalCell::occupancy`]; it cannot be edited in place, so a cell can
-/// never claim a span it was not created with. Surface writes generate the
+/// never claim a span it was not created with. Grid writes generate the
 /// continuation cells and clip a span that would leave the row.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct TerminalCell {
@@ -452,133 +452,6 @@ impl TerminalCell {
     }
 }
 
-/// An owned copy of everything the renderer needs to draw a terminal.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TerminalSnapshot {
-    pub(crate) size: GridSize,
-    pub(crate) cells: Vec<TerminalCell>,
-    pub(crate) cursor_position: CellPosition,
-    pub(crate) cursor_visible: bool,
-    pub(crate) revision: u64,
-    pub(crate) resize_generation: u64,
-}
-
-impl TerminalSnapshot {
-    /// Returns the grid size.
-    #[must_use]
-    pub const fn size(&self) -> GridSize {
-        self.size
-    }
-
-    /// Returns all cells in row-major order.
-    #[must_use]
-    pub fn cells(&self) -> &[TerminalCell] {
-        &self.cells
-    }
-
-    /// Returns the cells of one row, or an empty slice for an out-of-range row.
-    #[must_use]
-    pub fn row(&self, row: u16) -> &[TerminalCell] {
-        let width = usize::from(self.size.width);
-        let start = usize::from(row) * width;
-        self.cells.get(start..start + width).unwrap_or_default()
-    }
-
-    /// Returns the cell at a position, or `None` outside the grid.
-    #[must_use]
-    pub fn cell(&self, position: impl Into<CellPosition>) -> Option<&TerminalCell> {
-        let position = position.into();
-        self.row(position.y).get(usize::from(position.x))
-    }
-
-    /// Returns the cursor position in cells.
-    #[must_use]
-    pub const fn cursor_position(&self) -> CellPosition {
-        self.cursor_position
-    }
-
-    /// Returns whether the producer requested a visible cursor.
-    #[must_use]
-    pub const fn cursor_visible(&self) -> bool {
-        self.cursor_visible
-    }
-
-    /// Returns the surface change revision captured by this snapshot.
-    #[must_use]
-    pub const fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    /// Iterates over every cell with its grid position, row-major.
-    ///
-    /// Together with the public `style` field this supports content and style
-    /// assertions against the real backend in tests:
-    ///
-    /// ```
-    /// # use bevy_terminal::scene::TerminalColor;
-    /// # use bevy_terminal::surface::TerminalSurface;
-    /// # let snapshot = TerminalSurface::new((4, 1)).snapshot();
-    /// assert!(snapshot.iter().all(|(_, cell)| {
-    ///     cell.style.foreground == TerminalColor::Default
-    /// }));
-    /// ```
-    pub fn iter(&self) -> impl Iterator<Item = (CellPosition, &TerminalCell)> + '_ {
-        let width = usize::from(self.size.width.max(1));
-        self.cells.iter().enumerate().map(move |(index, cell)| {
-            let position = CellPosition::new(
-                u16::try_from(index % width).unwrap_or(u16::MAX),
-                u16::try_from(index / width).unwrap_or(u16::MAX),
-            );
-            (position, cell)
-        })
-    }
-
-    /// Returns one row as plain text: the symbols in order, wide glyphs once
-    /// (continuation cells are skipped), styles dropped and trailing spaces
-    /// kept so every row has a predictable width. An out-of-range row is
-    /// empty.
-    ///
-    /// The [`fmt::Display`] implementation joins every row with `'\n'`, the
-    /// lossy "what is on screen" view for quick assertions:
-    ///
-    /// ```
-    /// # use bevy_terminal::scene::TerminalCell;
-    /// # use bevy_terminal::surface::TerminalSurface;
-    /// let surface = TerminalSurface::new((8, 2));
-    /// surface.update(|update| {
-    ///     for (x, ch) in "Loading".chars().enumerate() {
-    ///         update.set_cell((x as u16, 1), &TerminalCell::from(ch));
-    ///     }
-    /// });
-    /// assert!(surface.snapshot().to_string().contains("Loading"));
-    /// assert_eq!(surface.snapshot().row_text(1), "Loading ");
-    /// ```
-    #[must_use]
-    pub fn row_text(&self, row: u16) -> String {
-        self.row_symbols(row).collect()
-    }
-
-    fn row_symbols(&self, row: u16) -> impl Iterator<Item = &str> {
-        self.row(row)
-            .iter()
-            .filter(|cell| !cell.is_continuation())
-            .map(TerminalCell::symbol)
-    }
-}
-
-impl fmt::Display for TerminalSnapshot {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for row in 0..self.size.height {
-            if row > 0 {
-                f.write_str("\n")?;
-            }
-            self.row_symbols(row)
-                .try_for_each(|symbol| f.write_str(symbol))?;
-        }
-        Ok(())
-    }
-}
-
 impl From<&str> for TerminalCell {
     fn from(symbol: &str) -> Self {
         Self::new(symbol)
@@ -641,23 +514,5 @@ mod tests {
         assert!(continuation.is_continuation());
         assert_eq!(continuation.style, anchor.style);
         assert_eq!(continuation.symbol(), " ");
-    }
-
-    #[test]
-    fn snapshot_indexing_follows_row_major_order() {
-        let size = GridSize::new(3, 2);
-        let mut snapshot = TerminalSnapshot {
-            size,
-            cells: vec![TerminalCell::EMPTY; size.area()],
-            cursor_position: CellPosition::new(0, 0),
-            cursor_visible: false,
-            revision: 0,
-            resize_generation: 0,
-        };
-        snapshot.cells[4] = TerminalCell::new("X");
-        assert_eq!(snapshot.cell((1, 1)).unwrap().symbol(), "X");
-        assert_eq!(snapshot.row(1)[1].symbol(), "X");
-        assert!(snapshot.cell((3, 0)).is_none());
-        assert!(snapshot.row(2).is_empty());
     }
 }

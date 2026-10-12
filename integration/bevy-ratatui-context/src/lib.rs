@@ -7,6 +7,14 @@ use bevy_terminal_ratatui::prelude::*;
 #[derive(Resource, Deref, DerefMut)]
 pub struct WindowedContext(ratatui::Terminal<RatatuiBackend>);
 
+/// The renderer draws the context's grid into every entity marked with
+/// `ResourceTerminal<WindowedContext>`.
+impl TerminalSource for WindowedContext {
+    fn grid(&self) -> &TerminalGrid {
+        self.backend().grid()
+    }
+}
+
 impl TerminalContext<RatatuiBackend> for WindowedContext {
     fn init() -> Result<Self> {
         Ok(Self(ratatui::Terminal::new(RatatuiBackend::new(80, 24))?))
@@ -20,7 +28,9 @@ impl TerminalContext<RatatuiBackend> for WindowedContext {
         _group: &RatatuiPlugins,
         builder: PluginGroupBuilder,
     ) -> PluginGroupBuilder {
-        builder.add(TerminalPlugin).add(presentation)
+        builder
+            .add(TerminalResourcePlugin::<Self>::default())
+            .add(presentation)
     }
 }
 
@@ -63,11 +73,11 @@ mod tests {
         context
             .draw(|frame| frame.render_widget("context", frame.area()))
             .unwrap();
-        let surface = context.backend().surface();
+        app.insert_resource(context);
         let entity = app
             .world_mut()
             .spawn((
-                TerminalRenderer::new(surface.clone()),
+                ResourceTerminal::<WindowedContext>::default(),
                 TerminalRenderConfig {
                     font: FontFaces::regular(font),
                     ..default()
@@ -75,13 +85,13 @@ mod tests {
                 ImageNode::default(),
             ))
             .id();
-        app.insert_resource(context);
         for _ in 0..4 {
             app.update();
         }
         let initial = app.world().get::<TerminalTexture>(entity).unwrap().clone();
         let initial_size = initial.measured().unwrap().size();
-        assert_eq!(surface.snapshot().row_text(0).trim_end(), "context");
+        let context = app.world().resource::<WindowedContext>();
+        assert_eq!(context.grid().row_text(0).trim_end(), "context");
         assert!(
             app.world()
                 .resource::<Assets<Image>>()
@@ -102,22 +112,14 @@ mod tests {
         let output = app.world().get::<TerminalTexture>(entity).unwrap();
         assert_eq!(output.image(), initial.image());
         assert_ne!(output.measured().unwrap().size(), initial_size);
-        assert!(
-            !initial.measured().unwrap().is_current(),
-            "a resize invalidates retained geometry"
-        );
         assert_eq!(
             app.world().get::<ImageNode>(entity).unwrap().image,
             *initial.image()
         );
-        let geometry = output.measured().unwrap().clone();
-        assert!(
-            app.world_mut()
-                .resource_mut::<WindowedContext>()
-                .backend_mut()
-                .set_geometry(&geometry)
-        );
-        assert_eq!(surface.snapshot().row_text(0).trim_end(), "resized");
+        let geometry = *output.measured().unwrap();
+        let mut context = app.world_mut().resource_mut::<WindowedContext>();
+        assert!(context.backend_mut().set_geometry(&geometry));
+        assert_eq!(context.grid().row_text(0).trim_end(), "resized");
         assert!(app.world_mut().despawn(entity));
         WindowedContext::restore().unwrap();
     }

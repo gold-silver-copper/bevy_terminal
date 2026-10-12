@@ -28,13 +28,15 @@ image copy. It does not test GPU completion, window events, or input forwarding.
    `Deref<Target = ratatui::Terminal<RatatuiBackend>>` and `DerefMut`. Initialize
    with `ratatui::Terminal::new(RatatuiBackend::new(100, 50))`. Remove the bitmap
    atlas setup. The existing windowed `restore()` remains a no-op.
-3. Add `TerminalPlugin` alongside the existing windowed plugin, after Bevy's
-   asset/text/render plugins are available. Keep window creation, `Camera2d`,
-   input forwarding, and application scheduling in bevy_ratatui.
+3. Implement `TerminalSource` for the context resource (its grid is
+   `self.backend().grid()`) and add `TerminalResourcePlugin::<Context>` alongside
+   the existing windowed plugin, after Bevy's asset/text/render plugins are
+   available. Keep window creation, `Camera2d`, input forwarding, and
+   application scheduling in bevy_ratatui.
 4. Replace `TerminalRender(Handle<Image>)`, CPU image creation, and
-   `render_terminal_to_handle` with one renderer entity. Obtain the context's
-   `backend().surface()` and spawn `TerminalRenderer::new(surface)` with
-   `TerminalRenderConfig`, `ImageNode::default()`, and the desired layout `Node`.
+   `render_terminal_to_handle` with one renderer entity: spawn
+   `ResourceTerminal::<Context>::default()` with `TerminalRenderConfig`,
+   `ImageNode::default()`, and the desired layout `Node`.
    Add an application system after `TerminalSystems::Sync` to bind the image
    and manage node dimensions. The fixture demonstrates this ownership.
    Configure `FontFaces` and `TerminalSizing` explicitly to select the intended
@@ -55,10 +57,10 @@ image copy. It does not test GPU completion, window events, or input forwarding.
    sync; compare the grid before resizing to avoid a feedback loop.
 7. If Ratatui callers need `Backend::window_size().pixels`, pass the selected
    renderer's measured `TerminalGeometry` to `backend_mut().set_geometry(...)`
-   after the resized output is measured. Shared content can have several
-   presentations, so the backend owner chooses which one's metrics it reports.
+   after the resized output is measured. Several entities can draw the same
+   context, so the backend owner chooses which one's metrics it reports.
 
-`TerminalStatus::Ready` means measurement and main-world scene construction
+`TerminalStatus::Ready(geometry)` means measurement and main-world scene construction
 succeeded. It does not mean the GPU has completed rendering or readback.
 Loading and failure statuses are queryable even after a terminal was previously
 ready; retain the last usable presentation while waiting, and surface failures

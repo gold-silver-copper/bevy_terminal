@@ -13,7 +13,6 @@ mod state;
 mod support;
 
 use bevy_terminal_ratatui::RatatuiTerminal;
-use bevy_terminal_ratatui::prelude::TerminalSurface;
 use ratatui::Frame;
 
 pub const COLUMNS: u16 = 100;
@@ -266,16 +265,15 @@ pub fn find(slug: &str) -> Option<&'static ExampleSpec> {
     EXAMPLES.iter().find(|example| example.slug == slug)
 }
 
-pub fn draw_surface(spec: &ExampleSpec) -> TerminalSurface {
+/// A terminal showing `spec` in its canonical state.
+pub fn draw_terminal(spec: &ExampleSpec) -> RatatuiTerminal {
     let mut terminal = RatatuiTerminal::new(COLUMNS, ROWS);
-    terminal.draw(|frame| {
-        (spec.render)(frame, &ExampleState::canonical(spec.slug));
-    });
-    terminal.surface()
+    redraw_terminal(&mut terminal, spec);
+    terminal
 }
 
-pub fn redraw_surface(surface: &TerminalSurface, spec: &ExampleSpec) {
-    redraw_interactive_surface(surface, spec, &ExampleState::canonical(spec.slug));
+pub fn redraw_terminal(terminal: &mut RatatuiTerminal, spec: &ExampleSpec) {
+    redraw_interactive_terminal(terminal, spec, &ExampleState::canonical(spec.slug));
 }
 
 pub fn redraw_interactive_terminal(
@@ -286,28 +284,6 @@ pub fn redraw_interactive_terminal(
     terminal.draw(|frame| {
         (spec.render)(frame, state);
         interaction::render_help(frame, spec, state);
-    });
-}
-
-pub fn redraw_interactive_surface(
-    surface: &TerminalSurface,
-    spec: &ExampleSpec,
-    state: &ExampleState,
-) {
-    let mut terminal = RatatuiTerminal::new(COLUMNS, ROWS);
-    let rendered_surface = terminal.surface();
-    redraw_interactive_terminal(&mut terminal, spec, state);
-
-    // Publish every cell in one surface transaction. In particular, do not
-    // clear the shared destination before drawing: the Bevy renderer may read
-    // the surface from another system or thread between backend calls.
-    let snapshot = rendered_surface.snapshot();
-    let width = usize::from(snapshot.size().width);
-    surface.update(|destination| {
-        destination.resize((COLUMNS, ROWS));
-        for (index, cell) in snapshot.cells().iter().enumerate() {
-            destination.set_cell(((index % width) as u16, (index / width) as u16), cell);
-        }
     });
 }
 
@@ -349,9 +325,13 @@ mod tests {
     #[test]
     fn every_port_renders_nonempty_terminal_content() {
         for example in EXAMPLES {
-            let snapshot = draw_surface(example).snapshot();
+            let terminal = draw_terminal(example);
             assert!(
-                snapshot.cells().iter().any(|cell| cell.symbol() != " "),
+                terminal
+                    .grid()
+                    .cells()
+                    .iter()
+                    .any(|cell| cell.symbol() != " "),
                 "{} rendered an empty scene",
                 example.slug
             );
@@ -362,9 +342,9 @@ mod tests {
     fn every_interactive_control_changes_its_scene() {
         for example in EXAMPLES {
             let mut state = ExampleState::new(example.slug);
-            let surface = draw_surface(example);
-            redraw_interactive_surface(&surface, example, &state);
-            let before = surface.snapshot();
+            let mut terminal = draw_terminal(example);
+            redraw_interactive_terminal(&mut terminal, example, &state);
+            let before = terminal.grid().clone();
             let exercised = match example.slug {
                 "async-github" => press(&mut state, ExampleKey::Down),
                 "calendar-explorer" => press(&mut state, ExampleKey::Right),
@@ -403,11 +383,10 @@ mod tests {
             if !exercised {
                 continue;
             }
-            redraw_interactive_surface(&surface, example, &state);
-            let after = surface.snapshot();
+            redraw_interactive_terminal(&mut terminal, example, &state);
             assert_ne!(
                 before.cells(),
-                after.cells(),
+                terminal.grid().cells(),
                 "{} accepted input but did not visibly redraw",
                 example.slug
             );
@@ -423,10 +402,10 @@ mod tests {
         let example = find("table").expect("table is in the catalog");
         let mut state = ExampleState::new(example.slug);
         state.help_visible = true;
-        let surface = draw_surface(example);
-        redraw_interactive_surface(&surface, example, &state);
-        let symbols = surface
-            .snapshot()
+        let mut terminal = draw_terminal(example);
+        redraw_interactive_terminal(&mut terminal, example, &state);
+        let symbols = terminal
+            .grid()
             .cells()
             .iter()
             .map(|cell| cell.symbol())
@@ -436,21 +415,11 @@ mod tests {
     }
 
     #[test]
-    fn surface_redraw_publishes_the_replacement_as_one_revision() {
-        let example = find("popup").expect("popup is in the catalog");
-        let surface = draw_surface(example);
-        let before = surface.info().revision;
-        let mut state = ExampleState::new(example.slug);
-        state.toggled = false;
-        redraw_interactive_surface(&surface, example, &state);
-        assert_eq!(surface.info().revision, before + 1);
-    }
-
-    #[test]
     fn modifiers_example_contains_a_combined_bold_italic_face() {
         let example = find("modifiers").expect("modifiers is in the catalog");
-        let snapshot = draw_surface(example).snapshot();
-        let combined = snapshot
+        let terminal = draw_terminal(example);
+        let combined = terminal
+            .grid()
             .cells()
             .iter()
             .filter(|cell| cell.style.has(StyleFlags::BOLD | StyleFlags::ITALIC))
@@ -475,10 +444,10 @@ mod tests {
         for (tab, landmark) in landmarks.into_iter().enumerate() {
             let mut state = ExampleState::new(example.slug);
             state.tab = tab;
-            let surface = draw_surface(example);
-            redraw_interactive_surface(&surface, example, &state);
-            let text = surface
-                .snapshot()
+            let mut terminal = draw_terminal(example);
+            redraw_interactive_terminal(&mut terminal, example, &state);
+            let text = terminal
+                .grid()
                 .cells()
                 .iter()
                 .map(|cell| cell.symbol())
@@ -499,10 +468,10 @@ mod tests {
         let mut state = ExampleState::new(example.slug);
         state.toggled = true;
         state.tick = 30;
-        let surface = draw_surface(example);
-        redraw_interactive_surface(&surface, example, &state);
-        let red_logo_cells = surface
-            .snapshot()
+        let mut terminal = draw_terminal(example);
+        redraw_interactive_terminal(&mut terminal, example, &state);
+        let red_logo_cells = terminal
+            .grid()
                 .cells()
                 .iter()
             .filter(|cell| {

@@ -34,10 +34,9 @@ use bevy::{
     window::{PresentMode, PrimaryWindow},
     winit::{UpdateMode, WinitSettings},
 };
-use bevy_terminal_ratatui::RatatuiTerminal;
 use bevy_terminal_ratatui::prelude::{
-    TerminalPlugin, TerminalRenderConfig, TerminalSizing, TerminalStats, TerminalSystems,
-    TerminalTexture,
+    RatatuiPlugin, RatatuiTerminal, TerminalRenderConfig, TerminalSizing, TerminalStats,
+    TerminalSystems, TerminalTexture,
 };
 use palette::{Okhsv, Srgb, convert::FromColorUnclamped};
 use ratatui::{
@@ -64,7 +63,6 @@ const INITIAL_COLUMNS: u16 = 80;
 const INITIAL_ROWS: u16 = 24;
 
 fn main() {
-    let (terminal, renderer) = RatatuiTerminal::new(INITIAL_COLUMNS, INITIAL_ROWS).with_renderer();
     let config = TerminalRenderConfig {
         sizing: TerminalSizing::FromFont {
             font_size: FONT_SIZE,
@@ -86,7 +84,7 @@ fn main() {
     }));
     let fonts = fonts::load(&mut bevy);
     let config = fonts.configure(config);
-    bevy.add_plugins(TerminalPlugin)
+    bevy.add_plugins(RatatuiPlugin)
         .add_plugins((app::presentation, app::window_scale))
         // Winit's default reactive pacing would idle the app between events.
         .insert_resource(WinitSettings {
@@ -94,14 +92,13 @@ fn main() {
             unfocused_mode: UpdateMode::Continuous,
         })
         .insert_resource(ColorsRgb {
-            terminal,
             example: ColorsApp::default(),
             title: TitleTimer::default(),
         })
         .add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(Camera2d);
             commands.spawn(app::ui_terminal(
-                renderer.clone(),
+                RatatuiTerminal::new(INITIAL_COLUMNS, INITIAL_ROWS),
                 config.clone(),
                 Vec2::splat(MARGIN),
             ));
@@ -110,11 +107,9 @@ fn main() {
         .run();
 }
 
-/// The Ratatui terminal and the ported upstream example state.
+/// The ported upstream example state.
 #[derive(Resource)]
 struct ColorsRgb {
-    /// The Ratatui terminal writing into the renderer's surface.
-    terminal: RatatuiTerminal,
     /// The ported upstream application.
     example: ColorsApp,
     /// Throttle for the window-title statistics.
@@ -124,13 +119,12 @@ struct ColorsRgb {
 /// Refits the grid to the window and draws one animated frame.
 fn draw(
     mut colors: ResMut<ColorsRgb>,
+    mut terminal: Single<&mut RatatuiTerminal>,
     textures: Query<&TerminalTexture>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
-    let ColorsRgb {
-        terminal, example, ..
-    } = &mut *colors;
-    app::fit_grid_to_window(terminal, &textures, &windows, MARGIN);
+    app::fit_grid_to_window(&mut terminal, &textures, &windows, MARGIN);
+    let example = &mut colors.example;
     terminal.draw(|frame| frame.render_widget(&mut *example, frame.area()));
 }
 
@@ -139,16 +133,16 @@ fn draw(
 /// part of the measurement.
 fn report(
     mut colors: ResMut<ColorsRgb>,
-    stats: Query<&TerminalStats>,
+    terminals: Query<(&RatatuiTerminal, &TerminalStats)>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
     if !colors.title.due() {
         return;
     }
-    let (Ok(stats), Ok(mut window)) = (stats.single(), windows.single_mut()) else {
+    let (Ok((terminal, stats)), Ok(mut window)) = (terminals.single(), windows.single_mut()) else {
         return;
     };
-    let size = colors.terminal.size().unwrap_or_default();
+    let size = terminal.grid().size();
     window.title = format!(
         "colors_rgb · {}x{} cells · vsync off · {stats}",
         size.width, size.height

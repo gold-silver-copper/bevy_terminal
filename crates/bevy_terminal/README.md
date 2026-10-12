@@ -6,35 +6,36 @@ or materials.
 
 **Terminal cells + configuration → image + validated geometry + status.**
 
-## Surface model
+## Grid model
 
-`TerminalSurface` is a cloneable shared handle. `update` applies a transaction and
-publishes a revision only when content changes. Dirty tracking supports partial
-row updates. `TerminalSnapshot` provides read-only cells, rows, cursor state,
-and text extraction.
+`TerminalGrid` is a component holding the cells and the cursor. Producers
+write through `&mut` access, so Bevy's scheduler keeps writes and rendering
+apart: there is no lock. Every write reports whether it changed anything, and
+the grid tracks changed rows, so the renderer repaints only those. Reads cover
+cells, rows, cursor state and text extraction.
 
 Cells carry symbols, colors, style flags, and explicit wide-cell occupancy.
-Unicode shaping and fallback remain aligned to the terminal grid. The surface
-also supports clearing and scrolling; it does not parse escape sequences or
-manage a PTY.
+Writing over any part of a wide glyph resets the rest of it, as terminals do,
+and only the grid creates continuation cells. The cursor is clamped into the
+grid. Unicode shaping and fallback remain aligned to the terminal grid. The
+grid also supports clearing and scrolling; it does not parse escape sequences
+or manage a PTY.
 
 ```rust
 use bevy_terminal::prelude::*;
 
-let surface = TerminalSurface::new((80, 24));
-surface.update(|update| {
-    update.set_cell((0, 0), &TerminalCell::new("A")
-        .with_style(TerminalStyle::new().fg(TerminalColor::CYAN)));
-    update.set_cursor_position((1, 0));
-    update.set_cursor_visible(true);
-});
-assert_eq!(surface.snapshot().row_text(0).trim_end(), "A");
+let mut grid = TerminalGrid::new((80, 24));
+grid.set_cell((0, 0), &TerminalCell::new("A")
+    .with_style(TerminalStyle::new().fg(TerminalColor::CYAN)));
+grid.set_cursor_position((1, 0));
+grid.set_cursor_visible(true);
+assert_eq!(grid.row_text(0).trim_end(), "A");
 ```
 
 ## Rendering and output
 
 Add `TerminalPlugin` after Bevy's asset, text, and render plugins, then spawn a
-`TerminalRenderer` for each surface. A default `TerminalRenderConfig` is required
+`TerminalGrid` for each terminal. A default `TerminalRenderConfig` is required
 and inserted automatically. Supply your own sizing, fonts, theme, cursor, blink,
 and raster settings when needed.
 
@@ -43,9 +44,8 @@ use bevy::prelude::*;
 use bevy_terminal::prelude::*;
 
 fn setup(mut commands: Commands) {
-    let surface = TerminalSurface::new((80, 24));
     commands.spawn((
-        TerminalRenderer::new(surface),
+        TerminalGrid::new((80, 24)),
         TerminalRenderConfig {
             sizing: TerminalSizing::font(18.0),
             raster: RasterConfig { scale: 2.0, ..default() },
@@ -53,16 +53,33 @@ fn setup(mut commands: Commands) {
         },
     ));
 }
+
+fn write(mut grids: Query<&mut TerminalGrid>) {
+    for mut grid in &mut grids {
+        grid.set_cell((0, 0), &TerminalCell::new("A"));
+    }
+}
 ```
 
-The plugin attaches `TerminalTexture` and `TerminalStats` as soon as a
-`TerminalRenderer` is added. Read output after `TerminalSystems::Sync`.
-`texture.measured()` returns the geometry once the selected fonts and cell
-metrics are usable; it is recorded by the sync, so `Changed<TerminalTexture>`
-fires only when geometry or status change. It describes the surface as of the
-last `Sync`: a surface resized after `Sync` reads as its previous geometry
-until the next one. Status exposes loading, invalid sizing, font/shaping
-failures, missing text resources, and device texture limits.
+Other components can own a grid: implement `TerminalSource` for them and add
+`TerminalSourcePlugin::<T>` (the Ratatui adapter does this for its terminal).
+A grid kept in a resource is drawn into every entity marked
+`ResourceTerminal<R>` after adding `TerminalResourcePlugin::<R>`; each of those
+entities has its own configuration and texture.
+
+Producers on other threads, such as a PTY reader, send their output over a
+channel that a system drains into the grid before `TerminalSystems::Sync`.
+
+The plugin attaches `TerminalTexture` and `TerminalStats` as soon as a source
+is added. Read output after `TerminalSystems::Sync`. `texture.status()` is
+`Loading`, `Ready(geometry)` or `Failed(reason)` (missing text resources,
+invalid sizing, a font that failed to load, a shaping failure, or a texture
+past the device limit), and `texture.measured()` returns the geometry while
+ready. A failed terminal does no work until its grid, configuration, fonts or
+render device change. The status is recorded by the sync, so
+`Changed<TerminalTexture>` fires only when it changes. It describes the grid as
+of the last `Sync`: a grid resized after `Sync` reads as its previous geometry
+until the next one; compare `geometry.grid()` with the grid's size to tell.
 
 `TerminalGeometry` provides:
 
@@ -72,17 +89,16 @@ failures, missing text resources, and device texture limits.
   `physical_cell_size()` and `physical_font_size()`: the exact physical cell and
   rasterization size.
 - `raster_scale()`: physical-to-logical pixel ratio.
-- `is_current()` and `matches_surface(...)`: source/generation validation.
 
 `render::grid_for(available_size, geometry.cell_size())` returns a bounded grid
 fitting a logical rectangle.
 
-Readiness is persistent, so late consumers need no event history. Retain the
-last useful application layout while new geometry is unavailable. `is_current()`
-and `matches_surface(...)` check retained geometry against the live surface,
-rejecting old grid measurements immediately after a shared resize.
+Geometry is created only together with the image it describes, so the two
+cannot disagree. Readiness is persistent, so late consumers need no event
+history. Retain the last useful application layout while new geometry is
+unavailable.
 
-The image handle is stable throughout the renderer's lifetime, including
+The image handle is stable throughout the terminal's lifetime, including
 resizes. Output uses `Rgba8UnormSrgb`, straight alpha, and nearest sampling.
 Applications bind it to their own UI, sprites, materials, or export targets.
 Rendering has bounded caches and reuses assets and GPU resources for idle and
@@ -179,8 +195,8 @@ semantics. These do not prescribe application presentation or input behavior.
 
 - `system_fonts` (default): discover host fonts. Disable defaults and supply
   explicit assets for deterministic font selection.
-- `timings` (opt-in): record CPU snapshot/scene durations. Work counters remain
-  available without this feature; timing fields are then zero.
+- `timings` (opt-in): record CPU scene durations. Work counters remain
+  available without this feature.
 
 There are no UI or 3D presentation features. Applications enable the Bevy
 features their own presentation requires. This checkout targets Bevy 0.20 and
@@ -194,7 +210,7 @@ cargo test -p bevy_terminal
 cargo test -p bevy_terminal --test gpu_readback -- --ignored --test-threads=1
 ```
 
-`scene_export` reads two scenes written through the neutral cell API back into
+`scene_export` reads two grids written through the neutral cell API back into
 images without a window. The repository's adapter examples demonstrate UI layout
 and DPI policy (`demo`) and application-owned 3D material binding (`world_quad`).
 

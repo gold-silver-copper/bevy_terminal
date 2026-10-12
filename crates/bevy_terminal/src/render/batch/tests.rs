@@ -1,6 +1,8 @@
 use super::*;
 use super::{gpu::collect_batch_scenes, metrics::*, scene::*, shaping::*};
+use crate::grid::TerminalGrid;
 use crate::render::grid_for;
+use crate::render::{ResourceTerminal, TerminalFailure, TerminalResourcePlugin, TerminalSource};
 use crate::render::{TerminalSizing, pixel_rect};
 use crate::scene::{GridSize, StyleFlags, TerminalCell, TerminalStyle};
 
@@ -62,14 +64,12 @@ fn test_app() -> App {
 
 #[test]
 fn spawned_terminals_own_distinct_textures_and_can_be_despawned() {
-    let first_surface = TerminalSurface::new((12, 4));
-    let second_surface = TerminalSurface::new((7, 9));
     let mut app = test_app();
     // A presented terminal: the user owns the UI node.
     let first = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(first_surface.clone()),
+            TerminalGrid::new((12, 4)),
             ImageNode::default(),
             Node {
                 position_type: PositionType::Absolute,
@@ -84,7 +84,7 @@ fn spawned_terminals_own_distinct_textures_and_can_be_despawned() {
     let second = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(second_surface.clone()),
+            TerminalGrid::new((7, 9)),
             TerminalRenderConfig {
                 sizing: TerminalSizing::FitCellWidth(Vec2::new(11.0, 20.0)),
                 ..default()
@@ -93,17 +93,18 @@ fn spawned_terminals_own_distinct_textures_and_can_be_despawned() {
         .id();
     app.update();
 
-    let mut terminals =
-        app.world_mut()
-            .query::<(Entity, &TerminalRenderer, &TerminalTexture, &TerminalStats)>();
+    let mut terminals = app
+        .world_mut()
+        .query::<(Entity, &TerminalGrid, &TerminalTexture, &TerminalStats)>();
+    let images = app.world().resource::<Assets<Image>>();
     let mut instances = terminals
         .iter(app.world())
-        .map(|(entity, terminal, texture, _)| {
+        .map(|(entity, grid, texture, _)| {
             (
                 entity,
-                terminal.surface().info().size,
+                grid.size(),
                 texture.image.id(),
-                texture.geometry.size(),
+                images.get(texture.image.id()).unwrap().size(),
             )
         })
         .collect::<Vec<_>>();
@@ -119,8 +120,6 @@ fn spawned_terminals_own_distinct_textures_and_can_be_despawned() {
     assert_ne!(instances[0].2, instances[1].2);
     // Both required a config; the first got the default one.
     assert!(app.world().get::<TerminalRenderConfig>(first).is_some());
-    assert_eq!(first_surface.snapshot().size().width, 12);
-    assert_eq!(second_surface.snapshot().size().width, 7);
 
     // Despawning a terminal removes everything with the entity.
     app.world_mut().despawn(first);
@@ -250,22 +249,18 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
             include_bytes!("../../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")
                 .to_vec(),
         ));
-    let surface = TerminalSurface::new((4, 2));
-    write_text(&surface, "test");
-    let renderer = TerminalRenderer::new(surface);
+    let mut grid = TerminalGrid::new((4, 2));
+    write_text(&mut grid, "test");
     let config = TerminalRenderConfig {
         font: super::super::FontFaces::regular(font),
         sizing: TerminalSizing::font(20.0),
         ..default()
     };
-    let entity = app
-        .world_mut()
-        .spawn((renderer.clone(), config.clone()))
-        .id();
+    let entity = app.world_mut().spawn((grid.clone(), config.clone())).id();
     for _ in 0..3 {
         app.update();
     }
-    let mut output = app.world().get::<TerminalTexture>(entity).unwrap().clone();
+    let output = app.world().get::<TerminalTexture>(entity).unwrap().clone();
     assert!(output.measured().is_some());
     let mut state = app
         .world_mut()
@@ -273,7 +268,7 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         .take::<BatchMainState>()
         .unwrap();
     assert!(state.measure.in_use.is_some());
-    assert!(state.snapshot().is_some());
+    assert!(state.drawn_revision().is_some());
     let output_id = state.output.id();
     let mut queue = std::mem::take(&mut *app.world_mut().resource_mut::<SceneQueue>());
     assert!(queue.scene(output_id).is_some());
@@ -285,11 +280,10 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
     let mut resources = SystemState::<TextResources>::new(app.world_mut());
     let mut text = resources.get_mut(app.world_mut()).unwrap();
     let mut stats = TerminalStats::default();
-    let result = sync_batch_terminal(
-        &renderer,
+    let result = sync_terminal(
+        &grid,
         SyncInput {
             config: &unavailable,
-            measured_surface: &output.geometry.surface,
             config_changed: true,
             shaping_changed: true,
             fonts_changed: false,
@@ -298,7 +292,6 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
             texture_limit: 8192,
         },
         &mut state,
-        &mut output.geometry.measurement,
         &mut stats,
         &mut text,
         &mut queue,
@@ -310,17 +303,15 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
     // Apply the same invalidation boundary as the outer Bevy system.
     state.invalidate(&mut queue);
     assert!(state.measure.in_use.is_none());
-    assert!(state.snapshot().is_none());
+    assert!(state.drawn_revision().is_none());
     assert!(queue.scene(output_id).is_none());
 
     // A successful retry must rebuild even if the effective geometry equals
     // the old geometry and no further configuration event arrives.
-    output.status = TerminalStatus::Ready;
-    sync_batch_terminal(
-        &renderer,
+    let geometry = sync_terminal(
+        &grid,
         SyncInput {
             config: &config,
-            measured_surface: &output.geometry.surface,
             config_changed: false,
             shaping_changed: false,
             fonts_changed: false,
@@ -329,13 +320,12 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
             texture_limit: 8192,
         },
         &mut state,
-        &mut output.geometry.measurement,
         &mut stats,
         &mut text,
         &mut queue,
     )
     .unwrap();
-    assert!(output.measured().is_some());
+    assert_eq!(geometry.as_ref(), output.measured());
     assert!(state.measure.in_use.is_some());
     assert!(queue.scene(output_id).unwrap().clear);
     assert!(stats.shape_misses > 0);
@@ -351,12 +341,12 @@ fn the_output_image_is_resized_against_its_real_size() {
             include_bytes!("../../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")
                 .to_vec(),
         ));
-    let surface = TerminalSurface::new((4, 2));
-    write_text(&surface, "test");
+    let mut terminal = TerminalGrid::new((4, 2));
+    write_text(&mut terminal, "test");
     let entity = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(surface.clone()),
+            terminal,
             TerminalRenderConfig {
                 font: super::super::FontFaces::regular(font),
                 sizing: TerminalSizing::font(20.0),
@@ -368,7 +358,7 @@ fn the_output_image_is_resized_against_its_real_size() {
         app.update();
     }
     let texture = app.world().get::<TerminalTexture>(entity).unwrap().clone();
-    let size = texture.geometry.size();
+    let size = texture.measured().unwrap().size();
     let image_size = |app: &App| {
         app.world()
             .resource::<Assets<Image>>()
@@ -383,7 +373,7 @@ fn the_output_image_is_resized_against_its_real_size() {
         .resource_mut::<Assets<Image>>()
         .insert(texture.image.id(), make_target_image(size + UVec2::ONE))
         .unwrap();
-    write_text(&surface, "more");
+    write_text(&mut grid(&mut app, entity), "more");
     app.update();
     assert_eq!(image_size(&app), size);
 }
@@ -400,10 +390,7 @@ fn idle_output_is_stable_and_application_ui_is_untouched() {
         })
         .after(super::super::TerminalSystems::Sync),
     );
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(TerminalSurface::new((4, 2))))
-        .id();
+    let entity = app.world_mut().spawn(TerminalGrid::new((4, 2))).id();
     for _ in 0..4 {
         app.update();
     }
@@ -439,15 +426,17 @@ fn idle_output_is_stable_and_application_ui_is_untouched() {
     );
 }
 
+/// Revisions only order one grid's changes: a grid replaced by another with
+/// the same revision, by insertion or by assignment, is repainted in full.
 #[test]
-fn replacing_surface_with_equal_revision_refreshes_retained_content() {
+fn replacing_a_grid_with_equal_revision_refreshes_retained_content() {
     let mut app = text_app();
-    let first = TerminalSurface::new((4, 1));
-    let second = TerminalSurface::new((4, 1));
-    write_text(&first, "AAAA");
-    write_text(&second, "BBBB");
-    assert_eq!(first.info().revision, second.info().revision);
-    let entity = app.world_mut().spawn(TerminalRenderer::new(first)).id();
+    let [mut first, mut second, mut third] = [(); 3].map(|()| TerminalGrid::new((4, 1)));
+    write_text(&mut first, "AAAA");
+    write_text(&mut second, "BBBB");
+    write_text(&mut third, "CCCC");
+    assert_eq!(first.revision(), second.revision());
+    let entity = app.world_mut().spawn(first).id();
     for _ in 0..4 {
         app.update();
     }
@@ -457,12 +446,15 @@ fn replacing_surface_with_equal_revision_refreshes_retained_content() {
         .unwrap()
         .image
         .clone();
-    app.world_mut()
-        .entity_mut(entity)
-        .insert(TerminalRenderer::new(second));
+    // Inserting another grid repaints everything...
+    drain_pending(&mut app);
+    app.world_mut().entity_mut(entity).insert(second);
     app.update();
-    let state = app.world().get::<BatchMainState>(entity).unwrap();
-    assert_eq!(state.snapshot().unwrap().row_text(0), "BBBB");
+    assert!(queued(app.world(), entity).unwrap().clear);
+    // ...and so does assigning one.
+    drain_pending(&mut app);
+    *grid(&mut app, entity) = third;
+    app.update();
     assert!(queued(app.world(), entity).unwrap().clear);
     assert_eq!(
         app.world().get::<TerminalTexture>(entity).unwrap().image,
@@ -470,15 +462,26 @@ fn replacing_surface_with_equal_revision_refreshes_retained_content() {
     );
 }
 
+/// A grid kept in a resource is drawn into every entity marked to draw it,
+/// each with its own configuration and texture, and an edit repaints all.
 #[test]
-fn shared_content_has_independent_renderers_and_measurements() {
+fn a_resource_grid_is_drawn_by_every_marked_entity() {
+    #[derive(Resource)]
+    struct Screen(TerminalGrid);
+    impl TerminalSource for Screen {
+        fn grid(&self) -> &TerminalGrid {
+            &self.0
+        }
+    }
     let mut app = text_app();
-    let surface = TerminalSurface::new((4, 2));
-    write_text(&surface, "AAAA");
+    app.add_plugins(TerminalResourcePlugin::<Screen>::default());
+    let mut screen = TerminalGrid::new((4, 2));
+    write_text(&mut screen, "AAAA");
+    app.insert_resource(Screen(screen));
     let entities = [10.0, 20.0].map(|width| {
         app.world_mut()
             .spawn((
-                TerminalRenderer::new(surface.clone()),
+                ResourceTerminal::<Screen>::default(),
                 TerminalRenderConfig {
                     sizing: TerminalSizing::Fixed {
                         cell_size: Vec2::new(width, 24.0),
@@ -492,40 +495,36 @@ fn shared_content_has_independent_renderers_and_measurements() {
     for _ in 0..4 {
         app.update();
     }
-    let handles = entities.map(|entity| {
+    let images = entities.map(|entity| {
         app.world()
             .get::<TerminalTexture>(entity)
             .unwrap()
             .image
             .clone()
     });
-    assert_ne!(handles[0], handles[1]);
+    assert_ne!(images[0], images[1]);
     drain_pending(&mut app);
-    surface.update(|update| {
-        update.set_cell((0, 1), &TerminalCell::new("B"));
-    });
+    app.world_mut()
+        .resource_mut::<Screen>()
+        .0
+        .set_cell((0, 1), &TerminalCell::new("B"));
     app.update();
     for (entity, width) in entities.into_iter().zip([10.0, 20.0]) {
-        let output = app
+        let geometry = *app
             .world()
             .get::<TerminalTexture>(entity)
             .unwrap()
             .measured()
             .unwrap();
-        assert_eq!(output.cell_size(), Vec2::new(width, 24.0));
-        assert_eq!(output.size(), UVec2::new(width as u32 * 4, 48));
-        let state = app.world().get::<BatchMainState>(entity).unwrap();
-        let snapshot = state.snapshot().unwrap();
-        assert_eq!(snapshot.row_text(0), "AAAA");
-        assert_eq!(snapshot.row_text(1), "B   ");
-        assert_eq!(
-            app.world()
-                .get::<TerminalStats>(entity)
-                .unwrap()
-                .changed_rows,
-            1
-        );
+        assert_eq!(geometry.size(), UVec2::new(width as u32 * 4, 48));
+        let stats = app.world().get::<TerminalStats>(entity).unwrap();
+        assert_eq!(stats.changed_rows, 1);
     }
+    // Removing the marker releases that terminal's renderer state.
+    app.world_mut()
+        .entity_mut(entities[0])
+        .remove::<ResourceTerminal<Screen>>();
+    assert!(app.world().get::<TerminalTexture>(entities[0]).is_none());
 }
 
 #[test]
@@ -544,11 +543,11 @@ fn repeated_despawns_release_owned_images_and_pending_scenes() {
     let mut image_counts = Vec::new();
     for _ in 0..4 {
         let entities = std::array::from_fn::<_, 3, _>(|_| {
-            let surface = TerminalSurface::new((4, 2));
-            write_text(&surface, "text");
+            let mut terminal = TerminalGrid::new((4, 2));
+            write_text(&mut terminal, "text");
             app.world_mut()
                 .spawn((
-                    TerminalRenderer::new(surface),
+                    terminal,
                     TerminalRenderConfig {
                         font: super::super::FontFaces::regular(font.clone()),
                         ..default()
@@ -588,20 +587,23 @@ fn repeated_despawns_release_owned_images_and_pending_scenes() {
     assert_eq!(image_counts[1..], [image_counts[1]; 3], "{image_counts:?}");
 }
 
-fn write_text(surface: &TerminalSurface, text: &str) {
-    surface.update(|update| {
-        for (column, symbol) in text.chars().enumerate() {
-            update.set_cell((column as u16, 0), &TerminalCell::from(symbol));
-        }
-    });
+fn write_text(grid: &mut TerminalGrid, text: &str) {
+    for (column, symbol) in text.chars().enumerate() {
+        grid.set_cell((column as u16, 0), &TerminalCell::from(symbol));
+    }
+}
+
+/// A terminal's grid, to write to between updates.
+fn grid(app: &mut App, entity: Entity) -> Mut<'_, TerminalGrid> {
+    app.world_mut().get_mut::<TerminalGrid>(entity).unwrap()
 }
 
 #[test]
 fn paint_changes_preserve_shaping_and_repaint_content() {
     let mut app = text_app();
-    let surface = TerminalSurface::new((6, 1));
-    write_text(&surface, "hello!");
-    let entity = app.world_mut().spawn(TerminalRenderer::new(surface)).id();
+    let mut terminal = TerminalGrid::new((6, 1));
+    write_text(&mut terminal, "hello!");
+    let entity = app.world_mut().spawn(terminal).id();
     for _ in 0..4 {
         app.update();
     }
@@ -650,25 +652,23 @@ fn config_changes_rebuild_but_unrelated_changes_keep_the_shape_cache() {
     #[derive(Component)]
     struct Unrelated(u32);
     let mut app = text_app();
-    let surface = TerminalSurface::new((6, 1));
-    write_text(&surface, "hello!");
-    let entity = app
-        .world_mut()
-        .spawn((TerminalRenderer::new(surface.clone()), Unrelated(0)))
-        .id();
+    let mut terminal = TerminalGrid::new((6, 1));
+    write_text(&mut terminal, "hello!");
+    let entity = app.world_mut().spawn((terminal, Unrelated(0))).id();
     for _ in 0..4 {
         app.update();
     }
     // Redrawing the same content re-uses the shape cache: no misses, no rows.
-    write_text(&surface, "hello!");
+    write_text(&mut grid(&mut app, entity), "hello!");
     app.update();
     let idle = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!(idle.shape_misses, 0, "{idle}");
     assert_eq!(idle.changed_rows, 0);
     // Rewriting a cell with a new glyph shapes only that glyph.
-    surface.update(|u| {
+    {
+        let mut u = grid(&mut app, entity);
         u.set_cell((0, 0), &TerminalCell::new("Z"));
-    });
+    }
     app.update();
     let one = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!(one.shape_misses, 1, "{one}");
@@ -677,7 +677,7 @@ fn config_changes_rebuild_but_unrelated_changes_keep_the_shape_cache() {
     // Touching an unrelated component and redrawing identical content: the
     // shape cache survives and nothing is rebuilt.
     app.world_mut().get_mut::<Unrelated>(entity).unwrap().0 += 1;
-    write_text(&surface, "Zello!");
+    write_text(&mut grid(&mut app, entity), "Zello!");
     app.update();
     let after_unrelated = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!(after_unrelated.shape_misses, 0);
@@ -698,7 +698,8 @@ fn config_changes_rebuild_but_unrelated_changes_keep_the_shape_cache() {
         .world()
         .get::<TerminalTexture>(entity)
         .unwrap()
-        .geometry
+        .measured()
+        .unwrap()
         .size();
     assert_eq!(size.x, 72);
     assert!(size.y >= 22, "{size:?}");
@@ -707,12 +708,12 @@ fn config_changes_rebuild_but_unrelated_changes_keep_the_shape_cache() {
 #[test]
 fn resizing_keeps_the_texture_handle_without_modifying_application_layout() {
     let mut app = text_app();
-    let surface = TerminalSurface::new((4, 2));
-    write_text(&surface, "abcd");
+    let mut terminal = TerminalGrid::new((4, 2));
+    write_text(&mut terminal, "abcd");
     let entity = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(surface.clone()),
+            terminal,
             TerminalRenderConfig {
                 sizing: TerminalSizing::FitCellWidth(Vec2::new(10.0, 20.0)),
                 ..default()
@@ -726,9 +727,12 @@ fn resizing_keeps_the_texture_handle_without_modifying_application_layout() {
     }
     let texture = app.world().get::<TerminalTexture>(entity).unwrap().clone();
     // 20 px is a minimum row height that grows to the resolved font's line box.
-    let cell_height = texture.geometry.size().y / 2;
+    let cell_height = texture.measured().unwrap().size().y / 2;
     assert!(cell_height >= 20, "{cell_height}");
-    assert_eq!(texture.geometry.size(), UVec2::new(40, 2 * cell_height));
+    assert_eq!(
+        texture.measured().unwrap().size(),
+        UVec2::new(40, 2 * cell_height)
+    );
     let node = app.world().get::<Node>(entity).unwrap();
     assert_eq!(node.width, Val::Auto);
     assert_eq!(node.height, Val::Auto);
@@ -737,13 +741,17 @@ fn resizing_keeps_the_texture_handle_without_modifying_application_layout() {
         ImageNode::default().image
     );
 
-    surface.update(|update| {
+    {
+        let mut update = grid(&mut app, entity);
         update.resize((8, 3));
-    });
+    }
     app.update();
     let resized = app.world().get::<TerminalTexture>(entity).unwrap();
     assert_eq!(resized.image, texture.image, "handle must stay stable");
-    assert_eq!(resized.geometry.size(), UVec2::new(80, 3 * cell_height));
+    assert_eq!(
+        resized.measured().unwrap().size(),
+        UVec2::new(80, 3 * cell_height)
+    );
     let image = app
         .world()
         .resource::<Assets<Image>>()
@@ -755,24 +763,25 @@ fn resizing_keeps_the_texture_handle_without_modifying_application_layout() {
     assert_eq!(node.width, Val::Auto);
     assert_eq!(node.height, Val::Auto);
 
-    surface.update(|update| {
+    {
+        let mut update = grid(&mut app, entity);
         update.resize((2, 1));
-    });
+    }
     app.update();
     let shrunk = app.world().get::<TerminalTexture>(entity).unwrap();
     assert_eq!(shrunk.image, texture.image);
-    assert_eq!(shrunk.geometry.size(), UVec2::new(20, cell_height));
+    assert_eq!(
+        shrunk.measured().unwrap().size(),
+        UVec2::new(20, cell_height)
+    );
 }
 
 #[test]
 fn unrelated_font_assets_do_not_trigger_remeasurement() {
     let mut app = text_app();
-    let surface = TerminalSurface::new((4, 1));
-    write_text(&surface, "abcd");
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(surface.clone()))
-        .id();
+    let mut terminal = TerminalGrid::new((4, 1));
+    write_text(&mut terminal, "abcd");
+    let entity = app.world_mut().spawn(terminal).id();
     for _ in 0..3 {
         app.update();
     }
@@ -784,7 +793,7 @@ fn unrelated_font_assets_do_not_trigger_remeasurement() {
         .resource_mut::<Assets<Font>>()
         .add(Font::from_bytes(Vec::new()));
     app.update();
-    write_text(&surface, "abcd");
+    write_text(&mut grid(&mut app, entity), "abcd");
     app.update();
     let after = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!(after.shape_misses, 0, "{after}");
@@ -801,12 +810,12 @@ fn font_driven_cells_measure_the_embedded_font() {
             include_bytes!("../../../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")
                 .to_vec(),
         ));
-    let surface = TerminalSurface::new((4, 1));
-    write_text(&surface, "abcd");
+    let mut terminal = TerminalGrid::new((4, 1));
+    write_text(&mut terminal, "abcd");
     let entity = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(surface.clone()),
+            terminal,
             TerminalRenderConfig {
                 sizing: super::super::TerminalSizing::FromFont {
                     font_size: 20.0,
@@ -825,18 +834,21 @@ fn font_driven_cells_measure_the_embedded_font() {
     // box is 1.32 em (ascender 1020, descender 300): 26.4 px, so the cell
     // is 27 px tall.
     assert!(
-        (texture.geometry.cell_size().x - 12.0).abs() < 0.05,
+        (texture.measured().unwrap().cell_size().x - 12.0).abs() < 0.05,
         "{:?}",
-        texture.geometry.cell_size()
+        texture.measured().unwrap().cell_size()
     );
     assert!(
-        (texture.geometry.cell_size().y - 27.0).abs() < 0.05,
+        (texture.measured().unwrap().cell_size().y - 27.0).abs() < 0.05,
         "{:?}",
-        texture.geometry.cell_size()
+        texture.measured().unwrap().cell_size()
     );
-    assert_eq!(texture.geometry.size(), UVec2::new(48, 27));
+    assert_eq!(texture.measured().unwrap().size(), UVec2::new(48, 27));
     assert_eq!(
-        grid_for(Vec2::new(125.0, 60.0), texture.geometry.cell_size()),
+        grid_for(
+            Vec2::new(125.0, 60.0),
+            texture.measured().unwrap().cell_size()
+        ),
         GridSize::new(10, 2)
     );
 
@@ -848,9 +860,9 @@ fn font_driven_cells_measure_the_embedded_font() {
         .sizing = super::super::TerminalSizing::font(30.0);
     app.update();
     let zoomed = app.world().get::<TerminalTexture>(entity).unwrap();
-    assert!((zoomed.geometry.cell_size().x - 18.0).abs() < 0.05);
+    assert!((zoomed.measured().unwrap().cell_size().x - 18.0).abs() < 0.05);
     // 30 px: 18 px advance and a 39.6 px line box, so 40 px rows.
-    assert_eq!(zoomed.geometry.size(), UVec2::new(72, 40));
+    assert_eq!(zoomed.measured().unwrap().size(), UVec2::new(72, 40));
     assert_eq!(zoomed.image, handle);
 }
 
@@ -861,7 +873,7 @@ fn font_driven_cells_wait_for_a_loading_handle_before_ready() {
     let entity = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(TerminalSurface::new((4, 1))),
+            TerminalGrid::new((4, 1)),
             TerminalRenderConfig {
                 sizing: super::super::TerminalSizing::FromFont {
                     font_size: 20.0,
@@ -885,7 +897,10 @@ fn font_driven_cells_wait_for_a_loading_handle_before_ready() {
     );
     let state = app.world().get::<BatchMainState>(entity).unwrap();
     assert!(state.measure.advance.is_none());
-    assert!(state.snapshot().is_none(), "no 1x1 scene may be published");
+    assert!(
+        state.drawn_revision().is_none(),
+        "no 1x1 scene may be published"
+    );
 
     app.world_mut()
         .resource_mut::<Assets<Font>>()
@@ -909,9 +924,9 @@ fn font_driven_cells_wait_for_a_loading_handle_before_ready() {
             .is_some()
     );
     let texture = app.world().get::<TerminalTexture>(entity).unwrap();
-    assert!((texture.geometry.cell_size().x - 12.0).abs() < 0.05);
-    assert!((texture.geometry.cell_size().y - 27.0).abs() < 0.05);
-    assert_eq!(texture.geometry.size(), UVec2::new(48, 27));
+    assert!((texture.measured().unwrap().cell_size().x - 12.0).abs() < 0.05);
+    assert!((texture.measured().unwrap().cell_size().y - 27.0).abs() < 0.05);
+    assert_eq!(texture.measured().unwrap().size(), UVec2::new(48, 27));
 }
 
 #[test]
@@ -925,7 +940,7 @@ fn ready_terminal_exposes_font_failure_and_recovers_with_the_same_image() {
     let entity = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(TerminalSurface::new((4, 1))),
+            TerminalGrid::new((4, 1)),
             TerminalRenderConfig {
                 font: super::super::FontFaces::regular(regular),
                 ..default()
@@ -941,13 +956,12 @@ fn ready_terminal_exposes_font_failure_and_recovers_with_the_same_image() {
         .unwrap()
         .image
         .clone();
-    let initial = app
+    let initial = *app
         .world()
         .get::<TerminalTexture>(entity)
         .unwrap()
         .measured()
-        .unwrap()
-        .clone();
+        .unwrap();
     let mut pending = PendingBatchScenes::default();
     collect_batch_scenes(app.world_mut(), &mut pending);
     assert_eq!(pending.scenes.len(), 1);
@@ -975,7 +989,10 @@ fn ready_terminal_exposes_font_failure_and_recovers_with_the_same_image() {
         app.update();
     }
     let failed = app.world().get::<TerminalTexture>(entity).unwrap();
-    assert_eq!(failed.status, TerminalStatus::FontFailed);
+    assert_eq!(
+        failed.status,
+        TerminalStatus::Failed(TerminalFailure::FontFailed)
+    );
     assert!(failed.measured().is_none());
     assert_eq!(failed.image, image);
     assert!(queued(app.world(), entity).is_none());
@@ -1013,12 +1030,12 @@ fn late_family_registration_invalidates_previously_shaped_fallbacks() {
     // Bevy registers assets under both their embedded family and this unique
     // alias. The alias makes the test independent of installed system fonts.
     let family = bevy::text::FontSource::Family(format!("asset_id:{:?}", regular.id()).into());
-    let surface = TerminalSurface::new((4, 1));
-    write_text(&surface, "text");
+    let mut terminal = TerminalGrid::new((4, 1));
+    write_text(&mut terminal, "text");
     let entity = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(surface),
+            terminal,
             TerminalRenderConfig {
                 font: super::super::FontFaces::regular(family),
                 ..default()
@@ -1150,7 +1167,7 @@ fn grid_and_scale_helpers() {
         GridSize::new(1, 1)
     );
     let largest = grid_for(Vec2::splat(f32::MAX), Vec2::splat(f32::MIN_POSITIVE));
-    assert!(largest.area() <= TerminalSurface::MAX_CELLS);
+    assert!(largest.area() <= TerminalGrid::MAX_CELLS);
     assert!(largest.width > 0 && largest.height > 0);
     assert_eq!(
         grid_for(Vec2::new(805.0, 245.0), Vec2::new(10.0, 20.0)),
@@ -1165,13 +1182,13 @@ fn grid_and_scale_helpers() {
 #[test]
 fn missing_text_resources_never_report_measured_geometry() {
     let mut app = test_app();
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(TerminalSurface::new((2, 1))))
-        .id();
+    let entity = app.world_mut().spawn(TerminalGrid::new((2, 1))).id();
     app.update();
     let output = app.world().get::<TerminalTexture>(entity).unwrap();
-    assert_eq!(output.status, TerminalStatus::MissingTextResources);
+    assert_eq!(
+        output.status,
+        TerminalStatus::Failed(TerminalFailure::MissingTextResources)
+    );
     assert!(output.measured().is_none());
 }
 
@@ -1181,7 +1198,7 @@ fn invalid_and_oversized_geometry_is_observable_and_can_recover() {
     let entity = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(TerminalSurface::new((80, 24))),
+            TerminalGrid::new((80, 24)),
             TerminalRenderConfig {
                 sizing: TerminalSizing::Fixed {
                     cell_size: Vec2::splat(f32::NAN),
@@ -1193,7 +1210,10 @@ fn invalid_and_oversized_geometry_is_observable_and_can_recover() {
         .id();
     app.update();
     let initial = app.world().get::<TerminalTexture>(entity).unwrap();
-    assert_eq!(initial.status, TerminalStatus::InvalidSizing);
+    assert_eq!(
+        initial.status,
+        TerminalStatus::Failed(TerminalFailure::InvalidSizing)
+    );
     let image = initial.image.clone();
     app.world_mut()
         .get_mut::<TerminalRenderConfig>(entity)
@@ -1204,7 +1224,10 @@ fn invalid_and_oversized_geometry_is_observable_and_can_recover() {
     };
     app.update();
     let output = app.world().get::<TerminalTexture>(entity).unwrap();
-    assert_eq!(output.status, TerminalStatus::TextureTooLarge);
+    assert_eq!(
+        output.status,
+        TerminalStatus::Failed(TerminalFailure::TextureTooLarge)
+    );
     assert!(
         app.world()
             .resource::<Assets<Image>>()
@@ -1238,16 +1261,13 @@ fn a_terminal_too_large_only_after_refining_its_cell_goes_idle() {
     let mut app = text_app();
     // 387 rows fit the requested 20 px cell, but not the cell refined to fit
     // the font.
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(TerminalSurface::new((5, 387))))
-        .id();
+    let entity = app.world_mut().spawn(TerminalGrid::new((5, 387))).id();
     for _ in 0..3 {
         app.update();
     }
     assert_eq!(
         app.world().get::<TerminalTexture>(entity).unwrap().status,
-        TerminalStatus::TextureTooLarge
+        TerminalStatus::Failed(TerminalFailure::TextureTooLarge)
     );
     app.update();
     assert_eq!(
@@ -1259,24 +1279,22 @@ fn a_terminal_too_large_only_after_refining_its_cell_goes_idle() {
 #[test]
 fn late_consumer_observes_current_geometry_and_resizes_keep_the_image() {
     let mut app = text_app();
-    let surface = TerminalSurface::new((4, 2));
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(surface.clone()))
-        .id();
+    let terminal = TerminalGrid::new((4, 2));
+    let entity = app.world_mut().spawn(terminal).id();
     for _ in 0..4 {
         app.update();
     }
     let initial = app.world().get::<TerminalTexture>(entity).unwrap().clone();
     assert!(initial.measured().is_some());
-    surface.update(|update| {
+    {
+        let mut update = grid(&mut app, entity);
         update.resize((8, 3));
-    });
-    // Readiness is what the last sync recorded; retained geometry is checked
-    // against the live surface.
-    assert!(
-        !initial.geometry.is_current(),
-        "a resize immediately invalidates old geometry"
+    }
+    // Readiness is what the last sync recorded; its grid tells it apart from
+    // the live grid.
+    assert_ne!(
+        initial.measured().unwrap().grid(),
+        app.world().get::<TerminalGrid>(entity).unwrap().size()
     );
     assert_eq!(
         app.world()
@@ -1284,14 +1302,17 @@ fn late_consumer_observes_current_geometry_and_resizes_keep_the_image() {
             .unwrap()
             .measured()
             .map(TerminalGeometry::grid),
-        Some(initial.geometry.grid()),
+        Some(initial.measured().unwrap().grid()),
         "until the next sync, the texture describes the previous grid"
     );
     app.update();
     let resized = app.world().get::<TerminalTexture>(entity).unwrap().clone();
     assert_eq!(resized.image, initial.image);
     assert_eq!(resized.measured().unwrap().grid(), GridSize::new(8, 3));
-    assert_ne!(resized.geometry.size(), initial.geometry.size());
+    assert_ne!(
+        resized.measured().unwrap().size(),
+        initial.measured().unwrap().size()
+    );
     app.update();
     assert_eq!(
         app.world().get::<TerminalTexture>(entity).unwrap(),
@@ -1312,7 +1333,7 @@ fn measured_output_changes_when_only_logical_metrics_change() {
     let entity = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(TerminalSurface::new((4, 2))),
+            TerminalGrid::new((4, 2)),
             TerminalRenderConfig {
                 sizing: super::super::TerminalSizing::FromFont {
                     font_size: 20.0,
@@ -1339,14 +1360,17 @@ fn measured_output_changes_when_only_logical_metrics_change() {
     app.update();
     let texture = app.world().get::<TerminalTexture>(entity).unwrap();
     assert_eq!(
-        texture.geometry.size(),
-        initial.geometry.size(),
+        texture.measured().unwrap().size(),
+        initial.measured().unwrap().size(),
         "physical pixels remain snapped"
     );
-    assert_ne!(texture.geometry.cell_size(), initial.geometry.cell_size());
     assert_ne!(
-        texture.geometry.logical_size(),
-        initial.geometry.logical_size()
+        texture.measured().unwrap().cell_size(),
+        initial.measured().unwrap().cell_size()
+    );
+    assert_ne!(
+        texture.measured().unwrap().logical_size(),
+        initial.measured().unwrap().logical_size()
     );
     let changed = texture.clone();
     app.update();
@@ -1508,7 +1532,6 @@ fn empty_scene_produces_no_upload_or_draw_batch() {
     let SceneQuads { instances, batches } = quads;
     assert!(instances.is_empty());
     assert!(batches.is_empty());
-    assert!(bytemuck::cast_slice::<_, u8>(&instances).is_empty());
 }
 
 #[test]
@@ -1611,11 +1634,8 @@ fn drain_pending(app: &mut App) {
 #[test]
 fn delayed_scenes_coalesce_completely_and_removed_renderers_release_state() {
     let mut app = text_app();
-    let surface = TerminalSurface::new((4, 3));
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(surface.clone()))
-        .id();
+    let terminal = TerminalGrid::new((4, 3));
+    let entity = app.world_mut().spawn(terminal).id();
     for _ in 0..4 {
         app.update();
     }
@@ -1628,9 +1648,10 @@ fn delayed_scenes_coalesce_completely_and_removed_renderers_release_state() {
         .image
         .id();
 
-    surface.update(|update| {
+    {
+        let mut update = grid(&mut app, entity);
         update.set_cell((0, 0), &TerminalCell::new("A"));
-    });
+    }
     app.update();
     collect_batch_scenes(app.world_mut(), &mut pending);
     assert!(
@@ -1640,21 +1661,21 @@ fn delayed_scenes_coalesce_completely_and_removed_renderers_release_state() {
 
     // Extraction without submission models delayed GPU assets. The next scene
     // must contain both edits, even though only the second row just changed.
-    surface.update(|update| {
+    {
+        let mut update = grid(&mut app, entity);
         update.set_cell((0, 1), &TerminalCell::new("B"));
-    });
+    }
     app.update();
     collect_batch_scenes(app.world_mut(), &mut pending);
     assert_eq!(pending.scenes.len(), 1);
     assert!(pending.scenes[&target].clear);
-    let snapshot = app
-        .world()
-        .get::<BatchMainState>(entity)
-        .unwrap()
-        .snapshot()
-        .unwrap();
-    assert_eq!(snapshot.row_text(0), "A   ");
-    assert_eq!(snapshot.row_text(1), "B   ");
+    assert_eq!(
+        app.world()
+            .get::<BatchMainState>(entity)
+            .unwrap()
+            .drawn_revision(),
+        Some(app.world().get::<TerminalGrid>(entity).unwrap().revision())
+    );
     assert_eq!(
         app.world()
             .get::<TerminalStats>(entity)
@@ -1664,9 +1685,10 @@ fn delayed_scenes_coalesce_completely_and_removed_renderers_release_state() {
     );
 
     for width in [8, 2, 6] {
-        surface.update(|update| {
+        {
+            let mut update = grid(&mut app, entity);
             update.resize((width, 3));
-        });
+        }
         app.update();
         collect_batch_scenes(app.world_mut(), &mut pending);
         assert_eq!(pending.scenes.len(), 1);
@@ -1676,14 +1698,13 @@ fn delayed_scenes_coalesce_completely_and_removed_renderers_release_state() {
             app.world()
                 .get::<TerminalTexture>(entity)
                 .unwrap()
-                .geometry
+                .measured()
+                .unwrap()
                 .size()
         );
     }
 
-    app.world_mut()
-        .entity_mut(entity)
-        .remove::<TerminalRenderer>();
+    app.world_mut().entity_mut(entity).remove::<TerminalGrid>();
     collect_batch_scenes(app.world_mut(), &mut pending);
     assert!(pending.scenes.is_empty());
     assert_eq!(
@@ -1699,12 +1720,9 @@ fn delayed_scenes_coalesce_completely_and_removed_renderers_release_state() {
 #[test]
 fn blink_phases_only_rebuild_blinking_content() {
     let mut app = timed_app();
-    let surface = TerminalSurface::new((6, 3));
-    write_text(&surface, "hello!");
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(surface.clone()))
-        .id();
+    let mut terminal = TerminalGrid::new((6, 3));
+    write_text(&mut terminal, "hello!");
+    let entity = app.world_mut().spawn(terminal).id();
     for _ in 0..4 {
         app.update();
     }
@@ -1717,10 +1735,11 @@ fn blink_phases_only_rebuild_blinking_content() {
     assert_eq!(idle.changed_rows, 0, "{idle}");
 
     // A visible blinking cursor dirties only its own row on a phase flip.
-    surface.update(|update| {
+    {
+        let mut update = grid(&mut app, entity);
         update.set_cursor_position((0, 2));
         update.set_cursor_visible(true);
-    });
+    }
     app.update();
     drain_pending(&mut app);
     advance(&mut app, 0.5);
@@ -1729,11 +1748,12 @@ fn blink_phases_only_rebuild_blinking_content() {
     assert_eq!(cursor_only.changed_rows, 1, "{cursor_only}");
 
     // A SLOW_BLINK cell's row repaints on a phase flip too, and no other.
-    surface.update(|update| {
+    {
+        let mut update = grid(&mut app, entity);
         let mut cell = TerminalCell::new("x");
         cell.style = TerminalStyle::new().with(StyleFlags::SLOW_BLINK);
         update.set_cell((0, 0), &cell);
-    });
+    }
     app.update();
     drain_pending(&mut app);
     advance(&mut app, 0.5);
@@ -1744,9 +1764,10 @@ fn blink_phases_only_rebuild_blinking_content() {
     // Overwriting the only blinking cell in a partial repaint ends its
     // rebuilds: only the cursor row flips again.
     drain_pending(&mut app);
-    surface.update(|update| {
+    {
+        let mut update = grid(&mut app, entity);
         update.set_cell((0, 0), &TerminalCell::new("y"));
-    });
+    }
     app.update();
     let repainted = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!(repainted.changed_rows, 1, "a partial repaint: {repainted}");
@@ -1760,20 +1781,15 @@ fn blink_phases_only_rebuild_blinking_content() {
 #[test]
 fn full_rebuilds_merge_identical_backgrounds_vertically() {
     let mut app = text_app();
-    let surface = TerminalSurface::new((4, 3));
-    surface.update(|update| {
-        for row in 0..3 {
-            for column in 0..4 {
-                let mut cell = TerminalCell::new(" ");
-                cell.style = TerminalStyle::new().bg(crate::scene::TerminalColor::Rgb(200, 30, 30));
-                update.set_cell((column, row), &cell);
-            }
+    let mut terminal = TerminalGrid::new((4, 3));
+    for row in 0..3 {
+        for column in 0..4 {
+            let mut cell = TerminalCell::new(" ");
+            cell.style = TerminalStyle::new().bg(crate::scene::TerminalColor::Rgb(200, 30, 30));
+            terminal.set_cell((column, row), &cell);
         }
-    });
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(surface.clone()))
-        .id();
+    }
+    let entity = app.world_mut().spawn(terminal).id();
     for _ in 0..4 {
         app.update();
     }
@@ -1792,30 +1808,27 @@ fn full_rebuilds_merge_identical_backgrounds_vertically() {
 #[test]
 fn ascii_and_non_ascii_symbols_reuse_the_shape_cache() {
     let mut app = text_app();
-    let surface = TerminalSurface::new((4, 1));
-    write_text(&surface, "abéé");
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(surface.clone()))
-        .id();
+    let mut terminal = TerminalGrid::new((4, 1));
+    write_text(&mut terminal, "abéé");
+    let entity = app.world_mut().spawn(terminal).id();
     for _ in 0..4 {
         app.update();
     }
     // Re-shuffling the same symbols shapes nothing new: the ASCII fast
     // path and the map fallback both hit.
-    write_text(&surface, "ébéa");
+    write_text(&mut grid(&mut app, entity), "ébéa");
     app.update();
     let stats = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!(stats.shape_misses, 0, "{stats}");
     assert_eq!(stats.changed_rows, 1, "{stats}");
     // A genuinely new symbol still misses once.
-    write_text(&surface, "cbéa");
+    write_text(&mut grid(&mut app, entity), "cbéa");
     app.update();
     let stats = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!(stats.shape_misses, 1, "{stats}");
 }
 
-/// Instances are uploaded as their bytes, so their layout must be what
+/// Instances are uploaded as their floats, so their layout must be what
 /// `gpu::instance_layout` declares: four tightly packed fields, 52 bytes.
 #[test]
 fn quad_instances_are_the_shaders_52_byte_vertex_layout() {
@@ -1826,14 +1839,8 @@ fn quad_instances_are_the_shaders_52_byte_vertex_layout() {
         13.0,
     );
     assert_eq!(size_of::<QuadInstance>(), 52);
-    let floats: Vec<f32> = bytemuck::bytes_of(&instance)
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|chunk| f32::from_ne_bytes(*chunk))
-        .collect();
     assert_eq!(
-        floats,
+        instance.floats(),
         [
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0
         ]
@@ -1853,12 +1860,12 @@ fn invalid_scale_settles_without_idle_redraws() {
         (0.5, 1.0),
         (9.0, 8.0),
     ] {
-        let surface = TerminalSurface::new((4, 2));
-        write_text(&surface, "A");
+        let mut terminal = TerminalGrid::new((4, 2));
+        write_text(&mut terminal, "A");
         let entity = app
             .world_mut()
             .spawn((
-                TerminalRenderer::new(surface),
+                terminal,
                 TerminalRenderConfig {
                     raster: super::super::RasterConfig { scale, ..default() },
                     blink: super::super::BlinkConfig {
@@ -1877,7 +1884,7 @@ fn invalid_scale_settles_without_idle_redraws() {
     for (entity, expected) in entities {
         let output = app.world().get::<TerminalTexture>(entity).unwrap();
         assert!(output.measured().is_some());
-        assert_eq!(output.geometry.raster_scale(), expected);
+        assert_eq!(output.measured().unwrap().raster_scale(), expected);
         let generation = app
             .world()
             .get::<BatchMainState>(entity)
@@ -1911,16 +1918,13 @@ fn invalid_scale_settles_without_idle_redraws() {
 #[test]
 fn stats_reset_when_font_starts_loading() {
     let mut app = text_app();
-    let surface = TerminalSurface::new((4, 2));
-    write_text(&surface, "A");
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(surface.clone()))
-        .id();
+    let mut terminal = TerminalGrid::new((4, 2));
+    write_text(&mut terminal, "A");
+    let entity = app.world_mut().spawn(terminal).id();
     for _ in 0..4 {
         app.update();
     }
-    write_text(&surface, "B");
+    write_text(&mut grid(&mut app, entity), "B");
     app.update();
     let previous = app
         .world()
@@ -1962,14 +1966,7 @@ fn idle_terminals_do_not_rescan_fonts_or_publish_statistics() {
         })
         .after(super::super::TerminalSystems::Sync),
     );
-    for _ in 0..3 {
-        app.update();
-    }
-    assert_eq!(app.world().resource::<FontCatalog>().scans, 0);
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(TerminalSurface::new((4, 2))))
-        .id();
+    app.world_mut().spawn(TerminalGrid::new((4, 2)));
     for _ in 0..4 {
         app.update();
     }
@@ -1981,22 +1978,13 @@ fn idle_terminals_do_not_rescan_fonts_or_publish_statistics() {
     }
     assert_eq!(app.world().resource::<FontCatalog>().scans, scans);
     assert_eq!(app.world().resource::<StatsChanges>().0, 0);
-    app.world_mut().despawn(entity);
-    app.update();
-    app.world_mut()
-        .spawn(TerminalRenderer::new(TerminalSurface::new((4, 2))));
-    app.update();
-    assert!(app.world().resource::<FontCatalog>().scans > scans);
 }
 
 #[test]
 fn glyph_atlas_stays_small_until_actual_glyphs_are_drawn() {
     let mut app = text_app();
-    let surface = TerminalSurface::new((4, 2));
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(surface.clone()))
-        .id();
+    let terminal = TerminalGrid::new((4, 2));
+    let entity = app.world_mut().spawn(terminal).id();
     for _ in 0..4 {
         app.update();
     }
@@ -2012,7 +2000,7 @@ fn glyph_atlas_stays_small_until_actual_glyphs_are_drawn() {
     let atlas = state.glyph_atlas.id;
     assert!(state.glyph_atlas.glyphs.is_empty());
     let empty = image_bytes(&app);
-    write_text(&surface, "A");
+    write_text(&mut grid(&mut app, entity), "A");
     app.update();
     let state = app.world().get::<BatchMainState>(entity).unwrap();
     assert_eq!(state.glyph_atlas.id, atlas, "the atlas keeps its identity");
@@ -2026,28 +2014,6 @@ fn glyph_atlas_stays_small_until_actual_glyphs_are_drawn() {
         "{} bytes",
         image_bytes(&app) - empty
     );
-}
-
-#[test]
-fn retained_geometry_does_not_keep_surface_content_alive() {
-    let mut app = text_app();
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(TerminalSurface::new((4, 2))))
-        .id();
-    for _ in 0..4 {
-        app.update();
-    }
-    let geometry = app
-        .world()
-        .get::<TerminalTexture>(entity)
-        .unwrap()
-        .measured()
-        .unwrap()
-        .clone();
-    assert!(geometry.is_current());
-    app.world_mut().despawn(entity);
-    assert!(!geometry.is_current());
 }
 
 /// Ink rectangle of the cached run for `text` over `columns` cells, in cell
@@ -2091,12 +2057,12 @@ fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
         .add(Font::from_bytes(
             include_bytes!("../../../assets/fonts/fidelity/FidelityWideSymbols.ttf").to_vec(),
         ));
-    let surface = TerminalSurface::new((8, 1));
-    write_text(&surface, "↔ ↔↔∑ ★x");
+    let mut terminal = TerminalGrid::new((8, 1));
+    write_text(&mut terminal, "↔ ↔↔∑ ★x");
     let entity = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(surface.clone()),
+            terminal,
             TerminalRenderConfig {
                 font: super::super::FontFaces::regular(regular),
                 sizing: TerminalSizing::FitCellWidth(Vec2::new(11.0, 20.0)),
@@ -2159,17 +2125,19 @@ fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
 
     // Blanking the cell after `★` widens its allowance: a new shape; the
     // one-cell shape is kept for when the neighbour is written again.
-    surface.update(|u| {
+    {
+        let mut u = grid(&mut app, entity);
         u.set_cell((7, 0), &TerminalCell::new(" "));
-    });
+    }
     app.update();
     let stats = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!((stats.shape_misses, stats.changed_rows), (1, 1), "{stats}");
     let spread_star = cached_ink(&app, entity, "★", 2);
     assert!(spread_star.width() > star.width() && inside(spread_star, 2.0));
-    surface.update(|u| {
+    {
+        let mut u = grid(&mut app, entity);
         u.set_cell((7, 0), &TerminalCell::new("x"));
-    });
+    }
     app.update();
     let stats = *app.world().get::<TerminalStats>(entity).unwrap();
     assert_eq!((stats.shape_misses, stats.changed_rows), (0, 1), "{stats}");
@@ -2228,17 +2196,13 @@ fn sprites_without_atlas_room_are_not_cached_empty() {
     );
 }
 
-/// The renderer's components follow `TerminalRenderer` as soon as commands
-/// apply, without waiting for an update: they appear on spawn, go when the
-/// renderer is removed, and come back (with a new image) when it returns.
+/// The renderer's components follow the grid as soon as commands apply,
+/// without waiting for an update: they appear on spawn, go when the grid is
+/// removed, and come back (with a new image) when it returns.
 #[test]
-fn renderer_components_follow_the_renderer_without_an_update() {
+fn renderer_components_follow_the_grid_without_an_update() {
     let mut app = text_app();
-    let surface = TerminalSurface::new((4, 2));
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(surface.clone()))
-        .id();
+    let entity = app.world_mut().spawn(TerminalGrid::new((4, 2))).id();
     let has_all = |app: &App| {
         let entity = app.world().entity(entity);
         [
@@ -2261,13 +2225,11 @@ fn renderer_components_follow_the_renderer_without_an_update() {
     for _ in 0..3 {
         app.update();
     }
-    app.world_mut()
-        .entity_mut(entity)
-        .remove::<TerminalRenderer>();
+    app.world_mut().entity_mut(entity).remove::<TerminalGrid>();
     assert_eq!(has_all(&app), [false; 3]);
     app.world_mut()
         .entity_mut(entity)
-        .insert(TerminalRenderer::new(surface));
+        .insert(TerminalGrid::new((4, 2)));
     assert_eq!(has_all(&app), [true; 3]);
     let second = &app.world().get::<TerminalTexture>(entity).unwrap().image;
     assert_ne!(&first, second);
@@ -2276,15 +2238,15 @@ fn renderer_components_follow_the_renderer_without_an_update() {
     app.update();
 }
 
-/// A scene the render world took but did not draw is withdrawn when its
-/// terminal switches surfaces; the replacing scene still carries the atlas
-/// entries the withdrawn one brought, since the glyphs stay cached.
+/// A scene the render world took but did not draw is superseded when its
+/// terminal switches grids; the replacing scene still carries the atlas
+/// entries the superseded one brought, since the glyphs stay cached.
 #[test]
 fn withdrawn_scenes_hand_their_atlas_entries_to_the_next_scene() {
     let mut app = text_app();
-    let first = TerminalSurface::new((4, 1));
-    write_text(&first, "AB");
-    let entity = app.world_mut().spawn(TerminalRenderer::new(first)).id();
+    let mut first = TerminalGrid::new((4, 1));
+    write_text(&mut first, "AB");
+    let entity = app.world_mut().spawn(first).id();
     for _ in 0..4 {
         app.update();
     }
@@ -2299,13 +2261,11 @@ fn withdrawn_scenes_hand_their_atlas_entries_to_the_next_scene() {
     let carried = pending.scenes[&output].atlas_uploads.len();
     assert!(carried >= 2, "the first scene brings A and B");
 
-    // The same text on another surface: the glyphs are cached, so the new
+    // The same text in another grid: the glyphs are cached, so the new
     // scene brings no entries of its own.
-    let second = TerminalSurface::new((4, 1));
-    write_text(&second, "AB");
-    app.world_mut()
-        .entity_mut(entity)
-        .insert(TerminalRenderer::new(second));
+    let mut second = TerminalGrid::new((4, 1));
+    write_text(&mut second, "AB");
+    app.world_mut().entity_mut(entity).insert(second);
     app.update();
     assert!(
         queued(app.world(), entity)
@@ -2334,11 +2294,8 @@ fn texture_changes_track_geometry_not_content() {
         })
         .after(super::super::TerminalSystems::Sync),
     );
-    let surface = TerminalSurface::new((4, 2));
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(surface.clone()))
-        .id();
+    let terminal = TerminalGrid::new((4, 2));
+    let entity = app.world_mut().spawn(terminal).id();
     for _ in 0..4 {
         app.update();
     }
@@ -2348,16 +2305,17 @@ fn texture_changes_track_geometry_not_content() {
         GridSize::new(4, 2)
     );
     app.world_mut().resource_mut::<Changes>().0 = 0;
-    write_text(&surface, "text");
+    write_text(&mut grid(&mut app, entity), "text");
     app.update();
     assert_eq!(
         app.world().resource::<Changes>().0,
         0,
         "content is not geometry"
     );
-    surface.update(|update| {
+    {
+        let mut update = grid(&mut app, entity);
         update.resize((6, 3));
-    });
+    }
     app.update();
     app.update();
     assert_eq!(
@@ -2369,7 +2327,6 @@ fn texture_changes_track_geometry_not_content() {
         texture(&app).measured().unwrap().grid(),
         GridSize::new(6, 3)
     );
-    assert!(texture(&app).measured().unwrap().is_current());
 }
 
 /// Failures are typed until logged, with the messages they always had.
@@ -2398,54 +2355,5 @@ fn shaping_failures_format_only_when_logged() {
             font: FontSource::from("mono"),
             error: super::metrics::AdvanceError::NotRegistered,
         }
-    );
-}
-
-/// A scene built for a grid the surface no longer has (a producer resized
-/// it after `TerminalSystems::Sync`) is withdrawn at extraction and does not
-/// draw; the next sync repaints the new grid.
-#[test]
-fn scenes_for_a_resized_surface_are_withdrawn_at_extraction() {
-    let mut app = text_app();
-    let surface = TerminalSurface::new((4, 2));
-    let entity = app
-        .world_mut()
-        .spawn(TerminalRenderer::new(surface.clone()))
-        .id();
-    for _ in 0..4 {
-        app.update();
-    }
-    let output = app
-        .world()
-        .get::<BatchMainState>(entity)
-        .unwrap()
-        .output
-        .id();
-    let mut pending = PendingBatchScenes::default();
-    collect_batch_scenes(app.world_mut(), &mut pending);
-    pending.scenes.clear();
-
-    write_text(&surface, "AB");
-    app.update();
-    // Resized after the sync that built the scene, before extraction.
-    surface.update(|update| {
-        update.resize((6, 3));
-    });
-    collect_batch_scenes(app.world_mut(), &mut pending);
-    let stale = &pending.scenes[&output];
-    assert!(stale.instances.is_empty() && !stale.clear && stale.submission.is_none());
-
-    app.update();
-    collect_batch_scenes(app.world_mut(), &mut pending);
-    let current = &pending.scenes[&output];
-    assert!(current.clear && !current.instances.is_empty());
-    assert_eq!(
-        current.destination_size,
-        app.world()
-            .get::<TerminalTexture>(entity)
-            .unwrap()
-            .measured()
-            .unwrap()
-            .size()
     );
 }

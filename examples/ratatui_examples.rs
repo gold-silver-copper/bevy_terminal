@@ -20,10 +20,9 @@ use bevy::{
     window::{CursorMoved, PrimaryWindow, WindowResizeConstraints, WindowResolution},
 };
 use bevy_terminal_ratatui::prelude::{
-    TerminalPlugin, TerminalRenderConfig, TerminalSizing, TerminalSurface, TerminalSystems,
-    TerminalTexture,
+    RatatuiTerminal, TerminalGrid, TerminalRenderConfig, TerminalSizing, TerminalSource,
+    TerminalSourcePlugin, TerminalSystems, TerminalTexture,
 };
-use bevy_terminal_ratatui::{RatatuiTerminal, TerminalRenderer};
 use ratatui::layout::Size;
 
 const CELL_WIDTH: f32 = 10.0;
@@ -36,8 +35,6 @@ fn main() {
     let Some(start_index) = selected_example_index() else {
         return;
     };
-    let gallery = Gallery::new(start_index);
-    let surface = gallery.surface();
     let config = TerminalRenderConfig {
         sizing: TerminalSizing::FitCellWidth(Vec2::new(CELL_WIDTH, CELL_HEIGHT)),
         ..default()
@@ -62,9 +59,8 @@ fn main() {
     }));
     let fonts = fonts::load(&mut app);
     let config = fonts.configure(config);
-    app.add_plugins(TerminalPlugin)
+    app.add_plugins(TerminalSourcePlugin::<Gallery>::default())
         .add_plugins((app::presentation, app::window_scale))
-        .insert_resource(gallery)
         .insert_resource(AnimationClock(Timer::from_seconds(
             0.1,
             TimerMode::Repeating,
@@ -72,7 +68,7 @@ fn main() {
         .add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(Camera2d);
             commands.spawn(app::ui_terminal(
-                TerminalRenderer::new(surface.clone()),
+                Gallery::new(start_index),
                 config.clone(),
                 Vec2::splat(MARGIN),
             ));
@@ -91,7 +87,9 @@ fn main() {
         .run();
 }
 
-#[derive(Resource)]
+/// The gallery terminal and every example's state. The renderer draws it as a
+/// terminal source, through the Ratatui terminal's grid.
+#[derive(Component)]
 struct Gallery {
     index: usize,
     states: Vec<catalog::ExampleState>,
@@ -115,10 +113,6 @@ impl Gallery {
 
     fn state_mut(&mut self) -> &mut catalog::ExampleState {
         &mut self.states[self.index]
-    }
-
-    fn surface(&self) -> TerminalSurface {
-        self.terminal.surface()
     }
 
     fn size(&self) -> Size {
@@ -156,6 +150,12 @@ impl Gallery {
     }
 }
 
+impl TerminalSource for Gallery {
+    fn grid(&self) -> &TerminalGrid {
+        self.terminal.grid()
+    }
+}
+
 #[derive(Resource)]
 struct AnimationClock(Timer);
 
@@ -174,7 +174,7 @@ fn measured_cell(textures: &Query<&TerminalTexture>) -> Vec2 {
 fn resize_gallery_to_window(
     windows: Query<&Window, With<PrimaryWindow>>,
     textures: Query<&TerminalTexture>,
-    mut gallery: ResMut<Gallery>,
+    mut gallery: Single<&mut Gallery>,
 ) {
     let Ok(window) = windows.single() else {
         return;
@@ -188,7 +188,7 @@ fn resize_gallery_to_window(
 fn keyboard_input(
     mut messages: MessageReader<KeyboardInput>,
     physical_keys: Res<ButtonInput<KeyCode>>,
-    mut gallery: ResMut<Gallery>,
+    mut gallery: Single<&mut Gallery>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -279,7 +279,7 @@ fn pointer_input(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     textures: Query<&TerminalTexture>,
-    mut gallery: ResMut<Gallery>,
+    mut gallery: Single<&mut Gallery>,
 ) {
     let pressed = mouse_buttons.pressed(MouseButton::Left);
     let terminal_size = gallery.size();
@@ -313,7 +313,7 @@ fn pointer_input(
 fn animate_current(
     time: Res<Time>,
     mut clock: ResMut<AnimationClock>,
-    mut gallery: ResMut<Gallery>,
+    mut gallery: Single<&mut Gallery>,
 ) {
     if !clock.0.tick(time.delta()).just_finished() {
         return;
@@ -415,16 +415,15 @@ mod tests {
     }
 
     #[test]
-    fn live_redraw_submits_one_surface_revision_without_a_clear_frame() {
+    fn live_redraw_changes_the_scene() {
         let mut gallery = Gallery::new(0);
-        let surface = gallery.surface();
-        let before = surface.info().revision;
+        let before = gallery.grid().clone();
         assert!(gallery.state_mut().tick());
         gallery.redraw();
-        assert_eq!(surface.info().revision, before + 1);
+        assert_ne!(gallery.grid().cells(), before.cells());
         assert!(
-            surface
-                .snapshot()
+            gallery
+                .grid()
                 .cells()
                 .iter()
                 .any(|cell| cell.symbol() != " ")
@@ -497,8 +496,7 @@ mod tests {
                 assert_eq!(gallery.size(), size);
                 assert!(
                     gallery
-                        .surface()
-                        .snapshot()
+                        .grid()
                         .cells()
                         .iter()
                         .any(|cell| cell.symbol() != " "),
@@ -522,11 +520,11 @@ mod tests {
         assert!(gallery.state_mut().pointer(21, 12, size, false, false));
         gallery.redraw();
 
-        let snapshot = gallery.surface().snapshot();
+        let grid = gallery.grid();
         assert_eq!(
-            snapshot.cell((20, 12)).unwrap().symbol(),
+            grid.cell((20, 12)).unwrap().symbol(),
             ratatui::symbols::block::FULL
         );
-        assert_eq!(snapshot.cell((21, 12)).unwrap().symbol(), "╳");
+        assert_eq!(grid.cell((21, 12)).unwrap().symbol(), "╳");
     }
 }

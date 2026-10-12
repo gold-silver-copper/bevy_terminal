@@ -18,9 +18,12 @@ use quad::QuadInstance;
 use scene::{RowStates, SceneInput, SceneScratch, build_scene};
 use shaping::{AtlasUpload, ShapeCaches, UnifiedGlyphAtlas};
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 #[cfg(feature = "timings")]
@@ -39,14 +42,14 @@ use bevy::{
     text::{FontAtlasSet, FontCx, LayoutCx, ScaleCx, TextError, TextPipeline},
 };
 
-use super::terminal::Measurement;
 use super::{
-    Face, Palette, ResolvedStyle, TerminalGeometry, TerminalRenderConfig, TerminalRenderer,
-    TerminalStats, TerminalStatus, TerminalTexture, cell_span, cursor_should_be_visible, text_font,
+    Face, Palette, ResolvedStyle, TerminalFailure, TerminalGeometry, TerminalRenderConfig,
+    TerminalSource, TerminalStats, TerminalStatus, TerminalTexture, cell_span,
+    cursor_should_be_visible, text_font,
 };
 use crate::{
-    scene::{GridSize, StyleFlags, TerminalSnapshot},
-    surface::{TerminalSurface, WeakSurface},
+    grid::TerminalGrid,
+    scene::{CellPosition, GridSize, StyleFlags},
 };
 
 /// The terminal texture format: the shader emits linear colors and the sRGB
@@ -56,25 +59,27 @@ const TARGET_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
 const GLYPH_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
 const GLYPH_ATLAS_SIZE: u32 = 2048;
 
-/// Installs the terminal renderer. Add it once, then spawn [`TerminalRenderer`]
-/// entities.
+/// Installs the terminal renderer and draws every [`TerminalGrid`] entity.
 ///
 /// Glyphs are shaped and rasterized by Bevy text. Each terminal is represented
 /// by compact GPU quad instances drawn into its own renderer-owned texture;
-/// GPU pipelines and scratch buffers are shared between terminals.
+/// GPU pipelines and scratch buffers are shared between terminals. Adding it
+/// more than once, or after a [`TerminalSourcePlugin`] added it, is harmless.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TerminalPlugin;
 
 impl Plugin for TerminalPlugin {
     fn build(&self, app: &mut App) {
+        if app.world().contains_resource::<SceneQueue>() {
+            return;
+        }
         app.init_resource::<FontCatalog>()
             .init_resource::<SceneQueue>()
-            .add_observer(initialize_terminal)
-            .add_observer(release_terminal)
             .add_systems(
                 Update,
-                sync_batch_terminals.in_set(super::TerminalSystems::Sync),
+                refresh_font_catalog.in_set(super::TerminalSystems::Sync),
             );
+        register_source::<TerminalGrid>(app);
         if app.get_sub_app(RenderApp).is_none() {
             return;
         }
@@ -92,13 +97,84 @@ impl Plugin for TerminalPlugin {
                 render_batch_scenes.in_set(RenderGraphSystems::Begin),
             );
     }
+
+    fn is_unique(&self) -> bool {
+        false
+    }
+}
+
+/// Draws every entity with the [`TerminalSource`] `S`, as
+/// [`TerminalPlugin`] does for [`TerminalGrid`]. Adds the `TerminalPlugin`
+/// if it is missing.
+pub struct TerminalSourcePlugin<S>(PhantomData<fn() -> S>);
+
+impl<S> Default for TerminalSourcePlugin<S> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<S: TerminalSource + Component> Plugin for TerminalSourcePlugin<S> {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(TerminalPlugin);
+        register_source::<S>(app);
+    }
+}
+
+fn register_source<S: TerminalSource + Component>(app: &mut App) {
+    app.add_observer(initialize_terminal::<S>)
+        .add_observer(release_terminal::<S>)
+        .add_systems(
+            Update,
+            sync_terminals::<S>
+                .in_set(super::TerminalSystems::Sync)
+                .after(refresh_font_catalog),
+        );
+}
+
+/// Draws the grid of the [`TerminalSource`] resource `R` into every entity
+/// marked with [`ResourceTerminal<R>`], for producers that keep their
+/// terminal in a resource. Adds the [`TerminalPlugin`] if it is missing.
+pub struct TerminalResourcePlugin<R>(PhantomData<fn() -> R>);
+
+impl<R> Default for TerminalResourcePlugin<R> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<R: TerminalSource + Resource> Plugin for TerminalResourcePlugin<R> {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(TerminalPlugin)
+            .add_observer(initialize_resource_terminal::<R>)
+            .add_observer(release_terminal::<ResourceTerminal<R>>)
+            .add_systems(
+                Update,
+                sync_resource_terminals::<R>
+                    .in_set(super::TerminalSystems::Sync)
+                    .after(refresh_font_catalog),
+            );
+    }
+}
+
+/// Draws the grid of the resource `R` into this entity's [`TerminalTexture`],
+/// after adding [`TerminalResourcePlugin<R>`]. Several entities may draw the
+/// same resource, each with its own [`TerminalRenderConfig`].
+#[derive(Component)]
+#[require(TerminalRenderConfig)]
+pub struct ResourceTerminal<R: Send + Sync + 'static>(PhantomData<fn() -> R>);
+
+impl<R: Send + Sync + 'static> Default for ResourceTerminal<R> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
 }
 
 /// Drops the renderer's components when a terminal stops rendering (its
-/// [`TerminalRenderer`] is removed or the entity despawned), and has the
-/// render world drop its scene and free its atlas.
-fn release_terminal(
-    remove: On<Remove<TerminalRenderer>>,
+/// source is removed or the entity despawned), and has the render world drop
+/// its scene and free its atlas.
+fn release_terminal<C: Component>(
+    remove: On<Remove<C>>,
     states: Query<&BatchMainState>,
     mut queue: ResMut<SceneQueue>,
     mut commands: Commands,
@@ -112,13 +188,31 @@ fn release_terminal(
 }
 
 /// Everything the sync system touches on a terminal entity.
-type TerminalQuery<'w> = (
+type TerminalQuery<'w, S> = (
     Entity,
-    &'w TerminalRenderer,
+    Ref<'w, S>,
     Ref<'w, TerminalRenderConfig>,
     &'w mut BatchMainState,
     &'w mut TerminalTexture,
     &'w mut TerminalStats,
+);
+
+/// What the sync system touches on a terminal entity besides its source.
+type RendererQuery<'w> = (
+    Entity,
+    Ref<'w, TerminalRenderConfig>,
+    &'w mut BatchMainState,
+    &'w mut TerminalTexture,
+    &'w mut TerminalStats,
+);
+
+/// One [`RendererQuery`] item.
+type RendererItem<'w> = (
+    Entity,
+    Ref<'w, TerminalRenderConfig>,
+    Mut<'w, BatchMainState>,
+    Mut<'w, TerminalTexture>,
+    Mut<'w, TerminalStats>,
 );
 
 /// Bevy's text resources, required for shaping and measurement. They are
@@ -168,15 +262,17 @@ impl std::fmt::Display for ShapingFailure {
 /// Why a terminal cannot draw this update.
 #[derive(Debug, PartialEq)]
 enum SyncError {
-    /// It waits in this status.
-    Status(TerminalStatus),
+    /// It waits for its fonts.
+    Loading,
+    /// It cannot be drawn for this reason.
+    Failed(TerminalFailure),
     /// Its text could not be measured or shaped.
     Shaping(ShapingFailure),
 }
 
-impl From<TerminalStatus> for SyncError {
-    fn from(status: TerminalStatus) -> Self {
-        Self::Status(status)
+impl From<TerminalFailure> for SyncError {
+    fn from(failure: TerminalFailure) -> Self {
+        Self::Failed(failure)
     }
 }
 
@@ -214,54 +310,70 @@ impl TextResources<'_> {
 }
 
 /// Gives a terminal its texture, statistics and renderer state as soon as
-/// its [`TerminalRenderer`] is added.
-fn initialize_terminal(
-    add: On<Add<TerminalRenderer>>,
-    terminals: Query<(&TerminalRenderer, &TerminalRenderConfig)>,
+/// its source is added.
+fn initialize_terminal<S: TerminalSource + Component>(
+    add: On<Add<S>>,
+    terminals: Query<(&S, &TerminalRenderConfig)>,
+    images: ResMut<Assets<Image>>,
+    device: Option<Res<RenderDevice>>,
+    commands: Commands,
+) {
+    if let Ok((terminal, config)) = terminals.get(add.entity) {
+        let grid = terminal.grid().size();
+        initialize(add.entity, grid, config, images, device, commands);
+    }
+}
+
+/// [`initialize_terminal`] for a terminal drawing a resource, which may not
+/// exist yet.
+fn initialize_resource_terminal<R: TerminalSource + Resource>(
+    add: On<Add<ResourceTerminal<R>>>,
+    source: Option<Res<R>>,
+    configs: Query<&TerminalRenderConfig>,
+    images: ResMut<Assets<Image>>,
+    device: Option<Res<RenderDevice>>,
+    commands: Commands,
+) {
+    if let Ok(config) = configs.get(add.entity) {
+        let grid = source.map_or(GridSize::new(1, 1), |source| source.grid().size());
+        initialize(add.entity, grid, config, images, device, commands);
+    }
+}
+
+/// Gives a terminal drawing a `grid`-sized grid its texture, statistics and
+/// renderer state.
+fn initialize(
+    entity: Entity,
+    grid: GridSize,
+    config: &TerminalRenderConfig,
     mut images: ResMut<Assets<Image>>,
     device: Option<Res<RenderDevice>>,
     mut commands: Commands,
 ) {
-    let limit = texture_limit(device.as_deref());
-    let entity = add.entity;
-    if let Ok((terminal, config)) = terminals.get(entity) {
-        let raster_scale = resolve_raster_scale(config.raster.scale);
-        let metrics = if config.sizing.is_valid() {
-            resolve_metrics(config, None)
-        } else {
-            LogicalMetrics {
-                cell_size: Vec2::ONE,
-                font_size: 16.0,
-            }
-        };
-        let raster_config = physical_config(metrics, raster_scale);
-        let requested = terminal_pixel_size(terminal.surface().info().size, &raster_config);
-        let size = if requested.max_element() <= limit {
-            requested
-        } else {
-            UVec2::ONE
-        };
-        let output = images.add(make_target_image(size));
-        commands.entity(entity).insert((
-            TerminalTexture {
-                status: TerminalStatus::Loading,
-                image: output.clone(),
-                geometry: TerminalGeometry {
-                    surface: terminal.surface().downgrade(),
-                    measurement: Measurement {
-                        resize_generation: terminal.surface().info().resize_generation,
-                        grid: terminal.surface().info().size,
-                        size,
-                        raster_scale,
-                        physical_cell_size: raster_config.cell_size,
-                        physical_font_size: raster_config.font_size,
-                    },
-                },
-            },
-            BatchMainState::new(output.clone()),
-            TerminalStats::default(),
-        ));
-    }
+    let raster_scale = resolve_raster_scale(config.raster.scale);
+    let metrics = if config.sizing.is_valid() {
+        resolve_metrics(config, None)
+    } else {
+        LogicalMetrics {
+            cell_size: Vec2::ONE,
+            font_size: 16.0,
+        }
+    };
+    let requested = terminal_pixel_size(grid, &physical_config(metrics, raster_scale));
+    let size = if requested.max_element() <= texture_limit(device.as_deref()) {
+        requested
+    } else {
+        UVec2::ONE
+    };
+    let output = images.add(make_target_image(size));
+    commands.entity(entity).insert((
+        TerminalTexture {
+            status: TerminalStatus::Loading,
+            image: output.clone(),
+        },
+        BatchMainState::new(output),
+        TerminalStats::default(),
+    ));
 }
 
 fn texture_limit(device: Option<&RenderDevice>) -> u32 {
@@ -316,9 +428,8 @@ struct BatchMainState {
     /// The configured theme, resolved once per configuration change.
     palette: Palette,
     measure: FontMeasurement,
-    /// The surface being rendered and what the last scene drew from it;
-    /// `None` until the first sync.
-    retained: Option<Retained>,
+    /// What the last scene drew.
+    retained: Retained,
     submissions: Submissions,
     shapes: ShapeCaches,
     glyph_atlas: UnifiedGlyphAtlas,
@@ -359,24 +470,37 @@ struct MetricsInUse {
     scale: f32,
 }
 
-/// The surface a terminal renders and what its last scene drew from it.
+/// What a terminal's last scene drew.
+#[derive(Default)]
 struct Retained {
-    surface: TerminalSurface,
-    /// The content drawn; `None` when the next scene must repaint everything.
-    snapshot: Option<TerminalSnapshot>,
+    /// The grid state drawn; `None` when the next scene must repaint
+    /// everything.
+    drawn: Option<Drawn>,
     /// How far each drawn row's ink reaches, and which rows blink.
     rows: RowStates,
     /// The blink phases drawn.
     blink: BlinkPhases,
 }
 
-impl Retained {
-    fn new(surface: TerminalSurface) -> Self {
+/// The grid state a scene drew.
+#[derive(Clone, Copy)]
+struct Drawn {
+    grid: u64,
+    revision: u64,
+    size: GridSize,
+    cursor: CellPosition,
+    /// Whether the cursor was shown.
+    cursor_shown: bool,
+}
+
+impl Drawn {
+    fn of(grid: &TerminalGrid) -> Self {
         Self {
-            surface,
-            snapshot: None,
-            rows: RowStates::default(),
-            blink: BlinkPhases::default(),
+            grid: grid.identity(),
+            revision: grid.revision(),
+            size: grid.size(),
+            cursor: grid.cursor_position(),
+            cursor_shown: cursor_should_be_visible(grid),
         }
     }
 }
@@ -414,9 +538,7 @@ impl BatchMainState {
     /// everything.
     fn invalidate(&mut self, queue: &mut SceneQueue) {
         queue.discard(self.output.id(), &mut self.glyph_atlas);
-        if let Some(retained) = &mut self.retained {
-            retained.snapshot = None;
-        }
+        self.retained.drawn = None;
         self.measure.in_use = None;
     }
 
@@ -428,7 +550,7 @@ impl BatchMainState {
             last_config: None,
             palette: Palette::default(),
             measure: FontMeasurement::default(),
-            retained: None,
+            retained: Retained::default(),
             submissions: Submissions::default(),
             shapes: ShapeCaches::default(),
             glyph_atlas: UnifiedGlyphAtlas::default(),
@@ -438,10 +560,10 @@ impl BatchMainState {
         }
     }
 
-    /// The content the last scene drew.
+    /// The grid revision the last scene drew.
     #[cfg(test)]
-    fn snapshot(&self) -> Option<&TerminalSnapshot> {
-        self.retained.as_ref()?.snapshot.as_ref()
+    fn drawn_revision(&self) -> Option<u64> {
+        self.retained.drawn.map(|drawn| drawn.revision)
     }
 
     /// The raster metrics in use.
@@ -453,7 +575,7 @@ impl BatchMainState {
     /// The retained rows' ink reach and blinking.
     #[cfg(test)]
     fn rows(&self) -> &RowStates {
-        &self.retained.as_ref().expect("a retained surface").rows
+        &self.retained.rows
     }
 }
 
@@ -489,10 +611,6 @@ struct BatchScene {
     batches: Vec<DrawBatch>,
     clear: bool,
     clear_color: Color,
-    /// The surface and resize generation the scene was built for; a scene
-    /// whose surface has been resized since must not draw.
-    surface: WeakSurface,
-    resize_generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -618,11 +736,6 @@ impl BatchScene {
         }
     }
 
-    /// Whether the surface still has the grid the scene was built for.
-    fn is_current(&self) -> bool {
-        self.surface.is_current(self.resize_generation)
-    }
-
     /// Keeps the atlas entries of a scene that must not draw: nothing is
     /// drawn, cleared or acknowledged, and a later scene absorbs it.
     fn withdraw(&mut self) {
@@ -639,7 +752,10 @@ impl BatchScene {
 #[derive(Default, Resource)]
 struct FontCatalog {
     registered: HashSet<AssetId<Font>>,
+    /// Font assets with events this update.
     changed: Vec<AssetId<Font>>,
+    /// Whether the registered set changed this update.
+    registration_changed: bool,
     initialized: bool,
     #[cfg(test)]
     scans: usize,
@@ -670,36 +786,18 @@ impl FontCatalog {
     }
 }
 
-/// The world state the sync reads besides the terminals: Bevy's text,
-/// image, font, time and device resources, and the renderer's own.
-#[derive(bevy::ecs::system::SystemParam)]
-struct SyncResources<'w, 's> {
-    text: Option<TextResources<'w>>,
-    font_events: Option<MessageReader<'w, 's, AssetEvent<Font>>>,
-    time: Option<Res<'w, Time>>,
-    asset_server: Option<Res<'w, AssetServer>>,
-    device: Option<Res<'w, RenderDevice>>,
-    catalog: ResMut<'w, FontCatalog>,
-    queue: ResMut<'w, SceneQueue>,
-}
-
-fn sync_batch_terminals(mut terminals: Query<TerminalQuery>, resources: SyncResources) {
-    let SyncResources {
-        mut text,
-        font_events,
-        time,
-        asset_server,
-        device,
-        mut catalog,
-        mut queue,
-    } = resources;
-    if terminals.is_empty() {
-        catalog.initialized = false;
-        return;
-    }
+/// Records this update's font asset events and registration changes, once
+/// for every source's sync.
+fn refresh_font_catalog(
+    mut catalog: ResMut<FontCatalog>,
+    events: Option<MessageReader<AssetEvent<Font>>>,
+    fonts: Option<Res<Assets<Font>>>,
+    font_cx: Option<ResMut<FontCx>>,
+) {
+    let catalog = &mut *catalog;
     // Retain event storage and rebuild registration only after asset changes.
     catalog.changed.clear();
-    if let Some(mut events) = font_events {
+    if let Some(mut events) = events {
         catalog
             .changed
             .extend(events.read().map(|event| match *event {
@@ -710,174 +808,272 @@ fn sync_batch_terminals(mut terminals: Query<TerminalQuery>, resources: SyncReso
                 | AssetEvent::LoadedWithDependencies { id } => id,
             }));
     }
-    let catalog_changed = match text.as_mut() {
-        Some(text) => catalog.refresh(&text.fonts, &mut text.font_cx),
-        None => {
+    catalog.registration_changed = match (fonts, font_cx) {
+        (Some(fonts), Some(mut font_cx)) => catalog.refresh(&fonts, &mut font_cx),
+        _ => {
             catalog.initialized = false;
+            false
+        }
+    };
+}
+
+/// The world state the sync reads besides the terminals: Bevy's text,
+/// image, font, time and device resources, and the renderer's own.
+#[derive(bevy::ecs::system::SystemParam)]
+struct SyncResources<'w> {
+    text: Option<TextResources<'w>>,
+    time: Option<Res<'w, Time>>,
+    asset_server: Option<Res<'w, AssetServer>>,
+    device: Option<Res<'w, RenderDevice>>,
+    catalog: Res<'w, FontCatalog>,
+    queue: ResMut<'w, SceneQueue>,
+}
+
+fn sync_terminals<S: TerminalSource + Component>(
+    mut terminals: Query<TerminalQuery<S>>,
+    resources: SyncResources,
+) {
+    if terminals.is_empty() {
+        return;
+    }
+    resources.run(|frame| {
+        for (entity, source, config, state, output, stats) in &mut terminals {
+            let terminal = (entity, config, state, output, stats);
+            sync_entity(terminal, source.grid(), source.is_changed(), frame);
+        }
+    });
+}
+
+fn sync_resource_terminals<R: TerminalSource + Resource>(
+    mut terminals: Query<RendererQuery, With<ResourceTerminal<R>>>,
+    source: Option<Res<R>>,
+    resources: SyncResources,
+) {
+    let Some(source) = source.filter(|_| !terminals.is_empty()) else {
+        return;
+    };
+    resources.run(|frame| {
+        for terminal in &mut terminals {
+            sync_entity(terminal, source.grid(), source.is_changed(), frame);
+        }
+    });
+}
+
+/// What every terminal's sync shares in one update.
+struct Frame<'a, 'w> {
+    text: Option<&'a mut TextResources<'w>>,
+    asset_server: Option<&'a AssetServer>,
+    catalog: &'a FontCatalog,
+    queue: &'a mut SceneQueue,
+    /// Seconds since startup, for blink phases.
+    elapsed: f64,
+    texture_limit: u32,
+    /// The render device generation (`SceneQueue::device`).
+    device: u64,
+}
+
+impl SyncResources<'_> {
+    fn run(self, sync: impl FnOnce(&mut Frame<'_, '_>)) {
+        let SyncResources {
+            mut text,
+            time,
+            asset_server,
+            device,
+            catalog,
+            mut queue,
+        } = self;
+        if text.is_none() {
             warn_once!(
                 "bevy_terminal: Bevy's text resources are missing (add DefaultPlugins or \
                  TextPlugin); terminals will not render"
             );
-            false
         }
-    };
-    let elapsed = time.as_ref().map_or(0.0, |time| time.elapsed_secs_f64());
-    let texture_limit = texture_limit(device.as_deref());
-    let device = queue.device.load(Ordering::Acquire);
-    let registered_fonts = &catalog.registered;
-    let changed_fonts = &catalog.changed;
-    for (entity, terminal, config, mut state, mut output, mut stats) in &mut terminals {
-        if state.device != device {
-            // A recreated render device starts with a blank texture and no
-            // atlas: rebuild and repaint everything.
-            state.device = device;
-            state.invalidate(&mut queue);
+        let generation = queue.device.load(Ordering::Acquire);
+        sync(&mut Frame {
+            text: text.as_mut(),
+            asset_server: asset_server.as_deref(),
+            catalog: &catalog,
+            queue: &mut queue,
+            elapsed: time.as_ref().map_or(0.0, |time| time.elapsed_secs_f64()),
+            texture_limit: texture_limit(device.as_deref()),
+            device: generation,
+        });
+    }
+}
+
+/// Brings one terminal drawing `grid` up to date, and writes its status
+/// and statistics.
+fn sync_entity(
+    (entity, config, mut state, mut output, mut stats): RendererItem<'_>,
+    grid: &TerminalGrid,
+    source_changed: bool,
+    frame: &mut Frame<'_, '_>,
+) {
+    let Frame {
+        text,
+        asset_server,
+        catalog,
+        queue,
+        elapsed,
+        texture_limit,
+        device,
+    } = frame;
+    let (elapsed, texture_limit, device) = (*elapsed, *texture_limit, *device);
+    let device_changed = state.device != device;
+    if device_changed {
+        // A recreated render device starts with a blank texture and no
+        // atlas: rebuild and repaint everything.
+        state.device = device;
+        state.invalidate(queue);
+    }
+    let mut next_stats = TerminalStats::default();
+    let result = 'sync: {
+        let Some(text) = text.as_mut() else {
+            break 'sync Err(TerminalFailure::MissingTextResources.into());
+        };
+        if !config.sizing.is_valid() {
+            break 'sync Err(TerminalFailure::InvalidSizing.into());
         }
-        // Plain values only: the texture's handles are not cloned each frame.
-        let mut measurement = output.geometry.measurement;
-        let mut next_stats = TerminalStats::default();
-        let result = 'sync: {
-            let Some(text) = text.as_mut() else {
-                break 'sync Err(TerminalStatus::MissingTextResources.into());
-            };
-            if !config.sizing.is_valid() {
-                break 'sync Err(TerminalStatus::InvalidSizing.into());
+        // Inspect effective values only when the component was touched. Invalid
+        // scale/blink inputs have documented fallbacks and must compare as such.
+        let config_touched = config.is_changed();
+        let mut config_changed = false;
+        let mut shaping_changed = false;
+        if config_touched || state.last_config.is_none() {
+            let mut effective = (*config).clone();
+            effective.raster.scale = resolve_raster_scale(effective.raster.scale);
+            for frequency in [
+                &mut effective.blink.slow_hz,
+                &mut effective.blink.rapid_hz,
+                &mut effective.cursor.blink_hz,
+            ] {
+                *frequency = frequency.filter(|hz| hz.is_finite() && *hz > 0.0);
             }
-            // Inspect effective values only when the component was touched. Invalid
-            // scale/blink inputs have documented fallbacks and must compare as such.
-            let mut config_changed = false;
-            let mut shaping_changed = false;
-            if config.is_changed() || state.last_config.is_none() {
-                let mut effective = (*config).clone();
-                effective.raster.scale = resolve_raster_scale(effective.raster.scale);
-                for frequency in [
-                    &mut effective.blink.slow_hz,
-                    &mut effective.blink.rapid_hz,
-                    &mut effective.cursor.blink_hz,
-                ] {
-                    *frequency = frequency.filter(|hz| hz.is_finite() && *hz > 0.0);
-                }
-                config_changed = state.last_config.as_ref() != Some(&effective);
-                shaping_changed = state.last_config.as_ref().is_none_or(|previous| {
-                    previous.font != effective.font
-                        || previous.sizing != effective.sizing
-                        || previous.raster.hinting != effective.raster.hinting
-                });
-                if config_changed {
-                    state.palette = Palette::new(&effective.theme);
-                    state.last_config = Some(effective);
-                }
+            config_changed = state.last_config.as_ref() != Some(&effective);
+            shaping_changed = state.last_config.as_ref().is_none_or(|previous| {
+                previous.font != effective.font
+                    || previous.sizing != effective.sizing
+                    || previous.raster.hinting != effective.raster.hinting
+            });
+            if config_changed {
+                state.palette = Palette::new(&effective.theme);
+                state.last_config = Some(effective);
             }
-            let config = &*config;
-            let face_ids = font_asset_ids(&config.font);
-            // Handle fonts become usable only once Bevy registers them with the font
-            // context (assigning an alias); glyphs shaped before that used a fallback
-            // family and must be re-shaped afterwards.
-            let fonts_ready = face_ids
+        }
+        let config = &*config;
+        let face_ids = font_asset_ids(&config.font);
+        // Handle fonts become usable only once Bevy registers them with the font
+        // context (assigning an alias); glyphs shaped before that used a fallback
+        // family and must be re-shaped afterwards.
+        let fonts_ready = face_ids
+            .iter()
+            .flatten()
+            .all(|id| catalog.registered.contains(id));
+        let named_faces = std::iter::once(&config.font.regular)
+            .chain(config.font.bold.iter())
+            .chain(config.font.italic.iter())
+            .chain(config.font.bold_italic.iter())
+            .any(|face| !matches!(face, FontSource::Handle(_)));
+        let fonts_changed = (named_faces
+            && (catalog.registration_changed
+                || catalog
+                    .changed
+                    .iter()
+                    .any(|id| catalog.registered.contains(id))))
+            || state.fonts.ids != face_ids
+            || state.fonts.ready != fonts_ready
+            || face_ids
                 .iter()
                 .flatten()
-                .all(|id| registered_fonts.contains(id));
-            let named_faces = std::iter::once(&config.font.regular)
-                .chain(config.font.bold.iter())
-                .chain(config.font.italic.iter())
-                .chain(config.font.bold_italic.iter())
-                .any(|face| !matches!(face, FontSource::Handle(_)));
-            let fonts_changed = (named_faces
-                && (catalog_changed
-                    || changed_fonts.iter().any(|id| registered_fonts.contains(id))))
-                || state.fonts.ids != face_ids
-                || state.fonts.ready != fonts_ready
-                || face_ids
-                    .iter()
-                    .flatten()
-                    .any(|id| changed_fonts.contains(id));
-            state.fonts = FontUse {
-                ids: face_ids,
-                ready: fonts_ready,
-            };
-            if !fonts_ready {
-                let failed = face_ids.iter().flatten().any(|id| {
-                    let invalid = text.fonts.get(*id).is_some_and(|font| {
-                        !font.alias.is_empty() && !registered_fonts.contains(id)
-                    });
-                    invalid
-                        || asset_server.as_ref().is_some_and(|server| {
-                            matches!(
-                                server.get_load_state(*id),
-                                Some(bevy::asset::LoadState::Failed(_))
-                            )
-                        })
-                });
-                break 'sync Err(if failed {
-                    TerminalStatus::FontFailed
-                } else {
-                    TerminalStatus::Loading
-                }
-                .into());
-            }
-            sync_batch_terminal(
-                terminal,
-                SyncInput {
-                    config,
-                    measured_surface: &output.geometry.surface,
-                    config_changed,
-                    shaping_changed,
-                    fonts_changed,
-                    raster_scale: resolve_raster_scale(config.raster.scale),
-                    elapsed,
-                    texture_limit,
-                },
-                &mut state,
-                &mut measurement,
-                &mut next_stats,
-                text,
-                &mut queue,
-            )
+                .any(|id| catalog.changed.contains(id));
+        state.fonts = FontUse {
+            ids: face_ids,
+            ready: fonts_ready,
         };
-        // The one place a terminal's statistics and status are written.
-        stats.set_if_neq(next_stats);
-        match result {
-            Ok(surface_changed) => {
-                state.last_failure = None;
-                // Write the texture component only when something changed so
-                // `Changed<TerminalTexture>` observers are not woken every frame.
-                if output.status != TerminalStatus::Ready
-                    || output.geometry.measurement != measurement
-                    || surface_changed
-                {
-                    let output = &mut *output;
-                    output.status = TerminalStatus::Ready;
-                    output.geometry.measurement = measurement;
-                    if surface_changed {
-                        output.geometry.surface = terminal.surface().downgrade();
-                    }
-                }
-            }
-            Err(error) => {
-                // Failed partial construction cannot publish provisional geometry.
-                let status = match error {
-                    SyncError::Status(status) => status,
-                    SyncError::Shaping(failure) => {
-                        if state.last_failure.as_ref() != Some(&failure) {
-                            warn!(?entity, "bevy_terminal: {failure}");
-                            state.last_failure = Some(failure);
-                        }
-                        TerminalStatus::ShapingFailed
-                    }
-                };
-                // Metrics that are only too large stay valid: keeping them lets
-                // an idle oversized terminal skip measuring every update.
-                let measured = state
-                    .measure
-                    .in_use
-                    .filter(|_| status == TerminalStatus::TextureTooLarge);
-                state.invalidate(&mut queue);
-                state.measure.in_use = measured;
-                if output.status != status {
-                    output.status = status;
-                }
-            }
+        if !fonts_ready {
+            let failed = face_ids.iter().flatten().any(|id| {
+                let invalid = text
+                    .fonts
+                    .get(*id)
+                    .is_some_and(|font| !font.alias.is_empty() && !catalog.registered.contains(id));
+                invalid
+                    || asset_server.as_ref().is_some_and(|server| {
+                        matches!(
+                            server.get_load_state(*id),
+                            Some(bevy::asset::LoadState::Failed(_))
+                        )
+                    })
+            });
+            break 'sync Err(if failed {
+                TerminalFailure::FontFailed.into()
+            } else {
+                SyncError::Loading
+            });
         }
+        // A terminal that failed to shape or fit stays idle until one of
+        // the inputs that decided it changes.
+        if matches!(
+            output.status,
+            TerminalStatus::Failed(
+                TerminalFailure::ShapingFailed | TerminalFailure::TextureTooLarge
+            )
+        ) && !(source_changed || config_touched || fonts_changed || device_changed)
+        {
+            break 'sync Ok(None);
+        }
+        sync_terminal(
+            grid,
+            SyncInput {
+                config,
+                config_changed,
+                shaping_changed,
+                fonts_changed,
+                raster_scale: resolve_raster_scale(config.raster.scale),
+                elapsed,
+                texture_limit,
+            },
+            &mut state,
+            &mut next_stats,
+            text,
+            queue,
+        )
+    };
+    // The one place a terminal's statistics and status are written.
+    stats.set_if_neq(next_stats);
+    let status = match result {
+        Ok(Some(geometry)) => {
+            state.last_failure = None;
+            TerminalStatus::Ready(geometry)
+        }
+        Ok(None) => return,
+        Err(error) => {
+            // Failed partial construction cannot publish provisional geometry.
+            let status = match error {
+                SyncError::Loading => TerminalStatus::Loading,
+                SyncError::Failed(failure) => TerminalStatus::Failed(failure),
+                SyncError::Shaping(failure) => {
+                    if state.last_failure.as_ref() != Some(&failure) {
+                        warn!(?entity, "bevy_terminal: {failure}");
+                        state.last_failure = Some(failure);
+                    }
+                    TerminalStatus::Failed(TerminalFailure::ShapingFailed)
+                }
+            };
+            // Metrics that are only too large stay valid: keeping them lets
+            // an idle oversized terminal skip measuring.
+            let measured = state
+                .measure
+                .in_use
+                .filter(|_| status == TerminalStatus::Failed(TerminalFailure::TextureTooLarge));
+            state.invalidate(queue);
+            state.measure.in_use = measured;
+            status
+        }
+    };
+    // Written only on change, so `Changed<TerminalTexture>` observers are
+    // not woken every frame.
+    if output.status != status {
+        output.status = status;
     }
 }
 
@@ -899,8 +1095,6 @@ fn font_asset_ids(faces: &super::FontFaces) -> [Option<AssetId<Font>>; 4] {
 /// causes preserve cached shaping for paint-only changes.
 struct SyncInput<'a> {
     config: &'a TerminalRenderConfig,
-    /// The surface the published geometry refers to.
-    measured_surface: &'a WeakSurface,
     config_changed: bool,
     shaping_changed: bool,
     fonts_changed: bool,
@@ -910,22 +1104,20 @@ struct SyncInput<'a> {
     texture_limit: u32,
 }
 
-/// Brings one terminal's scene up to date. Measured values are written to
-/// `measurement`; the result says whether the geometry must now refer to
-/// the renderer's surface instead of the measured one. Nothing is
-/// published on failure, so partial construction never leaks geometry.
-fn sync_batch_terminal(
-    terminal: &TerminalRenderer,
+/// Brings one terminal's scene up to date. Returns the geometry of a new
+/// scene, whose image now has that size, or `None` when nothing needed
+/// drawing. Nothing is published on failure, so partial construction never
+/// leaks geometry.
+fn sync_terminal(
+    grid: &TerminalGrid,
     input: SyncInput<'_>,
     state: &mut BatchMainState,
-    measurement: &mut Measurement,
     stats: &mut TerminalStats,
     text: &mut TextResources<'_>,
     queue: &mut SceneQueue,
-) -> Result<bool, SyncError> {
+) -> Result<Option<TerminalGeometry>, SyncError> {
     let SyncInput {
         config,
-        measured_surface,
         config_changed,
         shaping_changed,
         fonts_changed,
@@ -933,7 +1125,6 @@ fn sync_batch_terminal(
         elapsed,
         texture_limit,
     } = input;
-    let surface = terminal.surface();
     let BatchMainState {
         output,
         palette,
@@ -946,14 +1137,6 @@ fn sync_batch_terminal(
         repaint_rows,
         ..
     } = state;
-    if retained
-        .as_ref()
-        .is_none_or(|retained| !retained.surface.shares_state_with(surface))
-    {
-        queue.discard(output.id(), glyph_atlas);
-        *retained = None;
-    }
-    let retained = retained.get_or_insert_with(|| Retained::new(surface.clone()));
     // An unmeasured cell is not geometry: no scene or measured geometry is
     // published until the selected face shapes.
     if config.sizing.needs_advance()
@@ -975,10 +1158,10 @@ fn sync_batch_terminal(
     }
     let metrics = resolve_metrics(config, measure.advance);
     let requested = physical_config(metrics, raster_scale);
-    if terminal_pixel_size(surface.info().size, &requested).max_element() > texture_limit
+    if terminal_pixel_size(grid.size(), &requested).max_element() > texture_limit
         || requested.font_size > texture_limit as f32
     {
-        return Err(TerminalStatus::TextureTooLarge.into());
+        return Err(TerminalFailure::TextureTooLarge.into());
     }
     let text_assets_changed = shaping_changed
         || fonts_changed
@@ -1004,22 +1187,21 @@ fn sync_batch_terminal(
         raster
     };
     // Refining the cell to the font can grow it past the limit.
-    if terminal_pixel_size(surface.info().size, &raster).max_element() > texture_limit {
-        return Err(TerminalStatus::TextureTooLarge.into());
+    let size = terminal_pixel_size(grid.size(), &raster);
+    if size.max_element() > texture_limit {
+        return Err(TerminalFailure::TextureTooLarge.into());
     }
     let blink = BlinkPhases::at(elapsed, config);
     // A phase flip only matters where it changes pixels: text phases when the
-    // snapshot holds blinking cells, the cursor phase when the cursor shows.
+    // grid holds blinking cells, the cursor phase when the cursor shows.
     let text_blink_changed = (blink.slow_hidden != retained.blink.slow_hidden
         || blink.rapid_hidden != retained.blink.rapid_hidden)
         && retained.rows.blinking().next().is_some();
     let cursor_blink_changed = blink.cursor_hidden != retained.blink.cursor_hidden
-        && retained
-            .snapshot
-            .as_ref()
-            .is_some_and(cursor_should_be_visible);
-    if retained.snapshot.as_ref().is_some_and(|snapshot| {
-        snapshot.revision() == surface.info().revision
+        && retained.drawn.is_some_and(|drawn| drawn.cursor_shown);
+    if retained.drawn.is_some_and(|drawn| {
+        drawn.grid == grid.identity()
+            && drawn.revision == grid.revision()
             && !config_changed
             && !text_assets_changed
             && !text_blink_changed
@@ -1028,67 +1210,45 @@ fn sync_batch_terminal(
         // Keep the recorded phases current so an irrelevant flip is not
         // mistaken for a change once blinking content appears later.
         retained.blink = blink;
-        return Ok(false);
+        return Ok(None);
     }
 
-    #[cfg(feature = "timings")]
-    let snapshot_start = Instant::now();
+    let now = Drawn::of(grid);
     let mut rows = std::mem::take(repaint_rows);
-    let (snapshot, mut full) = if let Some(mut snapshot) = retained.snapshot.take() {
-        let old_cursor = snapshot.cursor_position().y;
-        let update = surface.update_snapshot(&mut snapshot, &mut rows);
-        stats.snapshot_cells = u32::try_from(update.changed_cells).unwrap_or(u32::MAX);
-        let cursor = snapshot.cursor_position().y;
-        if update.cursor_position_changed || update.cursor_visibility_changed {
-            rows.extend([old_cursor, cursor]);
-        } else if cursor_blink_changed {
-            rows.push(cursor);
+    rows.clear();
+    let mut full = match retained.drawn {
+        Some(drawn) if drawn.grid == now.grid && drawn.size == now.size => {
+            rows.extend(grid.rows_changed_since(drawn.revision));
+            if drawn.cursor != now.cursor || drawn.cursor_shown != now.cursor_shown {
+                rows.extend([drawn.cursor.y, now.cursor.y]);
+            } else if cursor_blink_changed {
+                rows.push(now.cursor.y);
+            }
+            if text_blink_changed {
+                rows.extend(retained.rows.blinking());
+            }
+            rows.retain(|row| *row < now.size.height);
+            rows.sort_unstable();
+            rows.dedup();
+            config_changed || text_assets_changed
         }
-        if text_blink_changed {
-            rows.extend(retained.rows.blinking());
-        }
-        let height = snapshot.size().height;
-        rows.retain(|row| *row < height);
-        rows.sort_unstable();
-        rows.dedup();
-        (
-            snapshot,
-            update.resized || config_changed || text_assets_changed,
-        )
-    } else {
-        let snapshot = surface.snapshot();
-        stats.snapshot_cells = u32::try_from(snapshot.cells().len()).unwrap_or(u32::MAX);
-        rows.clear();
-        (snapshot, true)
+        _ => true,
     };
-
-    #[cfg(feature = "timings")]
-    {
-        stats.snapshot_ns = snapshot_start
-            .elapsed()
-            .as_nanos()
-            .min(u128::from(u64::MAX)) as u64;
-    }
     if rows.is_empty() && !full {
-        retained.snapshot = Some(snapshot);
+        retained.drawn = Some(now);
         *repaint_rows = rows;
-        return Ok(false);
+        return Ok(None);
     }
     // Extraction can be delayed while a newly created output or glyph atlas reaches the render
     // world. If a newer payload is already waiting in the main world, make its replacement a
-    // complete image of the newest snapshot so rows changed by an intermediate payload cannot be
+    // complete image of the newest grid so rows changed by an intermediate payload cannot be
     // lost when that payload is superseded.
     full |= !submissions.all_drawn();
 
-    let size = terminal_pixel_size(snapshot.size(), &raster);
-    if size.max_element() > texture_limit {
-        return Err(TerminalStatus::TextureTooLarge.into());
-    }
     #[cfg(feature = "timings")]
     let scene_start = Instant::now();
     let input = SceneInput {
-        snapshot: &snapshot,
-        surface,
+        grid,
         config,
         palette,
         raster,
@@ -1135,33 +1295,42 @@ fn sync_batch_terminal(
         stats.scene_ns = scene_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
     }
     stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
-    // The image is resized only together with a scene for it, against its
-    // real size, so the two cannot disagree. It is reallocated in place so
-    // the handle stays stable; the render world recreates the GPU texture.
-    if text
-        .images
+    scene.submission = Some(submissions.next());
+    queue.submit(scene);
+    retained.drawn = Some(now);
+    retained.blink = blink;
+    Ok(Some(publish(
+        &mut text.images,
+        output,
+        TerminalGeometry {
+            grid: now.size,
+            size,
+            raster_scale,
+            physical_cell_size: raster.cell_size,
+            physical_font_size: raster.font_size,
+        },
+    )))
+}
+
+/// Sizes `output` to `geometry`, the only way geometry is published, so an
+/// image and the geometry describing it cannot disagree. The image is
+/// reallocated in place so its handle stays stable; the render world
+/// recreates the GPU texture.
+fn publish(
+    images: &mut Assets<Image>,
+    output: &Handle<Image>,
+    geometry: TerminalGeometry,
+) -> TerminalGeometry {
+    if images
         .get(output.id())
-        .is_none_or(|image| image.size() != size)
-        && text
-            .images
-            .insert(output.id(), make_target_image(size))
+        .is_none_or(|image| image.size() != geometry.size)
+        && images
+            .insert(output.id(), make_target_image(geometry.size))
             .is_err()
     {
         warn!("bevy_terminal: could not reallocate a terminal texture in place");
     }
-    *measurement = Measurement {
-        resize_generation: snapshot.resize_generation,
-        grid: snapshot.size(),
-        size,
-        raster_scale,
-        physical_cell_size: raster.cell_size,
-        physical_font_size: raster.font_size,
-    };
-    scene.submission = Some(submissions.next());
-    queue.submit(scene);
-    retained.snapshot = Some(snapshot);
-    retained.blink = blink;
-    Ok(!measured_surface.matches(surface))
+    geometry
 }
 
 #[cfg(test)]

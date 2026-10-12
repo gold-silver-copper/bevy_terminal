@@ -10,7 +10,7 @@
 //! semantics. `TestBackend` is a flat cell array, not a terminal: it does not
 //! model how a wide glyph covers its neighbour, so `RefBackend` also replays
 //! the same calls onto `Screen`, a small model of what a real (xterm-like)
-//! terminal displays. The bevy surface is compared against `Screen` cell by
+//! terminal displays. The bevy grid is compared against `Screen` cell by
 //! cell, symbol and style; `Screen` is in turn checked against `TestBackend`:
 //! exactly when no wide symbol was ever drawn (raw mode), and against the
 //! frame Ratatui intended to show (term mode).
@@ -32,16 +32,15 @@
 //! - N5 Window pixels: `TestBackend` reports a fixed 640x480; bevy reports
 //!   zero until a renderer measured it. Only `columns_rows` is compared.
 //! - N6 Out-of-domain calls: `TestBackend` panics when drawing outside its
-//!   buffer and on `clear_region` with the cursor outside the grid. Bevy
-//!   ignores such draws (checked: they must not change anything). For
-//!   `clear_region` the reference clamps the cursor into the grid first, as
-//!   a terminal's cursor addressing would, and clears what TestBackend
-//!   clears from there.
+//!   buffer and keeps a cursor placed outside the grid as given. Bevy ignores
+//!   such draws (checked: they must not change anything) and clamps the
+//!   cursor into the grid, as a terminal's cursor addressing does; the
+//!   reference clamps it before handing it to `TestBackend`.
 //! - N7 Control characters are filtered from symbols: Ratatui's own
 //!   `cell_width` debug-asserts on them and its buffers never contain them.
 //! - N8 Scrollback: `TestBackend` keeps a scrollback that bevy does not
 //!   model; it is dropped after `append_lines` to bound memory.
-//! - N9 Huge grids: bevy clamps to `TerminalSurface::MAX_CELLS`; sizes above
+//! - N9 Huge grids: bevy clamps to `TerminalGrid::MAX_CELLS`; sizes above
 //!   it are checked against that documented clamp on a separate backend
 //!   rather than allocated in `TestBackend`.
 
@@ -51,7 +50,7 @@ use std::convert::Infallible;
 
 use arbitrary::{Arbitrary, Unstructured};
 use bevy_terminal_ratatui::prelude::{
-    CellOccupancy, RatatuiBackend, StyleFlags, TerminalColor, TerminalStyle, TerminalSurface,
+    CellOccupancy, RatatuiBackend, StyleFlags, TerminalColor, TerminalGrid, TerminalStyle,
 };
 use libfuzzer_sys::fuzz_target;
 use ratatui::{
@@ -585,7 +584,13 @@ impl Backend for RefBackend {
     }
 
     fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> Result<(), Infallible> {
-        self.tb.set_cursor_position(position)
+        // N6: a terminal clamps the cursor into the grid.
+        let Position { x, y } = position.into();
+        let Size { width, height } = self.screen_size();
+        self.tb.set_cursor_position(Position::new(
+            x.min(width.saturating_sub(1)),
+            y.min(height.saturating_sub(1)),
+        ))
     }
 
     fn clear(&mut self) -> Result<(), Infallible> {
@@ -600,17 +605,14 @@ impl Backend for RefBackend {
         if clear_type == ClearType::All {
             return self.clear();
         }
-        // N6: TestBackend panics when the cursor is outside the grid (Ratatui's
-        // inline viewport does this on zero-height grids). A terminal cannot
-        // hold its cursor there: cursor addressing clamps into the grid. So the
-        // region is the one TestBackend clears from the clamped cursor.
+        // N6: the cursor is clamped into the grid, so it is outside only when
+        // the grid is empty, where there is nothing to clear.
         if self.screen.slots.is_empty() {
             return Ok(());
         }
         let w = usize::from(self.screen.width);
         let actual = self.tb.cursor_position();
-        let x = actual.x.min(self.screen.width - 1);
-        let y = actual.y.min(self.screen.height - 1);
+        let (x, y) = (actual.x, actual.y);
         let cursor = usize::from(y) * w + usize::from(x);
         let row = usize::from(y) * w;
         let range = match clear_type {
@@ -621,9 +623,7 @@ impl Backend for RefBackend {
             ClearType::UntilNewLine => cursor..=row + w - 1,
         };
         self.screen.clear_indices(range);
-        let Ok(()) = self.tb.set_cursor_position(Position::new(x, y));
-        let Ok(()) = self.tb.clear_region(clear_type);
-        self.tb.set_cursor_position(actual)
+        self.tb.clear_region(clear_type)
     }
 
     fn append_lines(&mut self, line_count: u16) -> Result<(), Infallible> {
@@ -664,8 +664,7 @@ impl Backend for RefBackend {
 // ---------------------------------------------------------------------------
 
 fn compare(reference: &mut RefBackend, actual: &mut RatatuiBackend, context: &str) {
-    let surface = actual.surface();
-    let snapshot = surface.snapshot();
+    let grid = actual.grid().clone();
     let size = reference.screen_size();
     assert_eq!(
         actual.size().ok(),
@@ -673,9 +672,9 @@ fn compare(reference: &mut RefBackend, actual: &mut RatatuiBackend, context: &st
         "{context}: size differs from TestBackend"
     );
     assert_eq!(
-        (snapshot.size().width, snapshot.size().height),
+        (grid.size().width, grid.size().height),
         (size.width, size.height),
-        "{context}: snapshot size"
+        "{context}: grid size"
     );
     let ws: WindowSize = actual.window_size().unwrap_or_else(|e| match e {});
     // N5: only the grid half of window_size is defined without a renderer.
@@ -683,20 +682,20 @@ fn compare(reference: &mut RefBackend, actual: &mut RatatuiBackend, context: &st
     let expected_cursor = reference.tb.cursor_position();
     let Ok(cursor) = actual.get_cursor_position();
     assert_eq!(cursor, expected_cursor, "{context}: get_cursor_position");
-    let snap_cursor = snapshot.cursor_position();
+    let grid_cursor = grid.cursor_position();
     assert_eq!(
-        Position::new(snap_cursor.x, snap_cursor.y),
+        Position::new(grid_cursor.x, grid_cursor.y),
         expected_cursor,
-        "{context}: snapshot cursor position"
+        "{context}: grid cursor position"
     );
     assert_eq!(
-        snapshot.cursor_visible(),
+        grid.cursor_visible(),
         reference.tb.cursor_visible(),
         "{context}: cursor visibility"
     );
 
     for y in 0..size.height {
-        let row = snapshot.row(y);
+        let row = grid.row(y);
         assert_eq!(
             row.len(),
             usize::from(size.width),
@@ -739,7 +738,7 @@ fn compare(reference: &mut RefBackend, actual: &mut RatatuiBackend, context: &st
         let want = reference.screen.row(y);
         assert_eq!(
             got, want,
-            "{context}: row {y} differs from terminal model\n{snapshot}"
+            "{context}: row {y} differs from terminal model\n{grid}"
         );
     }
 }
@@ -786,7 +785,7 @@ fn check_screen_matches_intent(reference: &RefBackend, context: &str) {
 // ---------------------------------------------------------------------------
 
 fn bounded_rows(width: u16, height: u16) -> u16 {
-    let rows = TerminalSurface::MAX_CELLS / usize::from(width.max(1));
+    let rows = TerminalGrid::MAX_CELLS / usize::from(width.max(1));
     height.min(u16::try_from(rows).unwrap_or(u16::MAX))
 }
 

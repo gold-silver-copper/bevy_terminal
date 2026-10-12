@@ -143,25 +143,22 @@ fn samples() -> Vec<(String, StyleFlags)> {
     .collect()
 }
 
-fn fill(surface: &TerminalSurface) {
-    let samples = samples();
-    surface.update(|update| {
-        update.set_cursor_visible(false);
-        for (row, (text, flags)) in samples.iter().enumerate() {
-            let mut column = 0u16;
-            for grapheme in text.graphemes(true) {
-                let width = grapheme.width().max(1) as u16;
-                let mut cell = if width > 1 {
-                    TerminalCell::wide(grapheme, width)
-                } else {
-                    TerminalCell::new(grapheme)
-                };
-                cell.style.flags = *flags;
-                update.set_cell((column, row as u16), &cell);
-                column += width;
-            }
+fn fill(grid: &mut TerminalGrid) {
+    grid.set_cursor_visible(false);
+    for (row, (text, flags)) in samples().iter().enumerate() {
+        let mut column = 0u16;
+        for grapheme in text.graphemes(true) {
+            let width = grapheme.width().max(1) as u16;
+            let mut cell = if width > 1 {
+                TerminalCell::wide(grapheme, width)
+            } else {
+                TerminalCell::new(grapheme)
+            };
+            cell.style.flags = *flags;
+            grid.set_cell((column, row as u16), &cell);
+            column += width;
         }
-    });
+    }
 }
 
 /// The bundled families and their regular, bold, italic and bold italic faces.
@@ -322,12 +319,12 @@ fn run(case: &ProbeCase) -> ProbeResult {
     isolate_fonts(&mut app);
     let faces = load_faces(&mut app, case.family);
     let rows = samples().len() as u16;
-    let surface = TerminalSurface::new((WIDTH, rows));
-    fill(&surface);
+    let mut grid = TerminalGrid::new((WIDTH, rows));
+    fill(&mut grid);
     let entity = app
         .world_mut()
         .spawn((
-            TerminalRenderer::new(surface),
+            grid,
             TerminalRenderConfig {
                 sizing: TerminalSizing::FromFont {
                     font_size: case.font_size,

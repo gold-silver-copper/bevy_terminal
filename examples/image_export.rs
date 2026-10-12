@@ -14,9 +14,8 @@ use bevy::{
     window::WindowResolution,
 };
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
-use bevy_terminal_ratatui::TerminalRenderer;
 use bevy_terminal_ratatui::prelude::{
-    CursorConfig, RasterConfig, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
+    CursorConfig, RasterConfig, TerminalGrid, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
     TerminalSystems,
 };
 
@@ -27,7 +26,6 @@ const HEIGHT: u32 = 640;
 const EXPORT_FRAMES: u32 = 12;
 
 fn main() {
-    let surface = common::demo_surface();
     let config = TerminalRenderConfig {
         sizing: TerminalSizing::FitCellWidth(Vec2::new(11.0, 20.0)),
         raster: RasterConfig {
@@ -65,7 +63,9 @@ fn main() {
     app.add_plugins((export_plugin, TerminalPlugin, common::app::presentation))
         .add_systems(Startup, move |mut commands: Commands| {
             commands.spawn(common::app::ui_terminal(
-                TerminalRenderer::new(surface.clone()),
+                // A plain grid: the QA resize below must keep the overlap,
+                // which a Ratatui resize would clear.
+                common::demo_terminal().grid().clone(),
                 config.clone(),
                 Vec2::new(20.0, 20.0),
             ));
@@ -124,15 +124,10 @@ fn setup_export(
     ));
 }
 
-fn resize_for_qa(terminals: Query<&TerminalRenderer>, mut frame: Local<u32>) {
+fn resize_for_qa(mut grid: Single<&mut TerminalGrid>, mut frame: Local<u32>) {
     *frame += 1;
     if *frame == 8 {
-        let terminal = terminals
-            .single()
-            .expect("the example creates exactly one terminal");
-        terminal.surface().update(|update| {
-            update.resize((60, 18));
-        });
+        grid.resize((60, 18));
     }
 }
 

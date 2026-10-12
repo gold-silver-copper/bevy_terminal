@@ -52,7 +52,7 @@ jobs:
       - name: Fuzz each target for one minute
         working-directory: fuzz
         run: |
-          for target in surface ratatui_backend renderer; do
+          for target in grid ratatui_backend renderer; do
             cargo fuzz run "$target" -s none -- -max_total_time=60 -len_control=0 -timeout=30 -rss_limit_mb=4096
           done
 
