@@ -455,10 +455,7 @@ impl UnifiedGlyphAtlas {
             scaled,
         );
         let ink = ink_of(scaled, |index| pixels.get(index * 4 + 3).copied());
-        let uv = match self.glyphs.get(&AtlasKey::Source(key)) {
-            Some(uv) => *uv,
-            None => self.insert(AtlasKey::Source(key), scaled, pixels)?,
-        };
+        let uv = self.insert(AtlasKey::Source(key), scaled, pixels)?;
         self.scaled_ink.insert(key, ink);
         Some((uv, ink))
     }

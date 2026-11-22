@@ -20,6 +20,7 @@ use shaping::{AtlasUpload, ShapeCaches, UnifiedGlyphAtlas};
 
 use std::{
     any::TypeId,
+    fmt,
     marker::PhantomData,
     sync::{
         Arc,
@@ -32,6 +33,7 @@ use std::time::Instant;
 
 use bevy::{
     asset::{AssetId, RenderAssetUsages},
+    ecs::component::RequiredComponentsError,
     image::ImageSampler,
     platform::collections::{HashMap, HashSet},
     prelude::*,
@@ -122,6 +124,22 @@ impl<S> Default for TerminalSourcePlugin<S> {
     }
 }
 
+impl<S> Clone for TerminalSourcePlugin<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Copy for TerminalSourcePlugin<S> {}
+
+impl<S> fmt::Debug for TerminalSourcePlugin<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("TerminalSourcePlugin")
+            .field(&std::any::type_name::<S>())
+            .finish()
+    }
+}
+
 impl<S: TerminalSource> Plugin for TerminalSourcePlugin<S> {
     fn build(&self, app: &mut App) {
         app.add_plugins(TerminalPlugin);
@@ -130,9 +148,16 @@ impl<S: TerminalSource> Plugin for TerminalSourcePlugin<S> {
 }
 
 fn register_source<S: TerminalSource>(app: &mut App) {
-    let _ = app
+    if let Err(RequiredComponentsError::ArchetypeExists(_)) = app
         .world_mut()
-        .try_register_required_components::<S, TerminalRenderConfig>();
+        .try_register_required_components::<S, TerminalRenderConfig>()
+    {
+        warn!(
+            source = std::any::type_name::<S>(),
+            "bevy_terminal: terminal source was spawned before its plugin was added; \
+             existing entities without TerminalRenderConfig will not render"
+        );
+    }
     app.add_observer(initialize_terminal::<S>)
         .add_observer(release_terminal::<S>)
         .add_systems(
@@ -281,45 +306,13 @@ impl TextResources<'_> {
 /// its source is added.
 fn initialize_terminal<S: TerminalSource>(
     add: On<Add<S>>,
-    terminals: Query<(&S, &TerminalRenderConfig, Option<&BatchMainState>)>,
-    images: ResMut<Assets<Image>>,
-    device: Option<Res<RenderDevice>>,
-    commands: Commands,
-) {
-    let Ok((terminal, config, existing)) = terminals.get(add.entity) else {
-        return;
-    };
-    if existing.is_some() {
-        warn!(
-            entity = ?add.entity,
-            source = std::any::type_name::<S>(),
-            "bevy_terminal: entity already has a registered terminal source; ignoring additional source"
-        );
-        return;
-    }
-    let grid = terminal.grid().size();
-    initialize(
-        add.entity,
-        TypeId::of::<S>(),
-        grid,
-        config,
-        images,
-        device,
-        commands,
-    );
-}
-
-/// Gives a terminal drawing a `grid`-sized grid its texture, statistics and
-/// renderer state.
-fn initialize(
-    entity: Entity,
-    source: TypeId,
-    grid: GridSize,
-    config: &TerminalRenderConfig,
-    mut images: ResMut<Assets<Image>>,
-    device: Option<Res<RenderDevice>>,
+    terminals: Query<(&S, &TerminalRenderConfig)>,
     mut commands: Commands,
 ) {
+    let Ok((terminal, config)) = terminals.get(add.entity) else {
+        return;
+    };
+    let grid = terminal.grid().size();
     let raster_scale = resolve_raster_scale(config.raster.scale);
     let metrics = if config.sizing.is_valid() {
         resolve_metrics(config, None)
@@ -330,20 +323,45 @@ fn initialize(
         }
     };
     let requested = terminal_pixel_size(grid, &physical_config(metrics, raster_scale));
-    let size = if requested.max_element() <= texture_limit(device.as_deref()) {
-        requested
-    } else {
-        UVec2::ONE
-    };
-    let output = images.add(make_target_image(size));
-    commands.entity(entity).insert((
-        TerminalTexture {
-            status: TerminalStatus::Loading,
-            image: output.clone(),
-        },
-        BatchMainState::new(source, output),
-        TerminalStats::default(),
-    ));
+    let source = TypeId::of::<S>();
+    let source_name = std::any::type_name::<S>();
+    // Claim ownership inside the queued entity command so two `Add` observers
+    // firing on the same `spawn((SourceA, SourceB))` bundle cannot race or
+    // clobber each other's texture.
+    commands
+        .entity(add.entity)
+        .queue(move |mut entity: EntityWorldMut| {
+            if entity.contains::<BatchMainState>() {
+                warn!(
+                    entity = ?entity.id(),
+                    source = source_name,
+                    "bevy_terminal: entity already has a registered terminal source; ignoring additional source"
+                );
+                return;
+            }
+            let output = entity.world_scope(|world| {
+                let limit = texture_limit(world.get_resource::<RenderDevice>());
+                let size = if requested.max_element() <= limit {
+                    requested
+                } else {
+                    UVec2::ONE
+                };
+                world
+                    .get_resource_mut::<Assets<Image>>()
+                    .map(|mut images| images.add(make_target_image(size)))
+            });
+            let Some(output) = output else {
+                return;
+            };
+            entity.insert((
+                TerminalTexture {
+                    status: TerminalStatus::Loading,
+                    image: output.clone(),
+                },
+                BatchMainState::new(source, output),
+                TerminalStats::default(),
+            ));
+        });
 }
 
 fn texture_limit(device: Option<&RenderDevice>) -> u32 {
@@ -972,12 +990,14 @@ fn sync_entity(
                 SyncError::Loading
             });
         }
-        // A terminal that failed to shape or fit stays idle until one of
-        // the inputs that decided it changes.
+        // A terminal that failed to shape, fit, or reallocate stays idle until
+        // one of the inputs that decided it changes.
         if matches!(
             output.status,
             TerminalStatus::Failed(
-                TerminalFailure::ShapingFailed | TerminalFailure::TextureTooLarge
+                TerminalFailure::ShapingFailed
+                    | TerminalFailure::TextureTooLarge
+                    | TerminalFailure::OutputUnavailable
             )
         ) && !(source_changed || config_touched || fonts_changed || device_changed)
         {
@@ -1035,6 +1055,12 @@ fn sync_entity(
     // Written only on change, so `Changed<TerminalTexture>` observers are
     // not woken every frame.
     if output.status != status {
+        if status == TerminalStatus::Failed(TerminalFailure::OutputUnavailable) {
+            warn!(
+                ?entity,
+                "bevy_terminal: could not reallocate a terminal texture in place"
+            );
+        }
         output.status = status;
     }
 }
@@ -1291,7 +1317,6 @@ fn publish(
             .insert(output, make_target_image(geometry.size))
             .is_err()
     {
-        warn!("bevy_terminal: could not reallocate a terminal texture in place");
         return Err(TerminalFailure::OutputUnavailable.into());
     }
     Ok(geometry)
