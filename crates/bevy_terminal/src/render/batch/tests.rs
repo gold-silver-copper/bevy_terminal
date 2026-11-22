@@ -384,7 +384,7 @@ fn idle_output_is_stable_and_application_ui_is_untouched() {
     struct Changes(usize);
     let mut app = text_app();
     app.init_resource::<Changes>().add_systems(
-        Update,
+        PostUpdate,
         (|changed: Query<Entity, Changed<TerminalTexture>>, mut changes: ResMut<Changes>| {
             changes.0 += changed.iter().count();
         })
@@ -1895,7 +1895,7 @@ fn idle_terminals_do_not_rescan_fonts_or_publish_statistics() {
     struct StatsChanges(usize);
     let mut app = text_app();
     app.init_resource::<StatsChanges>().add_systems(
-        Update,
+        PostUpdate,
         (|changed: Query<Entity, Changed<TerminalStats>>, mut count: ResMut<StatsChanges>| {
             count.0 += changed.iter().count();
         })
@@ -2223,7 +2223,7 @@ fn texture_changes_track_geometry_not_content() {
     struct Changes(usize);
     let mut app = text_app();
     app.init_resource::<Changes>().add_systems(
-        Update,
+        PostUpdate,
         (|changed: Query<(), Changed<TerminalTexture>>, mut count: ResMut<Changes>| {
             count.0 += changed.iter().count();
         })
@@ -2291,4 +2291,124 @@ fn shaping_failures_format_only_when_logged() {
             error: super::metrics::AdvanceError::NotRegistered,
         }
     );
+}
+
+#[test]
+fn custom_source_auto_requires_render_config() {
+    #[derive(Component)]
+    struct CustomSource(TerminalGrid);
+
+    impl TerminalSource for CustomSource {
+        fn grid(&self) -> &TerminalGrid {
+            &self.0
+        }
+    }
+
+    let mut app = text_app();
+    app.add_plugins(TerminalSourcePlugin::<CustomSource>::default());
+    let entity = app
+        .world_mut()
+        .spawn(CustomSource(TerminalGrid::new((4, 2))))
+        .id();
+    assert!(app.world().get::<TerminalRenderConfig>(entity).is_some());
+    assert!(app.world().get::<TerminalTexture>(entity).is_some());
+    app.update();
+    assert_eq!(
+        app.world()
+            .get::<TerminalTexture>(entity)
+            .and_then(TerminalTexture::measured)
+            .map(TerminalGeometry::grid),
+        Some(GridSize::new(4, 2))
+    );
+}
+
+#[test]
+fn second_source_on_same_entity_does_not_clobber_or_tear_down_first() {
+    #[derive(Component)]
+    struct ExtraSource(TerminalGrid);
+
+    impl TerminalSource for ExtraSource {
+        fn grid(&self) -> &TerminalGrid {
+            &self.0
+        }
+    }
+
+    let mut app = text_app();
+    app.add_plugins(TerminalSourcePlugin::<ExtraSource>::default());
+    let entity = app.world_mut().spawn(TerminalGrid::new((5, 2))).id();
+    let original_image = app
+        .world()
+        .get::<TerminalTexture>(entity)
+        .unwrap()
+        .image()
+        .id();
+    app.world_mut()
+        .entity_mut(entity)
+        .insert(ExtraSource(TerminalGrid::new((9, 4))));
+    app.update();
+
+    let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+    assert_eq!(texture.image().id(), original_image);
+    assert_eq!(
+        texture.measured().map(TerminalGeometry::grid),
+        Some(GridSize::new(5, 2))
+    );
+
+    // Removing the ignored second source must leave the first source intact.
+    app.world_mut().entity_mut(entity).remove::<ExtraSource>();
+    assert!(app.world().get::<TerminalTexture>(entity).is_some());
+    assert_eq!(
+        app.world()
+            .get::<TerminalTexture>(entity)
+            .unwrap()
+            .image()
+            .id(),
+        original_image
+    );
+}
+
+#[test]
+fn update_draws_are_synced_in_the_same_frame_without_manual_ordering() {
+    let mut app = text_app();
+    let entity = app.world_mut().spawn(TerminalGrid::new((4, 1))).id();
+    app.add_systems(Update, move |mut grids: Query<&mut TerminalGrid>| {
+        if let Ok(mut grid) = grids.get_mut(entity) {
+            write_text(&mut grid, "hi");
+        }
+    });
+    app.update();
+    assert_eq!(
+        app.world()
+            .get::<TerminalTexture>(entity)
+            .and_then(TerminalTexture::measured)
+            .map(TerminalGeometry::grid),
+        Some(GridSize::new(4, 1))
+    );
+    let scene = queued(app.world(), entity).expect("same-frame scene queued");
+    assert!(scene.batches.iter().any(|batch| batch.count > 0));
+}
+
+#[test]
+fn publish_failure_reports_output_unavailable() {
+    let mut app = App::new();
+    app.add_plugins(AssetPlugin::default())
+        .init_asset::<Image>();
+    let removed_id = {
+        let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+        let handle = images.add(make_target_image(UVec2::ONE));
+        handle.id()
+    };
+    app.update();
+    let geometry = TerminalGeometry {
+        grid: GridSize::new(4, 2),
+        size: UVec2::new(32, 32),
+        physical_cell_size: Vec2::new(8.0, 16.0),
+        physical_font_size: 16.0,
+        raster_scale: 1.0,
+    };
+    let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+    assert!(matches!(
+        publish(&mut images, removed_id, geometry),
+        Err(SyncError::Failed(TerminalFailure::OutputUnavailable))
+    ));
 }

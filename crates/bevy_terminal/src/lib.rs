@@ -29,7 +29,7 @@ pub mod prelude {
             BlinkConfig, CursorConfig, CursorStyle, FontFaces, RasterConfig, TerminalFailure,
             TerminalGeometry, TerminalPlugin, TerminalRenderConfig, TerminalSizing, TerminalSource,
             TerminalSourcePlugin, TerminalStats, TerminalStatus, TerminalSystems, TerminalTexture,
-            TerminalTheme,
+            TerminalTheme, grid_for,
         },
         scene::{
             CellOccupancy, CellPosition, GridSize, StyleFlags, TerminalCell, TerminalColor,

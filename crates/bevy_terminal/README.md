@@ -67,10 +67,11 @@ Every terminal is an entity with one texture; show that image in as many places
 as needed.
 
 Producers on other threads, such as a PTY reader, send their output over a
-channel that a system drains into the grid before `TerminalSystems::Sync`.
+channel that a system drains into the grid in `Update` (before `PostUpdate`'s
+`TerminalSystems::Sync`).
 
 The plugin attaches `TerminalTexture` and `TerminalStats` as soon as a source
-is added. Read output after `TerminalSystems::Sync`. `texture.status()` is
+is added. Read output in `PostUpdate` after `TerminalSystems::Sync`. `texture.status()` is
 `Loading`, `Ready(geometry)` or `Failed(reason)` (missing text resources,
 invalid sizing, a font that failed to load, a shaping failure, or a texture
 past the device limit), and `texture.measured()` returns the geometry while

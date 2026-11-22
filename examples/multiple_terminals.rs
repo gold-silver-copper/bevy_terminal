@@ -14,8 +14,7 @@ use bevy::{
     window::{PrimaryWindow, WindowResolution},
 };
 use bevy_terminal_ratatui::prelude::{
-    RatatuiPlugin, RatatuiTerminal, TerminalRenderConfig, TerminalSizing, TerminalSystems,
-    TerminalTexture,
+    RatatuiPlugin, RatatuiTerminal, TerminalRenderConfig, TerminalSizing, TerminalTexture,
 };
 use ratatui::{
     layout::{Alignment, Constraint, Layout},
@@ -87,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .add_systems(
             Update,
-            (spawn_right_terminal, fit_to_window, update_terminals).before(TerminalSystems::Sync),
+            (spawn_right_terminal, fit_to_window, update_terminals),
         )
         .run();
     Ok(())

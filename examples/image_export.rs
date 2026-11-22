@@ -16,7 +16,6 @@ use bevy::{
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::prelude::{
     CursorConfig, RasterConfig, TerminalGrid, TerminalPlugin, TerminalRenderConfig, TerminalSizing,
-    TerminalSystems,
 };
 
 /// Canvas large enough for the 72×22 scene at the measured JetBrains Mono cell
@@ -71,7 +70,7 @@ fn main() {
             ));
         })
         .add_systems(Startup, setup_export)
-        .add_systems(Update, resize_for_qa.before(TerminalSystems::Sync))
+        .add_systems(Update, resize_for_qa)
         .add_systems(Update, stop_after_export)
         .run();
 

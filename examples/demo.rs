@@ -5,8 +5,7 @@ mod common;
 
 use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_terminal_ratatui::prelude::{
-    RatatuiPlugin, RatatuiTerminal, TerminalRenderConfig, TerminalSizing, TerminalSystems,
-    TerminalTexture,
+    RatatuiPlugin, RatatuiTerminal, TerminalRenderConfig, TerminalSizing, TerminalTexture,
 };
 
 const MARGIN: f32 = 20.0;
@@ -37,7 +36,7 @@ fn main() {
                 Vec2::splat(MARGIN),
             ));
         })
-        .add_systems(Update, fit_to_window.before(TerminalSystems::Sync))
+        .add_systems(Update, fit_to_window)
         .run();
 }
 

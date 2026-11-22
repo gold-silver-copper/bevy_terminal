@@ -34,8 +34,8 @@ fn main() {
             ));
         },
     )
-    .add_systems(Update, draw.before(TerminalSystems::Sync))
-    .add_systems(Update, present.after(TerminalSystems::Sync))
+    .add_systems(Update, draw)
+    .add_systems(PostUpdate, present.after(TerminalSystems::Sync))
     .run();
 }
 

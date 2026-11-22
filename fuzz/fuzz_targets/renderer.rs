@@ -449,7 +449,7 @@ impl Harness {
         .init_resource::<Time>()
         .init_resource::<Changes>()
         .add_plugins(TerminalPlugin)
-        .add_systems(Update, count_changes.after(TerminalSystems::Sync));
+        .add_systems(PostUpdate, count_changes.after(TerminalSystems::Sync));
         Self {
             app,
             fonts: HashMap::new(),

@@ -16,7 +16,7 @@ pub fn export_terminals_on_ready(app: &mut App, output_dir: impl Into<String>) {
     let output_dir = output_dir.into();
     gpu::install(app);
     app.add_systems(
-        Update,
+        PostUpdate,
         (move |textures: Query<(Entity, &TerminalTexture), Without<ExportStarted>>,
                mut commands: Commands,
                mut sources: ResMut<Assets<ImageExportSource>>| {

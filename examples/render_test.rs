@@ -35,7 +35,7 @@ use bevy::{
 use bevy_image_export::ImageExportPlugin;
 use bevy_terminal_ratatui::prelude::{
     BlinkConfig, CursorConfig, FontFaces, RasterConfig, RatatuiPlugin, RatatuiTerminal,
-    TerminalRenderConfig, TerminalSizing, TerminalSystems, TerminalTexture, TerminalTheme,
+    TerminalRenderConfig, TerminalSizing, TerminalTexture, TerminalTheme,
 };
 use ratatui::{
     layout::Position,
@@ -279,10 +279,7 @@ fn main() {
                 ));
             },
         )
-        .add_systems(
-            Update,
-            (cycle_fonts, scroll, fit_to_window).before(TerminalSystems::Sync),
-        )
+        .add_systems(Update, (cycle_fonts, scroll, fit_to_window))
         .run();
     }
 }

@@ -1,6 +1,6 @@
-use std::convert::Infallible;
+use std::{convert::Infallible, marker::PhantomData};
 
-use bevy_terminal::bevy::prelude::*;
+use bevy_terminal::bevy::{ecs::component::Mutable, prelude::*};
 use bevy_terminal::prelude::{
     GridSize, StyleFlags, TerminalCell, TerminalColor, TerminalGeometry, TerminalGrid,
     TerminalRenderConfig, TerminalSource, TerminalSourcePlugin, TerminalStyle, TerminalSystems,
@@ -13,6 +13,34 @@ use ratatui::{
     style::{Color, Modifier},
 };
 
+/// A [`TerminalSource`] backed by a [`RatatuiBackend`].
+///
+/// Register it with [`RatatuiSourcePlugin`] so the renderer draws its grid and
+/// hands back each measured [`TerminalGeometry`] for [`Backend::window_size`].
+pub trait RatatuiSource: TerminalSource + Component<Mutability = Mutable> {
+    /// Mutable access to the inner [`RatatuiBackend`].
+    fn backend_mut(&mut self) -> &mut RatatuiBackend;
+}
+
+/// Draws every [`RatatuiSource`] `S`, adding the renderer's
+/// [`TerminalPlugin`](bevy_terminal::prelude::TerminalPlugin) if it is
+/// missing, and hands each terminal's measured geometry to its backend in
+/// [`PostUpdate`] after [`TerminalSystems::Sync`].
+pub struct RatatuiSourcePlugin<S>(PhantomData<fn() -> S>);
+
+impl<S> Default for RatatuiSourcePlugin<S> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<S: RatatuiSource> Plugin for RatatuiSourcePlugin<S> {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(TerminalSourcePlugin::<S>::default())
+            .add_systems(PostUpdate, adopt_geometry::<S>.after(TerminalSystems::Sync));
+    }
+}
+
 /// Draws every [`RatatuiTerminal`] entity, adding the renderer's
 /// [`TerminalPlugin`](bevy_terminal::prelude::TerminalPlugin) if it is
 /// missing, and hands each terminal's measured geometry to its backend so
@@ -22,13 +50,12 @@ pub struct RatatuiPlugin;
 
 impl Plugin for RatatuiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(TerminalSourcePlugin::<RatatuiTerminal>::default())
-            .add_systems(Update, adopt_geometry.after(TerminalSystems::Sync));
+        app.add_plugins(RatatuiSourcePlugin::<RatatuiTerminal>::default());
     }
 }
 
-fn adopt_geometry(
-    mut terminals: Query<(&mut RatatuiTerminal, &TerminalTexture), Changed<TerminalTexture>>,
+fn adopt_geometry<S: RatatuiSource>(
+    mut terminals: Query<(&mut S, &TerminalTexture), Changed<TerminalTexture>>,
 ) {
     for (mut terminal, texture) in &mut terminals {
         if let Some(geometry) = texture.measured() {
@@ -160,6 +187,12 @@ impl RatatuiTerminal {
 impl TerminalSource for RatatuiTerminal {
     fn grid(&self) -> &TerminalGrid {
         self.0.backend().grid()
+    }
+}
+
+impl RatatuiSource for RatatuiTerminal {
+    fn backend_mut(&mut self) -> &mut RatatuiBackend {
+        self.0.backend_mut()
     }
 }
 

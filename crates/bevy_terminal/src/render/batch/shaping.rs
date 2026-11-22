@@ -382,6 +382,7 @@ pub(super) struct UnifiedGlyphAtlas {
     /// Identifies the atlas texture in draw batches.
     pub(super) id: AssetId<Image>,
     pub(super) glyphs: HashMap<AtlasKey, Vec4>,
+    pub(super) scaled_ink: HashMap<SourceGlyph, InkSpan>,
     pub(super) cursor: UVec2,
     pub(super) row_height: u32,
     /// Entries not yet handed to a scene.
@@ -404,6 +405,7 @@ impl Default for UnifiedGlyphAtlas {
                 uuid: bevy::asset::uuid::Uuid::from_u64_pair(0x6274_6572_6d61_746c, serial),
             },
             glyphs: HashMap::default(),
+            scaled_ink: HashMap::default(),
             cursor: UVec2::splat(1),
             row_height: 0,
             uploads: Vec::new(),
@@ -441,6 +443,12 @@ impl UnifiedGlyphAtlas {
             scaled: Some(scaled),
             ..source
         };
+        if let (Some(&uv), Some(&ink)) = (
+            self.glyphs.get(&AtlasKey::Source(key)),
+            self.scaled_ink.get(&key),
+        ) {
+            return Some((uv, ink));
+        }
         let pixels = resample(
             &source_pixels(source, images)?,
             UVec2::new(source.width, source.height),
@@ -451,6 +459,7 @@ impl UnifiedGlyphAtlas {
             Some(uv) => *uv,
             None => self.insert(AtlasKey::Source(key), scaled, pixels)?,
         };
+        self.scaled_ink.insert(key, ink);
         Some((uv, ink))
     }
 
@@ -524,6 +533,7 @@ impl UnifiedGlyphAtlas {
     /// Forgets every entry; the texture's stale pixels are simply overwritten.
     pub(super) fn clear(&mut self) {
         self.glyphs.clear();
+        self.scaled_ink.clear();
         self.cursor = UVec2::splat(1);
         self.row_height = 0;
         self.uploads.clear();

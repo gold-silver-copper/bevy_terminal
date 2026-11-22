@@ -2,10 +2,10 @@
 
 #![allow(dead_code)]
 
-use bevy::{prelude::*, window::PrimaryWindow};
-use bevy_terminal_ratatui::RatatuiTerminal;
-use bevy_terminal_ratatui::bevy_terminal::render::grid_for;
-use bevy_terminal_ratatui::prelude::{TerminalRenderConfig, TerminalSystems, TerminalTexture};
+use bevy::{prelude::*, ui::UiSystems, window::PrimaryWindow};
+use bevy_terminal_ratatui::prelude::{
+    RatatuiTerminal, TerminalRenderConfig, TerminalSystems, TerminalTexture, grid_for,
+};
 
 /// A terminal presented through a Bevy UI image node positioned absolutely at
 /// `origin` (logical pixels). The example presentation system sizes the node; place it however
@@ -77,12 +77,17 @@ pub fn fit_grid_to_window(
 
 /// Installs application-owned UI layout without changing the requested raster scale.
 pub fn presentation(app: &mut App) {
-    app.add_systems(Update, present_ui.after(TerminalSystems::Sync));
+    app.add_systems(
+        PostUpdate,
+        present_ui
+            .after(TerminalSystems::Sync)
+            .before(UiSystems::Layout),
+    );
 }
 
 /// Opts these single-window examples into following window DPI and UI scale.
 pub fn window_scale(app: &mut App) {
-    app.add_systems(Update, set_ui_scale.before(TerminalSystems::Sync));
+    app.add_systems(Update, set_ui_scale);
 }
 
 fn set_ui_scale(

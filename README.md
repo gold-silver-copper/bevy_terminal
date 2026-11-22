@@ -12,11 +12,11 @@ grid; it does not emulate a terminal, manage a PTY, or forward input.
 | `bevy_terminal` | Terminal grid component, font measurement, rendering, output geometry |
 | `bevy_terminal_ratatui` | Ratatui backend and optional ergonomic terminal wrapper |
 
-Version 0.8.1 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.95 or newer.
+Version 0.9.0 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.95 or newer.
 
 ```toml
 [dependencies]
-bevy_terminal_ratatui = "0.8.1"
+bevy_terminal_ratatui = "0.9.0"
 ```
 
 ## Drawing and rendering
@@ -29,7 +29,7 @@ fn main() {
     App::new()
         .add_plugins((DefaultPlugins, RatatuiPlugin))
         .add_systems(Startup, setup)
-        .add_systems(Update, present.after(TerminalSystems::Sync))
+        .add_systems(PostUpdate, present.after(TerminalSystems::Sync))
         .run();
 }
 
@@ -177,16 +177,30 @@ should run after registration, or be repeated when the font collection changes.
 `TerminalStats` counters remain available without timing instrumentation and are
 zero on idle frames.
 
-The adapter exports `RatatuiBackend`, `RatatuiTerminal`, `RatatuiPlugin`, the
-`bevy_terminal` crate, and a `prelude` that also re-exports the renderer's.
+The adapter exports `RatatuiBackend`, `RatatuiTerminal`, `RatatuiPlugin`,
+`RatatuiSource`, `RatatuiSourcePlugin`, the `bevy_terminal` crate, and a
+`prelude` that also re-exports the renderer's (including `grid_for`).
 Advanced renderer modules are accessed through `bevy_terminal_ratatui::bevy_terminal`,
 rather than mirrored across both crate roots.
+
+## Migrating from 0.8 to 0.9
+
+- **Bevy 0.20:** `0.9.0` targets Bevy `0.20` (while `0.8.1` targeted Bevy `0.19`).
+- **Entity-only terminals:** `TerminalSurface`, `TerminalRenderer`, and
+  `TerminalSnapshot` are removed. Spawn `TerminalGrid` or `RatatuiTerminal`
+  directly as a component (with `TerminalPlugin` or `RatatuiPlugin`), or
+  implement `TerminalSource` / `RatatuiSource` on your own component and read
+  cells via `terminal.grid()`.
+- **Accessor & prelude:** Read the image handle via `texture.image()` instead of
+  the `texture.image` field; `grid_for` is now in `prelude`.
+- **Schedule:** `TerminalSystems::Sync` runs in `PostUpdate` (after Bevy font
+  registration), so `Update` draw systems no longer need `.before(TerminalSystems::Sync)`
+  and presentation systems run in `PostUpdate` `.after(TerminalSystems::Sync)`.
 
 ## Render QA
 
 The examples live in the repository, not in the published crate; run them from
-a checkout. The export examples use the Git development dependency
-`bevy_image_export`.
+a checkout. The export examples use `bevy_image_export`.
 
 ```text
 cargo run --example render_test                     # one window with every style/color/glyph check
