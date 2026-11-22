@@ -13,12 +13,16 @@
 
 mod backend;
 
-pub use backend::{RatatuiBackend, RatatuiPlugin, RatatuiTerminal};
+pub use backend::{
+    RatatuiBackend, RatatuiPlugin, RatatuiSource, RatatuiSourcePlugin, RatatuiTerminal,
+};
 /// The renderer crate used by this backend.
 pub use bevy_terminal;
 
 /// Common renderer and Ratatui adapter types.
 pub mod prelude {
-    pub use crate::{RatatuiBackend, RatatuiPlugin, RatatuiTerminal};
+    pub use crate::{
+        RatatuiBackend, RatatuiPlugin, RatatuiSource, RatatuiSourcePlugin, RatatuiTerminal,
+    };
     pub use bevy_terminal::prelude::*;
 }

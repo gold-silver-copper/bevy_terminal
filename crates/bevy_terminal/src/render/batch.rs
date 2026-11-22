@@ -19,6 +19,7 @@ use scene::{RowStates, SceneInput, SceneScratch, build_scene};
 use shaping::{AtlasUpload, ShapeCaches, UnifiedGlyphAtlas};
 
 use std::{
+    any::TypeId,
     marker::PhantomData,
     sync::{
         Arc,
@@ -39,7 +40,10 @@ use bevy::{
         render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
         renderer::{RenderDevice, RenderGraph, RenderGraphSystems},
     },
-    text::{FontAtlasSet, FontCx, LayoutCx, ScaleCx, TextError, TextPipeline},
+    text::{
+        FontAtlasSet, FontCx, LayoutCx, ScaleCx, TextError, TextPipeline,
+        load_font_assets_into_font_collection,
+    },
 };
 
 use super::{
@@ -75,8 +79,12 @@ impl Plugin for TerminalPlugin {
         }
         app.init_resource::<FontCatalog>()
             .init_resource::<SceneQueue>()
+            .configure_sets(
+                PostUpdate,
+                super::TerminalSystems::Sync.after(load_font_assets_into_font_collection),
+            )
             .add_systems(
-                Update,
+                PostUpdate,
                 refresh_font_catalog.in_set(super::TerminalSystems::Sync),
             );
         register_source::<TerminalGrid>(app);
@@ -122,10 +130,13 @@ impl<S: TerminalSource> Plugin for TerminalSourcePlugin<S> {
 }
 
 fn register_source<S: TerminalSource>(app: &mut App) {
+    let _ = app
+        .world_mut()
+        .try_register_required_components::<S, TerminalRenderConfig>();
     app.add_observer(initialize_terminal::<S>)
         .add_observer(release_terminal::<S>)
         .add_systems(
-            Update,
+            PostUpdate,
             sync_terminals::<S>
                 .in_set(super::TerminalSystems::Sync)
                 .after(refresh_font_catalog),
@@ -141,9 +152,13 @@ fn release_terminal<S: TerminalSource>(
     mut queue: ResMut<SceneQueue>,
     mut commands: Commands,
 ) {
-    if let Ok(state) = states.get(remove.entity) {
-        queue.release(state.output.id(), state.glyph_atlas.id);
+    let Ok(state) = states.get(remove.entity) else {
+        return;
+    };
+    if state.source != TypeId::of::<S>() {
+        return;
     }
+    queue.release(state.output.id(), state.glyph_atlas.id);
     commands
         .entity(remove.entity)
         .try_remove::<(BatchMainState, TerminalTexture, TerminalStats)>();
@@ -266,21 +281,39 @@ impl TextResources<'_> {
 /// its source is added.
 fn initialize_terminal<S: TerminalSource>(
     add: On<Add<S>>,
-    terminals: Query<(&S, &TerminalRenderConfig)>,
+    terminals: Query<(&S, &TerminalRenderConfig, Option<&BatchMainState>)>,
     images: ResMut<Assets<Image>>,
     device: Option<Res<RenderDevice>>,
     commands: Commands,
 ) {
-    if let Ok((terminal, config)) = terminals.get(add.entity) {
-        let grid = terminal.grid().size();
-        initialize(add.entity, grid, config, images, device, commands);
+    let Ok((terminal, config, existing)) = terminals.get(add.entity) else {
+        return;
+    };
+    if existing.is_some() {
+        warn!(
+            entity = ?add.entity,
+            source = std::any::type_name::<S>(),
+            "bevy_terminal: entity already has a registered terminal source; ignoring additional source"
+        );
+        return;
     }
+    let grid = terminal.grid().size();
+    initialize(
+        add.entity,
+        TypeId::of::<S>(),
+        grid,
+        config,
+        images,
+        device,
+        commands,
+    );
 }
 
 /// Gives a terminal drawing a `grid`-sized grid its texture, statistics and
 /// renderer state.
 fn initialize(
     entity: Entity,
+    source: TypeId,
     grid: GridSize,
     config: &TerminalRenderConfig,
     mut images: ResMut<Assets<Image>>,
@@ -308,7 +341,7 @@ fn initialize(
             status: TerminalStatus::Loading,
             image: output.clone(),
         },
-        BatchMainState::new(output),
+        BatchMainState::new(source, output),
         TerminalStats::default(),
     ));
 }
@@ -357,6 +390,8 @@ fn resolve_raster_scale(requested: f32) -> f32 {
 
 #[derive(Component)]
 struct BatchMainState {
+    /// The registered [`TerminalSource`] type that owns this entity's texture.
+    source: TypeId,
     output: Handle<Image>,
     fonts: FontUse,
     /// The failure last logged, so a repeated one is not logged again.
@@ -479,8 +514,9 @@ impl BatchMainState {
         self.measure.in_use = None;
     }
 
-    fn new(output: Handle<Image>) -> Self {
+    fn new(source: TypeId, output: Handle<Image>) -> Self {
         Self {
+            source,
             output,
             fonts: FontUse::default(),
             last_failure: None,
@@ -773,8 +809,12 @@ fn sync_terminals<S: TerminalSource>(
     if terminals.is_empty() {
         return;
     }
+    let expected = TypeId::of::<S>();
     resources.run(|frame| {
         for (entity, source, config, state, output, stats) in &mut terminals {
+            if state.source != expected {
+                continue;
+            }
             let terminal = (entity, config, state, output, stats);
             sync_entity(terminal, source.grid(), source.is_changed(), frame);
         }
@@ -1216,14 +1256,9 @@ fn sync_terminal(
     {
         stats.scene_ns = scene_start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
     }
-    stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
-    scene.submission = Some(submissions.next());
-    queue.submit(scene);
-    retained.drawn = Some(now);
-    retained.blink = blink;
-    Ok(Some(publish(
+    let geometry = publish(
         &mut text.images,
-        output,
+        output.id(),
         TerminalGeometry {
             grid: now.size,
             size,
@@ -1231,7 +1266,13 @@ fn sync_terminal(
             physical_cell_size: raster.cell_size,
             physical_font_size: raster.font_size,
         },
-    )))
+    )?;
+    stats.draw_batches = u32::try_from(scene.batches.len()).unwrap_or(u32::MAX);
+    scene.submission = Some(submissions.next());
+    queue.submit(scene);
+    retained.drawn = Some(now);
+    retained.blink = blink;
+    Ok(Some(geometry))
 }
 
 /// Sizes `output` to `geometry`, the only way geometry is published, so an
@@ -1240,19 +1281,20 @@ fn sync_terminal(
 /// recreates the GPU texture.
 fn publish(
     images: &mut Assets<Image>,
-    output: &Handle<Image>,
+    output: AssetId<Image>,
     geometry: TerminalGeometry,
-) -> TerminalGeometry {
+) -> Result<TerminalGeometry, SyncError> {
     if images
-        .get(output.id())
+        .get(output)
         .is_none_or(|image| image.size() != geometry.size)
         && images
-            .insert(output.id(), make_target_image(geometry.size))
+            .insert(output, make_target_image(geometry.size))
             .is_err()
     {
         warn!("bevy_terminal: could not reallocate a terminal texture in place");
+        return Err(TerminalFailure::OutputUnavailable.into());
     }
-    geometry
+    Ok(geometry)
 }
 
 #[cfg(test)]

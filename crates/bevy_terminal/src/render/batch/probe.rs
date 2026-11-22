@@ -344,7 +344,6 @@ fn run(case: &ProbeCase) -> ProbeResult {
             },
         ))
         .id();
-    app.update();
     app.world_mut()
         .get_mut::<BatchMainState>(entity)
         .expect("initialized terminal")

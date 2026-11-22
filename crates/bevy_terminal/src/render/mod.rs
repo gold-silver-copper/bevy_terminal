@@ -302,13 +302,16 @@ impl Default for RasterConfig {
     }
 }
 
-/// Public system set for ordering application systems around terminal syncing.
+/// Public system set in [`PostUpdate`] for ordering application systems around
+/// terminal syncing.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, SystemSet)]
 pub enum TerminalSystems {
-    /// Reads each terminal's grid and builds the frame's scene. Producers that
-    /// write before it are drawn this frame. Newly spawned terminals get their
-    /// [`TerminalTexture`] earlier, from an observer that runs when their
-    /// [`TerminalSource`] is added.
+    /// Runs in [`PostUpdate`] (after Bevy registers newly loaded font assets)
+    /// to read each terminal's grid and build the frame's scene. Systems in
+    /// [`Update`] run before it automatically; presentation systems that read
+    /// [`TerminalTexture`] can run in [`PostUpdate`] `.after(TerminalSystems::Sync)`.
+    /// Newly spawned terminals get their [`TerminalTexture`] earlier, from an
+    /// observer that runs when their [`TerminalSource`] is added.
     Sync,
 }
 

@@ -36,7 +36,7 @@ use bevy::{
 };
 use bevy_terminal_ratatui::prelude::{
     RatatuiPlugin, RatatuiTerminal, TerminalRenderConfig, TerminalSizing, TerminalStats,
-    TerminalSystems, TerminalTexture,
+    TerminalTexture,
 };
 use palette::{Okhsv, Srgb, convert::FromColorUnclamped};
 use ratatui::{
@@ -103,7 +103,7 @@ fn main() {
                 Vec2::splat(MARGIN),
             ));
         })
-        .add_systems(Update, (draw.before(TerminalSystems::Sync), report, quit))
+        .add_systems(Update, (draw, report, quit))
         .run();
 }
 

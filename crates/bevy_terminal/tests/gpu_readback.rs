@@ -66,7 +66,7 @@ fn render_headless_with(
         },
     )
     .add_systems(
-        Update,
+        PostUpdate,
         (|mut commands: Commands, textures: Query<&TerminalTexture>, mut started: Local<bool>| {
             if *started {
                 return;
@@ -416,7 +416,7 @@ fn render_after_steps(
     let mut steps = steps;
     let mut frame = 0u32;
     app.add_systems(
-        Update,
+        PostUpdate,
         (move |world: &mut World| {
             frame += 1;
             let step = (frame / 12) as usize;

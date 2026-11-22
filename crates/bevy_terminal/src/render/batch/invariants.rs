@@ -247,7 +247,7 @@ fn idle_terminals_build_no_scene_and_change_no_component() {
     // Published components, and Bevy's text resources, which only shaping
     // borrows mutably.
     app.init_resource::<Changes>().add_systems(
-        Update,
+        PostUpdate,
         (|changed: Query<(), Published>,
           pipeline: Res<TextPipeline>,
           atlases: Res<FontAtlasSet>,

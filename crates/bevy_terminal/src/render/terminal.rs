@@ -7,10 +7,11 @@ use bevy::prelude::*;
 /// [`TerminalGrid`] itself is a source, registered by
 /// [`super::TerminalPlugin`]. Register another with
 /// [`super::TerminalSourcePlugin`] (Ratatui terminals are registered by
-/// `bevy_terminal_ratatui`) and require
-/// [`TerminalRenderConfig`](super::TerminalRenderConfig) on it so each
-/// terminal has a configuration. Every entity with a registered source is
-/// drawn into its own [`TerminalTexture`].
+/// `bevy_terminal_ratatui`); registration automatically requires
+/// [`TerminalRenderConfig`](super::TerminalRenderConfig) on the component.
+/// Every entity with a registered source is drawn into its own
+/// [`TerminalTexture`]. At most one registered source should be placed on an
+/// entity.
 pub trait TerminalSource: Component {
     /// The grid to draw.
     fn grid(&self) -> &TerminalGrid;
@@ -51,6 +52,8 @@ pub enum TerminalFailure {
     InvalidSizing,
     /// The requested geometry exceeds the active device's texture limits.
     TextureTooLarge,
+    /// The terminal's output image could not be resized in place.
+    OutputUnavailable,
 }
 
 /// The renderer-owned terminal texture and its status.

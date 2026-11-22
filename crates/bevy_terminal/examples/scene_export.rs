@@ -61,7 +61,7 @@ fn main() {
             }
         })
         .init_resource::<ExportsFinished>()
-        .add_systems(Update, export_when_ready.after(TerminalSystems::Sync))
+        .add_systems(PostUpdate, export_when_ready.after(TerminalSystems::Sync))
         .add_systems(Update, |time: Res<Time>| {
             assert!(time.elapsed_secs() < 60.0, "terminal export timed out");
         });

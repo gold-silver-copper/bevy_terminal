@@ -19,7 +19,7 @@ use bevy::{
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::prelude::{
     CursorConfig, RasterConfig, RatatuiPlugin, RatatuiTerminal, TerminalRenderConfig,
-    TerminalSizing, TerminalSystems,
+    TerminalSizing,
 };
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -85,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .add_systems(Startup, setup_export)
-        .add_systems(Update, mutate_for_qa.before(TerminalSystems::Sync))
+        .add_systems(Update, mutate_for_qa)
         .add_systems(Update, stop_after_export)
         .run();
 

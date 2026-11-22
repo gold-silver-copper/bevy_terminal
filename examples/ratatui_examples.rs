@@ -21,7 +21,7 @@ use bevy::{
 };
 use bevy_terminal_ratatui::prelude::{
     RatatuiTerminal, TerminalGrid, TerminalRenderConfig, TerminalSizing, TerminalSource,
-    TerminalSourcePlugin, TerminalSystems, TerminalTexture,
+    TerminalSourcePlugin, TerminalTexture,
 };
 use ratatui::layout::Size;
 
@@ -81,8 +81,7 @@ fn main() {
                 pointer_input,
                 animate_current,
             )
-                .chain()
-                .before(TerminalSystems::Sync),
+                .chain(),
         )
         .run();
 }

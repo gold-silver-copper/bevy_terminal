@@ -21,7 +21,7 @@ use bevy::{
 use bevy_image_export::{ImageExport, ImageExportPlugin, ImageExportSettings, ImageExportSource};
 use bevy_terminal_ratatui::prelude::{
     BlinkConfig, CursorConfig, RasterConfig, RatatuiPlugin, RatatuiTerminal, TerminalRenderConfig,
-    TerminalSizing, TerminalSystems,
+    TerminalSizing,
 };
 
 const CELL_WIDTH: f32 = 10.0;
@@ -96,7 +96,7 @@ fn main() {
         }
     })
     .add_systems(Startup, setup_export)
-    .add_systems(Update, advance_capture.before(TerminalSystems::Sync))
+    .add_systems(Update, advance_capture)
     .run();
 
     export_threads.finish();
