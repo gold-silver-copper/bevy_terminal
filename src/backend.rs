@@ -128,8 +128,9 @@ impl RatatuiBackend {
     /// Until cells are written again, resizes are relative to the last
     /// frame: a grid that shrinks and grows back shows that frame whole
     /// again, as Ratatui, which redraws only what differs from it, takes it
-    /// to, with its cursor where it was put. A fixed viewport that draws
-    /// while the grid is smaller than its area loses what did not fit.
+    /// to, with its cursor where it was put. Any call that asks for cells to
+    /// change ends that: a fixed viewport that draws while the grid is
+    /// smaller than its area loses what did not fit.
     pub fn resize(&mut self, columns: u16, rows: u16) {
         let size = GridSize::new(columns, rows).bounded();
         if self.grid.size() == size {
@@ -150,10 +151,10 @@ impl RatatuiBackend {
         self.grid.set_cursor_position(*cursor);
     }
 
-    /// Notes a cursor that was moved as the one resizes return to.
-    fn keep_cursor(&mut self) {
+    /// Notes where the cursor was put as where resizes return it to.
+    fn keep_cursor(&mut self, position: CellPosition) {
         if let Some((_, cursor)) = &mut self.written {
-            *cursor = self.grid.cursor_position();
+            *cursor = position;
         }
     }
 
@@ -400,7 +401,8 @@ impl Backend for RatatuiBackend {
         // The grid clamps the cursor into itself, as a terminal does.
         let position = position.into();
         self.grid.set_cursor_position((position.x, position.y));
-        self.keep_cursor();
+        // As asked for, not as this grid clamped it.
+        self.keep_cursor(CellPosition::new(position.x, position.y));
         Ok(())
     }
 
@@ -458,7 +460,7 @@ impl Backend for RatatuiBackend {
             cursor.x.saturating_add(1),
             cursor.y.saturating_add(line_count),
         ));
-        self.keep_cursor();
+        self.keep_cursor(self.grid.cursor_position());
         Ok(())
     }
 
@@ -468,9 +470,10 @@ impl Backend for RatatuiBackend {
         region: std::ops::Range<u16>,
         line_count: u16,
     ) -> Result<(), Self::Error> {
-        if self.grid.scroll_up(region, line_count) {
+        if line_count > 0 {
             self.written = None;
         }
+        self.grid.scroll_up(region, line_count);
         Ok(())
     }
 
@@ -480,9 +483,10 @@ impl Backend for RatatuiBackend {
         region: std::ops::Range<u16>,
         line_count: u16,
     ) -> Result<(), Self::Error> {
-        if self.grid.scroll_down(region, line_count) {
+        if line_count > 0 {
             self.written = None;
         }
+        self.grid.scroll_down(region, line_count);
         Ok(())
     }
 }
@@ -978,9 +982,10 @@ mod tests {
         backend.resize(6, 4);
         assert_eq!(backend.get_cursor_position().unwrap(), Position::new(5, 2));
         backend.resize(2, 2);
-        backend.set_cursor_position((0, 1)).unwrap();
+        backend.set_cursor_position((4, 1)).unwrap();
+        assert_eq!(backend.get_cursor_position().unwrap(), Position::new(1, 1));
         backend.resize(6, 3);
-        assert_eq!(backend.get_cursor_position().unwrap(), Position::new(0, 1));
+        assert_eq!(backend.get_cursor_position().unwrap(), Position::new(4, 1));
         // Asking for more than the grid can hold changes nothing and keeps no copy.
         let mut backend = RatatuiBackend::new(1024, 1024);
         backend.resize(1024, 1025);

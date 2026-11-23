@@ -115,7 +115,8 @@ impl TerminalTexture {
     /// [`TextureTooLarge`](TerminalFailure::TextureTooLarge) because of the
     /// grid, which can then be fitted with [`CellGeometry::grid_for`]. `None`
     /// until the fonts are measured, after any other failure, and when the
-    /// font or one cell alone is larger than a texture, which no grid fits.
+    /// requested font or one cell alone is larger than a texture, which no
+    /// grid fits.
     #[must_use]
     pub const fn cell(&self) -> Option<&CellGeometry> {
         self.cell.as_ref()
@@ -147,18 +148,24 @@ impl CellGeometry {
 
     /// Returns the largest grid of these cells that fits `physical_size`
     /// pixels and a texture (at least 1×1, as [`grid_for`] bounds it, which
-    /// is what a size that is not a positive number gives). Whole pixels
+    /// is what a size that is negative or not a number gives). Whole pixels
     /// divide into whole cells exactly, which logical sizes do not at
     /// fractional scales: scale a logical size by [`Self::raster_scale`] only
     /// when no physical one is at hand.
     #[must_use]
     pub fn grid_for(&self, physical_size: Vec2) -> GridSize {
-        let fits = grid_for(physical_size, self.physical_size);
-        let drawable = grid_for(Vec2::splat(self.texture_limit as f32), self.physical_size);
-        GridSize::new(
-            fits.width.min(drawable.width),
-            fits.height.min(drawable.height),
-        )
+        // What is not a number stays so, to fit one cell, where `min` alone
+        // would make it the limit.
+        let limit = self.texture_limit as f32;
+        let drawable = |pixels: f32| {
+            if pixels.is_nan() {
+                pixels
+            } else {
+                pixels.min(limit)
+            }
+        };
+        let size = Vec2::new(drawable(physical_size.x), drawable(physical_size.y));
+        grid_for(size, self.physical_size)
     }
 }
 

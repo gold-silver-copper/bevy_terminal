@@ -1202,8 +1202,12 @@ fn a_grid_too_large_is_still_measured_and_fits_in_one_step() {
         TerminalStatus::Failed(TerminalFailure::TextureTooLarge)
     );
     let cell = *texture.cell().expect("the cell is measured all the same");
+    // As many whole cells as a texture holds, each way.
     let grid = cell.grid_for(Vec2::splat(1e6));
-    assert!(grid.width < 1000, "{grid:?}");
+    let most = (Vec2::splat(8192.0) / cell.physical_size()).floor();
+    assert_eq!(grid, GridSize::new(most.x as u16, most.y as u16));
+    assert_eq!(cell.grid_for(Vec2::INFINITY), grid);
+    assert!(grid.width < 1000 && grid.height > 100, "{grid:?}");
     app.world_mut()
         .get_mut::<TerminalGrid>(entity)
         .unwrap()
@@ -1214,8 +1218,12 @@ fn a_grid_too_large_is_still_measured_and_fits_in_one_step() {
     assert_eq!(geometry.grid(), grid);
     assert_eq!(geometry.physical_cell_size(), cell.physical_size());
     assert!(geometry.size().max_element() <= 8192);
-    // One more cell either way would not have fitted.
-    assert!(geometry.size().x as f32 + cell.physical_size().x > 8192.0);
+    // A space smaller than a texture is filled as far as it reaches.
+    let small = cell.physical_size() * Vec2::new(80.5, 1000.5);
+    let fitted = cell.grid_for(small);
+    assert_eq!(fitted.width, 80);
+    assert_eq!(fitted.height, most.y.min(1000.0) as u16);
+    assert_eq!(cell.grid_for(Vec2::new(-5.0, 0.0)), GridSize::new(1, 1));
     assert_eq!(texture.cell(), Some(&cell));
     // A size that is not a number fits one cell, not the largest grid.
     assert_eq!(cell.grid_for(Vec2::NAN), GridSize::new(1, 1));

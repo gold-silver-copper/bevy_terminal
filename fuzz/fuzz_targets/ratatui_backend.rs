@@ -570,10 +570,10 @@ impl RefBackend {
         self.tb.buffer().area.as_size()
     }
 
-    /// Notes a cursor that was moved as the one resizes return to.
-    fn keep_cursor(&mut self) {
+    /// Notes where the cursor was put as where resizes return it to.
+    fn keep_cursor(&mut self, position: Position) {
         if let Some((_, _, cursor)) = &mut self.written {
-            *cursor = self.tb.cursor_position();
+            *cursor = position;
         }
     }
 }
@@ -623,7 +623,8 @@ impl Backend for RefBackend {
             x.min(width.saturating_sub(1)),
             y.min(height.saturating_sub(1)),
         ));
-        self.keep_cursor();
+        // As asked for, not as this grid clamped it.
+        self.keep_cursor(Position::new(x, y));
         Ok(())
     }
 
@@ -675,7 +676,7 @@ impl Backend for RefBackend {
             let Ok(()) = self
                 .tb
                 .set_cursor_position(Position::new(0, y.saturating_add(line_count).min(max_y)));
-            self.keep_cursor();
+            self.keep_cursor(self.tb.cursor_position());
             return Ok(());
         }
         let after = max_y.saturating_sub(y);
@@ -685,7 +686,7 @@ impl Backend for RefBackend {
         let Ok(()) = self.tb.append_lines(line_count);
         let Size { width, height } = self.screen_size();
         self.rebuild(width, height);
-        self.keep_cursor();
+        self.keep_cursor(self.tb.cursor_position());
         Ok(())
     }
 
