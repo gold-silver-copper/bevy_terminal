@@ -26,6 +26,7 @@ impl TerminalSource for TerminalGrid {
 /// Where a terminal's output stands. Geometry exists only while the output
 /// is [`Ready`](Self::Ready), and then it describes the image exactly.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub enum TerminalStatus {
     /// Waiting for configured fonts to load and register.
     #[default]
@@ -41,6 +42,7 @@ pub enum TerminalStatus {
 
 /// Why a terminal cannot be drawn.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum TerminalFailure {
     /// The application's Bevy text resources are missing.
     MissingTextResources,
@@ -61,6 +63,13 @@ pub enum TerminalFailure {
 /// The image is `Rgba8UnormSrgb` (display-ready, straight alpha). Its handle
 /// is stable for the terminal's lifetime: resizes reallocate the image in
 /// place, so applications bind it once to their UI, sprites or materials.
+///
+/// The alpha is exact over an opaque [`TerminalTheme::background`]
+/// (the default). Over a translucent one, glyph edges and translucent
+/// foregrounds are blended into the background's color and come out darker
+/// than straight alpha when presented.
+///
+/// [`TerminalTheme::background`]: super::TerminalTheme::background
 ///
 /// Attached to every terminal entity by [`super::TerminalPlugin`] as soon as
 /// its [`TerminalSource`] is added, and removed with it. The component
@@ -192,6 +201,7 @@ pub fn grid_for(logical_size: Vec2, cell_size: Vec2) -> GridSize {
 /// Counters for the most recent scene update of one terminal; all zero on
 /// frames that produced no terminal work.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Component)]
+#[non_exhaustive]
 pub struct TerminalStats {
     /// Rows rebuilt into the latest payload.
     pub changed_rows: u32,
@@ -203,8 +213,8 @@ pub struct TerminalStats {
     pub draw_batches: u32,
     /// Shape-cache misses in the latest update.
     pub shape_misses: u32,
-    /// Nanoseconds spent generating the compact CPU scene.
-    #[cfg(feature = "timings")]
+    /// Nanoseconds spent generating the compact CPU scene; zero unless the
+    /// `timings` feature measures it.
     pub scene_ns: u64,
 }
 

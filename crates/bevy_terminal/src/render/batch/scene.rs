@@ -71,16 +71,22 @@ fn mark_repaint(painting: &mut [RowPaint], rows: std::ops::Range<usize>) {
 
 /// Records a background run, extending an identically aligned run from the
 /// previous row into one taller rectangle when possible.
+///
+/// Both rows' runs come in column order, so `prev_runs` only moves forward:
+/// the runs left of this one are dropped from it.
 pub(super) fn merge_background_rect(
     rects: &mut Vec<(Rect, LinearRgba)>,
-    prev_runs: &[usize],
+    prev_runs: &mut &[usize],
     current_runs: &mut Vec<usize>,
     geometry: Rect,
     color: LinearRgba,
 ) {
-    for &index in prev_runs {
-        if let Some((rect, existing)) = rects.get_mut(index)
-            && *existing == color
+    while let Some((&index, rest)) = prev_runs.split_first()
+        && let Some((rect, existing)) = rects.get_mut(index)
+        && rect.min.x <= geometry.min.x
+    {
+        *prev_runs = rest;
+        if *existing == color
             && rect.min.x == geometry.min.x
             && rect.width() == geometry.width()
             && (rect.max.y - geometry.min.y).abs() < 0.01
@@ -196,9 +202,18 @@ pub(super) struct PlacedGlyph {
     pub(super) geometry: Rect,
     pub(super) uv: Vec4,
     pub(super) color: LinearRgba,
-    pub(super) alpha_mask: bool,
+    pub(super) ink: PlacedInk,
+}
+
+/// What a placed glyph draws.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PlacedInk {
     /// A solid rectangle (an opaque block element) rather than atlas texels.
-    pub(super) solid: bool,
+    Solid,
+    /// Atlas coverage in the glyph's colour.
+    Coverage,
+    /// Atlas colour texels (emoji).
+    Color,
 }
 
 /// Builds the scene that repaints `changed` rows (every row when `full`).
@@ -394,8 +409,9 @@ pub(super) fn build_scene(
         let first = (glyph.geometry.min.y / cell_height).floor().max(0.0) as u16;
         let last = ((glyph.geometry.max.y / cell_height).ceil() as u16).min(height);
         // Most glyphs lie inside their row and the texture: no clip needed.
-        let inside =
-            last == first + 1 && glyph.geometry.min.x >= 0.0 && glyph.geometry.max.x <= size.x;
+        let inside = last.checked_sub(first) == Some(1)
+            && glyph.geometry.min.x >= 0.0
+            && glyph.geometry.max.x <= size.x;
         for (row, paint) in (0u16..)
             .zip(&*painting)
             .take(last.into())
@@ -413,39 +429,33 @@ pub(super) fn build_scene(
             let Some((piece, uv)) = clipped else {
                 continue;
             };
-            if glyph.solid {
-                quads.push(
-                    glyph.texture,
-                    Blend::Alpha,
-                    QuadInstance::solid(piece, glyph.color, size),
-                );
-                continue;
-            }
-            if !glyph.alpha_mask {
-                quads.push(
-                    glyph.texture,
-                    Blend::Alpha,
-                    QuadInstance::glyph(piece, uv, glyph.color, Ink::Color, size),
-                );
-                continue;
-            }
-            // Runs are sorted and disjoint: start at the first one the piece
-            // reaches and stop past its right edge.
+            // Runs are sorted and disjoint: coverage starts at the first one
+            // the piece reaches and stops past its right edge.
             let runs = &paint.backgrounds;
-            let first = runs.partition_point(|run| run.right <= piece.min.x);
-            if let Some(&BackgroundRun {
-                left,
-                right,
-                luminance: background,
-            }) = runs.get(first)
-                && left <= piece.min.x
-                && right >= piece.max.x
-            {
-                quads.push(
-                    glyph.texture,
-                    Blend::Alpha,
-                    QuadInstance::glyph(piece, uv, glyph.color, Ink::Coverage { background }, size),
-                );
+            let mut first = 0;
+            let whole = match glyph.ink {
+                PlacedInk::Solid => Some(QuadInstance::solid(piece, glyph.color, size)),
+                PlacedInk::Color => Some(QuadInstance::glyph(
+                    piece,
+                    uv,
+                    glyph.color,
+                    Ink::Color,
+                    size,
+                )),
+                PlacedInk::Coverage => {
+                    first = runs.partition_point(|run| run.right <= piece.min.x);
+                    runs.get(first)
+                        .filter(|run| run.left <= piece.min.x && run.right >= piece.max.x)
+                        .map(|run| {
+                            let ink = Ink::Coverage {
+                                background: run.luminance,
+                            };
+                            QuadInstance::glyph(piece, uv, glyph.color, ink, size)
+                        })
+                }
+            };
+            if let Some(quad) = whole {
+                quads.push(glyph.texture, Blend::Alpha, quad);
                 continue;
             }
             for &BackgroundRun {
@@ -543,6 +553,7 @@ pub(super) fn build_scene(
         submission: None,
         destination,
         atlas: glyph_atlas.id,
+        atlas_size: glyph_atlas.size,
         atlas_uploads,
         atlas_fresh,
         destination_size: size.as_uvec2(),
@@ -606,7 +617,7 @@ impl RowPainter<'_, '_> {
         &mut self,
         row: u16,
         rects: &mut Vec<(Rect, LinearRgba)>,
-        prev_runs: &[usize],
+        mut prev_runs: &[usize],
         current_runs: &mut Vec<usize>,
         luminances: &mut Vec<BackgroundRun>,
     ) {
@@ -657,7 +668,7 @@ impl RowPainter<'_, '_> {
                     raster.cell_size.y,
                 );
                 if self.full {
-                    merge_background_rect(rects, prev_runs, current_runs, geometry, color);
+                    merge_background_rect(rects, &mut prev_runs, current_runs, geometry, color);
                 } else {
                     rects.push((geometry, color));
                 }
@@ -717,8 +728,7 @@ impl RowPainter<'_, '_> {
                     ),
                     uv: Vec4::ZERO,
                     color: style.foreground,
-                    alpha_mask: true,
-                    solid: true,
+                    ink: PlacedInk::Solid,
                 });
             } else if symbol != " " && !symbol.is_empty() {
                 // Sprites span their cells, like Ghostty's `gridWidth`; other
@@ -777,38 +787,34 @@ impl RowPainter<'_, '_> {
                         geometry,
                         uv: glyph.uv,
                         color: foreground,
-                        alpha_mask: glyph.alpha_mask,
-                        solid: false,
+                        ink: if glyph.alpha_mask {
+                            PlacedInk::Coverage
+                        } else {
+                            PlacedInk::Color
+                        },
                     });
                 }
             }
             if let Some(decorations) = decorations.as_deref_mut() {
-                let decoration_x = column as f32 * raster.cell_size.x;
-                let decoration_width = width as f32 * raster.cell_size.x;
-                let decoration_thickness = raster.scale.round().max(1.0);
+                // A line `offset` below the row's top, kept inside the row:
+                // rows are the unit of repaint, and only glyph ink is tracked
+                // beyond them.
+                let thickness = raster.scale.round().max(1.0).min(raster.cell_size.y);
+                let line = |offset: f32| {
+                    pixel_rect(
+                        cell_x,
+                        cell_y + offset.min(raster.cell_size.y - thickness),
+                        width as f32 * raster.cell_size.x,
+                        thickness,
+                    )
+                };
                 if style.any(StyleFlags::UNDERLINED) {
-                    decorations.push(QuadInstance::solid(
-                        pixel_rect(
-                            decoration_x,
-                            cell_y + (raster.cell_size.y - 2.0 * decoration_thickness).max(0.0),
-                            decoration_width,
-                            decoration_thickness,
-                        ),
-                        style.underline,
-                        size,
-                    ));
+                    let underline = line((raster.cell_size.y - 2.0 * thickness).max(0.0));
+                    decorations.push(QuadInstance::solid(underline, style.underline, size));
                 }
                 if style.any(StyleFlags::CROSSED_OUT) {
-                    decorations.push(QuadInstance::solid(
-                        pixel_rect(
-                            decoration_x,
-                            cell_y + raster.cell_size.y * 0.55,
-                            decoration_width,
-                            decoration_thickness,
-                        ),
-                        style.foreground,
-                        size,
-                    ));
+                    let strike = line(raster.cell_size.y * 0.55);
+                    decorations.push(QuadInstance::solid(strike, style.foreground, size));
                 }
             }
             column += width;

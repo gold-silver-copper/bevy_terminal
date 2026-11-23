@@ -392,8 +392,8 @@ fn run(case: &ProbeCase) -> ProbeResult {
         let (data, width, height) = if glyph.texture == state.glyph_atlas.id {
             (
                 &state.glyph_atlas.shadow[..],
-                GLYPH_ATLAS_SIZE,
-                GLYPH_ATLAS_SIZE,
+                state.glyph_atlas.size,
+                state.glyph_atlas.size,
             )
         } else {
             let image = images.get(glyph.texture).expect("glyph atlas");

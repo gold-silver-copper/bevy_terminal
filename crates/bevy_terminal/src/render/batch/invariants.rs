@@ -212,7 +212,6 @@ fn queued_atlas_uploads_never_exceed_one_atlas() {
     let entity = &entities[0];
     let limit = u64::from(GLYPH_ATLAS_SIZE) * u64::from(GLYPH_ATLAS_SIZE);
     let mut restarts = 0;
-    let mut previous = UVec2::ZERO;
     for step in 0..12 {
         let offset = step * 160 % letters.len();
         fill_with(
@@ -222,11 +221,10 @@ fn queued_atlas_uploads_never_exceed_one_atlas() {
         );
         app.update();
         let state = app.world().get::<BatchMainState>(*entity).unwrap();
-        let cursor = state.glyph_atlas.cursor;
-        if cursor.y < previous.y {
+        // A scene after the first that carries the whole atlas follows a restart.
+        if step > 0 && queued(app.world(), *entity).is_some_and(|scene| scene.atlas_fresh) {
             restarts += 1;
         }
-        previous = cursor;
         let queued: u64 = queued(app.world(), *entity)
             .into_iter()
             .flat_map(|scene| &scene.atlas_uploads)
@@ -235,7 +233,7 @@ fn queued_atlas_uploads_never_exceed_one_atlas() {
             .sum();
         assert!(queued <= limit, "step {step}: {queued} texels queued");
     }
-    assert!(restarts > 0, "the scenario must overflow the atlas");
+    assert!(restarts > 1, "the scenario must overflow the atlas");
 }
 
 #[test]

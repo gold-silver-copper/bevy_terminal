@@ -1,11 +1,11 @@
 //! Extraction, resource lifetimes, pipelines and drawing.
 use super::{
-    BatchScene, Blend, GLYPH_ATLAS_SIZE, GLYPH_FORMAT, PendingBatchScenes, QuadInstance,
-    SceneQueue, TARGET_FORMAT,
+    BatchScene, Blend, GLYPH_FORMAT, PendingBatchScenes, QuadInstance, SceneQueue, TARGET_FORMAT,
+    shaping::AtlasUpload,
 };
 use bevy::{
     asset::{load_internal_asset, uuid_handle},
-    platform::collections::HashMap,
+    platform::collections::{HashMap, hash_map::Entry},
     prelude::*,
     render::{
         MainWorld,
@@ -173,7 +173,7 @@ pub(super) struct BatchGpuState {
     /// Instance buffers, one per upload chunk: a single one unless a frame's
     /// instances exceed the device's maximum buffer size.
     /// Each instance's [`QuadInstance::floats`].
-    instances: Vec<RawBufferVec<f32>>,
+    instances: Vec<RawBufferVec<[f32; 13]>>,
     /// Terminals' glyph atlases, created on their first entry.
     atlases: HashMap<AssetId<Image>, GpuAtlas>,
     /// Binding for scenes whose atlas holds nothing yet (solid quads only).
@@ -217,7 +217,8 @@ fn atlas_texture(device: &RenderDevice, size: u32, usage: TextureUsages) -> Text
     })
 }
 
-/// Writes a scene's new atlas entries, creating the atlas on its first.
+/// Writes a scene's new atlas entries, creating the atlas on its first and
+/// again when it has grown (the scene then carries every entry).
 fn upload_atlas(
     atlases: &mut HashMap<AssetId<Image>, GpuAtlas>,
     device: &RenderDevice,
@@ -229,19 +230,31 @@ fn upload_atlas(
     if scene.atlas_uploads.is_empty() {
         return;
     }
-    let atlas = atlases.entry(scene.atlas).or_insert_with(|| {
-        let texture = atlas_texture(
-            device,
-            GLYPH_ATLAS_SIZE,
-            TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-        );
-        let bind_group = atlas_bind_group(device, layout, &texture, sampler);
-        GpuAtlas {
-            texture,
-            bind_group,
+    let size = scene.atlas_size;
+    let atlas = match atlases.entry(scene.atlas) {
+        Entry::Occupied(atlas) if atlas.get().texture.width() == size => atlas.into_mut(),
+        entry => {
+            let texture = atlas_texture(
+                device,
+                size,
+                TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            );
+            let bind_group = atlas_bind_group(device, layout, &texture, sampler);
+            entry
+                .insert(GpuAtlas {
+                    texture,
+                    bind_group,
+                })
+                .into_mut()
         }
-    });
-    for upload in &scene.atlas_uploads {
+    };
+    // Entries are packed inside the atlas; one that is not would abort the
+    // device's validation, so it is skipped instead.
+    let inside = |upload: &&AtlasUpload| {
+        (upload.origin + upload.size).max_element() <= size
+            && upload.pixels.len() as u64 == u64::from(upload.size.x) * u64::from(upload.size.y) * 4
+    };
+    for upload in scene.atlas_uploads.iter().filter(inside) {
         queue.write_texture(
             TexelCopyTextureInfo {
                 texture: &atlas.texture,
@@ -314,7 +327,6 @@ fn plan_uploads(counts: impl IntoIterator<Item = usize>, limit: usize) -> Vec<Up
 
 /// Instances to allocate for `required`, doubling up to `limit`.
 fn buffer_capacity(required: u64, limit: u64) -> u64 {
-    debug_assert!(required <= limit);
     required
         .checked_next_power_of_two()
         .unwrap_or(required)
@@ -440,13 +452,12 @@ pub(super) fn render_batch_scenes(
             {
                 buffer
                     .values_mut()
-                    .extend(scene_instances.iter().flat_map(QuadInstance::floats));
+                    .extend(scene_instances.iter().map(QuadInstance::floats));
             }
         }
         if !buffer.is_empty() {
-            let count = (buffer.len() / QuadInstance::FLOATS) as u64;
-            let capacity = buffer_capacity(count, instance_limit as u64);
-            buffer.reserve(capacity as usize * QuadInstance::FLOATS, &device);
+            let capacity = buffer_capacity(buffer.len() as u64, instance_limit as u64);
+            buffer.reserve(capacity as usize, &device);
             buffer.write_buffer(&device, &queue);
         }
     }

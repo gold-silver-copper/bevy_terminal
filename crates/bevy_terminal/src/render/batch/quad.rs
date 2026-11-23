@@ -36,11 +36,8 @@ pub(super) enum Ink {
 }
 
 impl QuadInstance {
-    /// The floats of one instance as uploaded, in the shader's order.
-    pub(super) const FLOATS: usize = 13;
-
-    /// This instance as uploaded.
-    pub(super) const fn floats(&self) -> [f32; Self::FLOATS] {
+    /// This instance as uploaded: its floats in the shader's order.
+    pub(super) const fn floats(&self) -> [f32; 13] {
         let ([r0, r1, r2, r3], [u0, u1, u2, u3], [c0, c1, c2, c3]) =
             (self.rect, self.uv, self.color);
         [

@@ -113,10 +113,11 @@ fn spawned_terminals_own_distinct_textures_and_can_be_despawned() {
     assert_eq!(instances.len(), 2);
     assert_eq!(instances[0].0, second);
     assert_eq!(instances[0].1, GridSize::new(7, 9));
-    assert_eq!(instances[0].3, UVec2::new(77, 180));
+    // Without text resources nothing is measured: the images are placeholders.
+    assert_eq!(instances[0].3, UVec2::ONE);
     assert_eq!(instances[1].0, first);
     assert_eq!(instances[1].1, GridSize::new(12, 4));
-    assert_eq!(instances[1].3, UVec2::new(132, 80));
+    assert_eq!(instances[1].3, UVec2::ONE);
     assert_ne!(instances[0].2, instances[1].2);
     // Both required a config; the first got the default one.
     assert!(app.world().get::<TerminalRenderConfig>(first).is_some());
@@ -267,7 +268,7 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         .entity_mut(entity)
         .take::<BatchMainState>()
         .unwrap();
-    assert!(state.measure.in_use.is_some());
+    assert!(state.measure.raster.is_some());
     assert!(state.drawn_revision().is_some());
     let output_id = state.output.id();
     let mut queue = std::mem::take(&mut *app.world_mut().resource_mut::<SceneQueue>());
@@ -280,13 +281,13 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
     let mut resources = SystemState::<TextResources>::new(app.world_mut());
     let mut text = resources.get_mut(app.world_mut()).unwrap();
     let mut stats = TerminalStats::default();
+    // A font change resets the measurement before the terminal syncs.
+    state.measure = FontMeasurement::default();
     let result = sync_terminal(
         &grid,
         SyncInput {
             config: &unavailable,
             config_changed: true,
-            shaping_changed: true,
-            fonts_changed: false,
             raster_scale: 1.0,
             elapsed: 0.0,
             texture_limit: 8192,
@@ -302,7 +303,7 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
     ));
     // Apply the same invalidation boundary as the outer Bevy system.
     state.invalidate(&mut queue);
-    assert!(state.measure.in_use.is_none());
+    assert!(state.measure.raster.is_none());
     assert!(state.drawn_revision().is_none());
     assert!(queue.scene(output_id).is_none());
 
@@ -313,8 +314,6 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         SyncInput {
             config: &config,
             config_changed: false,
-            shaping_changed: false,
-            fonts_changed: false,
             raster_scale: 1.0,
             elapsed: 0.0,
             texture_limit: 8192,
@@ -326,7 +325,7 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
     )
     .unwrap();
     assert_eq!(geometry.as_ref(), output.measured());
-    assert!(state.measure.in_use.is_some());
+    assert!(state.measure.raster.is_some());
     assert!(queue.scene(output_id).unwrap().clear);
     assert!(stats.shape_misses > 0);
 }
@@ -1334,7 +1333,8 @@ fn terminal_target_uses_nearest_sampling() {
 #[test]
 fn explicit_raster_scale_is_bounded_and_invalid_values_fall_back() {
     assert_eq!(resolve_raster_scale(1.5), 1.5);
-    assert_eq!(resolve_raster_scale(0.5), 1.0);
+    assert_eq!(resolve_raster_scale(0.5), 0.5);
+    assert_eq!(resolve_raster_scale(0.1), 0.25);
     assert_eq!(resolve_raster_scale(16.0), 8.0);
     for scale in [f32::NAN, f32::INFINITY, 0.0, -1.0] {
         assert_eq!(resolve_raster_scale(scale), 1.0);
@@ -1792,7 +1792,7 @@ fn invalid_scale_settles_without_idle_redraws() {
         (f32::NEG_INFINITY, 1.0),
         (0.0, 1.0),
         (-1.0, 1.0),
-        (0.5, 1.0),
+        (0.5, 0.5),
         (9.0, 8.0),
     ] {
         let mut terminal = TerminalGrid::new((4, 2));
@@ -1964,11 +1964,12 @@ fn cached_ink(app: &App, entity: Entity, text: &str, columns: u16) -> Rect {
     let mut ink: Option<Rect> = None;
     for glyph in &state.shapes.entries[index] {
         assert_eq!(glyph.texture, state.glyph_atlas.id);
-        let rect = glyph.uv * GLYPH_ATLAS_SIZE as f32;
+        let atlas_size = state.glyph_atlas.size;
+        let rect = glyph.uv * atlas_size as f32;
         for y in 0..glyph.size.y as u32 {
             for x in 0..glyph.size.x as u32 {
                 let offset =
-                    ((rect.y as u32 + y) * GLYPH_ATLAS_SIZE + rect.x as u32 + x) as usize * 4;
+                    ((rect.y as u32 + y) * atlas_size + rect.x as u32 + x) as usize * 4;
                 if data[offset + 3] == 0 {
                     continue;
                 }
@@ -2288,7 +2289,7 @@ fn shaping_failures_format_only_when_logged() {
         failure,
         ShapingFailure::Advance {
             font: FontSource::from("mono"),
-            error: super::metrics::AdvanceError::NotRegistered,
+            error: super::metrics::AdvanceError::Invalid(1.0),
         }
     );
 }
@@ -2521,7 +2522,7 @@ fn font_source_list_waits_for_all_handles_and_resolves_fallbacks() {
         FontSource::list([FontSource::from(pending_fallback.clone())]),
     ]);
     assert_eq!(
-        font_asset_ids(&super::super::FontFaces::regular(list_source.clone())),
+        FontUse::of(&super::super::FontFaces::regular(list_source.clone())).ids,
         vec![primary.id(), pending_fallback.id()]
     );
 

@@ -79,7 +79,7 @@ impl Canvas {
         }
         for batch in &scene.batches {
             let texture = if batch.texture == scene.atlas {
-                Some((&atlas.pixels[..], GLYPH_ATLAS_SIZE, GLYPH_ATLAS_SIZE))
+                Some((&atlas.pixels[..], atlas.size, atlas.size))
             } else {
                 images.get(batch.texture).map(|image| {
                     (
@@ -166,21 +166,20 @@ pub(super) type PixelDifference = (UVec2, [u8; 4], [u8; 4]);
 
 /// The GPU atlas texture as the render world keeps it: every scene's
 /// uploads written in order.
+#[derive(Default)]
 pub(super) struct Atlas {
+    size: u32,
     pixels: Vec<u8>,
-}
-
-impl Default for Atlas {
-    fn default() -> Self {
-        Self {
-            pixels: vec![0; (GLYPH_ATLAS_SIZE * GLYPH_ATLAS_SIZE * 4) as usize],
-        }
-    }
 }
 
 impl Atlas {
     pub(super) fn upload(&mut self, scene: &BatchScene) {
-        let stride = GLYPH_ATLAS_SIZE as usize * 4;
+        if self.size != scene.atlas_size {
+            // A grown atlas is a new texture.
+            self.size = scene.atlas_size;
+            self.pixels = vec![0; (self.size * self.size * 4) as usize];
+        }
+        let stride = self.size as usize * 4;
         for upload in &scene.atlas_uploads {
             let row_bytes = upload.size.x as usize * 4;
             for row in 0..upload.size.y as usize {
@@ -589,7 +588,7 @@ fn atlas_uploads_reach_the_texture_across_font_switches() {
         .get::<BatchMainState>(replay.entity)
         .unwrap();
     let used = (state.glyph_atlas.cursor.y + state.glyph_atlas.row_height + 1) as usize
-        * GLYPH_ATLAS_SIZE as usize
+        * state.glyph_atlas.size as usize
         * 4;
     assert!(
         replay.atlas.pixels[..used] == state.glyph_atlas.shadow[..used],

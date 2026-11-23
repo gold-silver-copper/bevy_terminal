@@ -373,26 +373,31 @@ pub(super) struct AtlasUpload {
 /// Source of unique atlas identities.
 static ATLAS_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// A terminal's glyph atlas: a shelf-packed `GLYPH_ATLAS_SIZE`² RGBA8 texture
-/// that exists only in the render world. The main world keeps the packing
+/// A terminal's glyph atlas: a shelf-packed square RGBA8 texture, grown up
+/// to `GLYPH_ATLAS_SIZE`² as the terminal's glyphs need, that exists only in
+/// the render world. The main world keeps the packing
 /// and queues the pixels of new entries; the render world writes just those
 /// rectangles, so adding a glyph never re-uploads the atlas and no CPU copy
 /// of it is retained.
 pub(super) struct UnifiedGlyphAtlas {
     /// Identifies the atlas texture in draw batches.
     pub(super) id: AssetId<Image>,
+    /// The texture's width and height.
+    pub(super) size: u32,
     pub(super) glyphs: HashMap<AtlasKey, Vec4>,
     pub(super) scaled_ink: HashMap<SourceGlyph, InkSpan>,
     pub(super) cursor: UVec2,
     pub(super) row_height: u32,
     /// Entries not yet handed to a scene.
     pub(super) uploads: Vec<AtlasUpload>,
-    /// Whether an entry did not fit since the atlas was last cleared.
+    /// Whether an entry the largest atlas could hold did not fit; the sync
+    /// that sees it starts the atlas afresh.
     pub(super) overflowed: bool,
     /// Whether no entry has been handed to a scene since the atlas was last
     /// cleared: the next scene's uploads then hold every entry.
     pub(super) fresh: bool,
-    /// The atlas contents, for tests that inspect drawn pixels.
+    /// The atlas contents, `size` texels a row, for tests that inspect drawn
+    /// pixels.
     #[cfg(test)]
     pub(super) shadow: Vec<u8>,
 }
@@ -404,6 +409,7 @@ impl Default for UnifiedGlyphAtlas {
             id: AssetId::Uuid {
                 uuid: bevy::asset::uuid::Uuid::from_u64_pair(0x6274_6572_6d61_746c, serial),
             },
+            size: GLYPH_ATLAS_SIZE / 4,
             glyphs: HashMap::default(),
             scaled_ink: HashMap::default(),
             cursor: UVec2::splat(1),
@@ -412,7 +418,7 @@ impl Default for UnifiedGlyphAtlas {
             overflowed: false,
             fresh: true,
             #[cfg(test)]
-            shadow: vec![0; (GLYPH_ATLAS_SIZE * GLYPH_ATLAS_SIZE * 4) as usize],
+            shadow: Vec::new(),
         }
     }
 }
@@ -490,18 +496,19 @@ impl UnifiedGlyphAtlas {
         let mut x = self.cursor.x;
         let mut y = self.cursor.y;
         let mut row_height = self.row_height;
-        if x + size.x + 1 > GLYPH_ATLAS_SIZE {
+        if x + size.x + 1 > self.size {
             x = 1;
             y = y.checked_add(self.row_height + 1)?;
             row_height = 0;
         }
-        if y + size.y + 1 > GLYPH_ATLAS_SIZE {
+        if x + size.x + 1 > self.size || y + size.y + 1 > self.size {
             self.overflowed = true;
             return None;
         }
         #[cfg(test)]
         {
-            let stride = GLYPH_ATLAS_SIZE as usize * 4;
+            let stride = self.size as usize * 4;
+            self.shadow.resize(stride * self.size as usize, 0);
             let row_bytes = size.x as usize * 4;
             for row in 0..size.y as usize {
                 let target = (y as usize + row) * stride + x as usize * 4;
@@ -516,7 +523,7 @@ impl UnifiedGlyphAtlas {
         });
         self.cursor = UVec2::new(x + size.x + 1, y);
         self.row_height = row_height.max(size.y);
-        let scale = GLYPH_ATLAS_SIZE as f32;
+        let scale = self.size as f32;
         let uv = Vec4::new(
             x as f32 / scale,
             y as f32 / scale,
@@ -536,6 +543,19 @@ impl UnifiedGlyphAtlas {
         self.uploads.clear();
         self.overflowed = false;
         self.fresh = true;
+    }
+
+    /// Starts a full atlas afresh, twice as large while it can grow; says
+    /// whether it grew.
+    pub(super) fn restart(&mut self) -> bool {
+        let grew = self.size < GLYPH_ATLAS_SIZE;
+        if grew {
+            self.size *= 2;
+            #[cfg(test)]
+            self.shadow.clear();
+        }
+        self.clear();
+        grew
     }
 
     /// Hands the queued entries to a scene, with whether they are all there is.
@@ -904,7 +924,12 @@ pub(super) fn cached_shape<'s>(
             cell_height: cell.y,
             box_thickness: raster.box_thickness,
         };
-        let Some(drawn) = sprite::draw(codepoint, metrics) else {
+        // A sprite may overshoot its cell by a quarter on each side: one the
+        // atlas could never hold is not drawn at all.
+        let drawn = (cell.max_element() <= GLYPH_ATLAS_SIZE / 2)
+            .then(|| sprite::draw(codepoint, metrics))
+            .flatten();
+        let Some(drawn) = drawn else {
             return shapes.insert(face, text, columns, Vec::new());
         };
         let Some(uv) = glyph_atlas.cache_sprite(codepoint, cell, &drawn) else {
