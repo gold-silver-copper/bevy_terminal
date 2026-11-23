@@ -2494,3 +2494,107 @@ fn output_unavailable_stays_idle_until_inputs_change() {
         &TerminalStatus::Failed(TerminalFailure::OutputUnavailable)
     );
 }
+
+#[test]
+fn font_source_list_waits_for_all_handles_and_resolves_fallbacks() {
+    let mut app = text_app();
+    // Isolate from host fonts so only our explicit FontSource::List handles exist.
+    {
+        let mut cx = app.world_mut().resource_mut::<bevy::text::FontCx>();
+        cx.collection = fontique::Collection::new(fontique::CollectionOptions {
+            system_fonts: false,
+            ..default()
+        });
+    }
+    let primary = app
+        .world_mut()
+        .resource_mut::<Assets<Font>>()
+        .add(Font::from_bytes(super::probe::asset(
+            "jetbrains-mono/JetBrainsMono-Regular.ttf",
+        )));
+    let pending_fallback: Handle<Font> = app
+        .world_mut()
+        .resource_mut::<Assets<Font>>()
+        .reserve_handle();
+    let list_source = FontSource::list([
+        FontSource::from(primary.clone()),
+        FontSource::list([FontSource::from(pending_fallback.clone())]),
+    ]);
+    assert_eq!(
+        font_asset_ids(&super::super::FontFaces::regular(list_source.clone())),
+        vec![primary.id(), pending_fallback.id()]
+    );
+
+    let mut grid_data = TerminalGrid::new((8, 1));
+    grid_data.set_cell((0, 0), &TerminalCell::from('A'));
+    grid_data.set_cell((1, 0), &TerminalCell::wide("汉", 2));
+    grid_data.set_cell((3, 0), &TerminalCell::wide("🚀", 2));
+    let entity = app
+        .world_mut()
+        .spawn((
+            grid_data,
+            TerminalRenderConfig {
+                font: super::super::FontFaces::regular(list_source),
+                ..default()
+            },
+        ))
+        .id();
+
+    // While the fallback handle inside `FontSource::List` is unloaded, the
+    // terminal stays in `Loading` instead of failing with `ShapingFailed`.
+    app.update();
+    assert_eq!(
+        app.world().get::<TerminalTexture>(entity).unwrap().status(),
+        &TerminalStatus::Loading
+    );
+
+    // Insert the CJK fallback into the reserved handle and add a Color Emoji
+    // fallback; once registered, the terminal reaches `Ready` and shapes all
+    // three scripts without host fonts.
+    let emoji = {
+        let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
+        let _ = fonts.insert(
+            pending_fallback.id(),
+            Font::from_bytes(super::probe::asset("fidelity/FidelityCJK.otf")),
+        );
+        fonts.add(Font::from_bytes(super::probe::asset(
+            "fidelity/FidelityColorEmoji.ttf",
+        )))
+    };
+    app.world_mut()
+        .get_mut::<TerminalRenderConfig>(entity)
+        .unwrap()
+        .font = super::super::FontFaces::regular(FontSource::list([
+        FontSource::from(primary),
+        FontSource::from(pending_fallback),
+        FontSource::from(emoji),
+    ]));
+    app.update();
+
+    let status = app.world().get::<TerminalTexture>(entity).unwrap().status();
+    assert!(
+        matches!(status, TerminalStatus::Ready(_)),
+        "expected Ready after all FontSource::List handles registered, got {status:?}"
+    );
+
+    // Verify all three graphemes (Latin, CJK, Color Emoji) produced non-empty
+    // cached glyphs, with the emoji rasterized as a color glyph (`!alpha_mask`).
+    let state = app.world().get::<BatchMainState>(entity).unwrap();
+    let cjk_index = state
+        .shapes
+        .lookup_current(Face::Regular, "汉", 2)
+        .expect("CJK grapheme should shape from FontSource::List");
+    assert!(
+        !state.shapes.entries[cjk_index].is_empty(),
+        "CJK grapheme should produce at least one glyph"
+    );
+    let emoji_index = state
+        .shapes
+        .lookup_current(Face::Regular, "🚀", 2)
+        .expect("emoji grapheme should shape from FontSource::List");
+    let emoji_glyphs = &state.shapes.entries[emoji_index];
+    assert!(
+        emoji_glyphs.iter().any(|glyph| !glyph.alpha_mask),
+        "expected color emoji glyph (`alpha_mask == false`) from FontSource::List"
+    );
+}
