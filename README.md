@@ -166,9 +166,9 @@ fn choose_font(mut fonts: ResMut<FontCx>, mut config: Single<&mut TerminalRender
 
 Font assets are registered by Bevy asynchronously across updates. Family lookup
 should run after registration, or be repeated when the font collection changes.
-Bevy registers a font asset once: to replace a font, give the configuration a
-new handle rather than re-inserting other bytes under the same asset id, which
-leaves the terminal `Loading`.
+To replace a font, give the configuration a new handle. Bevy does not register
+again an asset removed and re-inserted under the same id before its next
+update, which leaves the terminal `Loading`.
 
 ## Features and diagnostics
 

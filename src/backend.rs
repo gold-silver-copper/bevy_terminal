@@ -240,29 +240,32 @@ fn printable(symbol: &str) -> Cow<'_, str> {
     let symbol: String = symbol.chars().flat_map(seven_bit).flatten().collect();
     let mut parts = symbol.split('\x1b');
     let mut shown = String::from(parts.next().unwrap_or_default());
+    let mut in_string = false;
     for part in parts {
         let mut rest = part.chars();
-        shown.push_str(match rest.next() {
-            // A string (OSC, DCS, SOS, PM, APC) runs to its BEL, or to the
-            // ST starting the next part.
-            Some(']' | 'P' | 'X' | '^' | '_') => {
-                part.split_once('\x07').map_or("", |(_, text)| text)
+        let first = rest.next();
+        // A string (OSC, DCS, SOS, PM, APC) runs to its BEL or its ST,
+        // through any other sequence inside it.
+        in_string = (in_string && first != Some('\\'))
+            || matches!(first, Some(']' | 'P' | 'X' | '^' | '_'));
+        if in_string {
+            if let Some((_, text)) = part.split_once('\x07') {
+                in_string = false;
+                shown.push_str(text);
             }
+        } else if first == Some('[') {
             // A control sequence runs to its final byte.
-            Some('[') => {
-                rest.find(|c| ('\x40'..='\x7e').contains(c));
-                rest.as_str()
-            }
+            rest.find(|c| ('\x40'..='\x7e').contains(c));
+            shown.push_str(rest.as_str());
+        } else {
             // Any other sequence is intermediate bytes and a final one, as
             // are ST and the two-character sequences with no intermediates.
-            _ => {
-                let mut rest = part
-                    .trim_start_matches(|c| (' '..='/').contains(&c))
-                    .chars();
-                rest.next();
-                rest.as_str()
-            }
-        });
+            let mut rest = part
+                .trim_start_matches(|c| (' '..='/').contains(&c))
+                .chars();
+            rest.next();
+            shown.push_str(rest.as_str());
+        }
     }
     shown.retain(|c| !c.is_control());
     Cow::Owned(shown)
@@ -471,6 +474,11 @@ mod tests {
             "abc"
         );
         assert_eq!(printable("\u{9d}0;title\u{9c}a\u{9b}31mb\x1b7c"), "abc");
+        // A string hides the sequences inside it.
+        assert_eq!(
+            printable("\x1bXa\x1b[31mb\x1b\\c\x1b]0;d\u{84}e\x07f"),
+            "cf"
+        );
         assert_eq!(translate_cell(&Cell::new("\x07")).symbol(), "");
         assert!(matches!(printable("e\u{301}"), Cow::Borrowed(_)));
     }

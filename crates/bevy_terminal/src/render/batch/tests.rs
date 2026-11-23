@@ -2076,10 +2076,10 @@ fn wide_symbols_are_rescaled_to_their_cells_and_ordinary_text_overflows() {
     assert_eq!((stats.shape_misses, stats.changed_rows), (0, 1), "{stats}");
 }
 
-/// A sprite without atlas room is drawn nowhere this frame but is not cached
-/// as empty: the atlas-overflow rebuild (or a later frame) draws it again.
+/// A sprite without atlas room is blank, and cached so: the overflow it
+/// reports has the sync start the atlas afresh, which draws it again.
 #[test]
-fn sprites_without_atlas_room_are_not_cached_empty() {
+fn sprites_without_atlas_room_are_blank_until_the_atlas_restarts() {
     use bevy::ecs::system::SystemState;
     let mut app = text_app();
     let config = TerminalRenderConfig {
