@@ -24,8 +24,9 @@ pub trait RatatuiSource: TerminalSource + Component<Mutability = Mutable> {
 
 /// Draws every [`RatatuiSource`] `S`, adding the renderer's
 /// [`TerminalPlugin`](bevy_terminal::prelude::TerminalPlugin) if it is
-/// missing, and hands each terminal's measured geometry to its backend in
-/// [`PostUpdate`] after [`TerminalSystems::Sync`].
+/// missing, and hands each terminal's measured geometry to its backend
+/// inside [`TerminalSystems::Sync`], so a system ordered after `Sync` reads
+/// this frame's.
 pub struct RatatuiSourcePlugin<S>(PhantomData<fn() -> S>);
 
 impl<S> Default for RatatuiSourcePlugin<S> {

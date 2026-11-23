@@ -413,7 +413,7 @@ pub(super) fn build_scene(
             && glyph.geometry.min.x >= 0.0
             && glyph.geometry.max.x <= size.x;
         let rows = painting.get(first.into()..last.into()).unwrap_or_default();
-        for (row, paint) in (first..).zip(rows) {
+        for (row, paint) in (first..last).zip(rows) {
             if !paint.repaint {
                 continue;
             }

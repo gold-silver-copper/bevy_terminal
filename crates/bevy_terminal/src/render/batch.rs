@@ -226,7 +226,8 @@ fn release_terminal<S: TerminalSource>(
 }
 
 /// A terminal that was disabled missed what changed meanwhile: its
-/// configuration is compared and its fonts measured again.
+/// configuration is compared and its fonts measured again. Only Bevy's own
+/// `Disabled` is followed, not other disabling components.
 fn reenable_terminal(
     remove: On<Remove<Disabled>>,
     mut states: Query<&mut BatchMainState, Allow<Disabled>>,
@@ -1000,7 +1001,11 @@ fn sync_entity(
                     | TerminalFailure::TextureTooLarge
                     | TerminalFailure::OutputUnavailable
             )
-        ) && !(source_changed || config_touched || fonts_changed || device_changed)
+        ) && !(source_changed
+            || config_touched
+            || config_changed
+            || fonts_changed
+            || device_changed)
         {
             break 'sync Ok(None);
         }

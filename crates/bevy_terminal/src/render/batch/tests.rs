@@ -501,6 +501,32 @@ fn a_disabled_terminal_is_released_and_catches_up_when_enabled() {
     collect_batch_scenes(app.world_mut(), &mut pending);
     assert_eq!(pending.released_atlases.len(), 1, "its atlas is freed");
     assert_eq!(cell(&app).x, before.x * 2.0, "the new sizing is drawn");
+
+    // A terminal that had failed is tried again with what changed meanwhile.
+    let sizing = |app: &mut App, sizing| {
+        let mut config = app.world_mut().get_mut::<TerminalRenderConfig>(kept);
+        config.as_mut().unwrap().sizing = sizing;
+        for _ in 0..3 {
+            app.update();
+        }
+    };
+    sizing(&mut app, TerminalSizing::FitCellWidth(Vec2::splat(5000.0)));
+    let status = |app: &App| {
+        app.world()
+            .get::<TerminalTexture>(kept)
+            .unwrap()
+            .status
+            .clone()
+    };
+    assert_eq!(
+        status(&app),
+        TerminalStatus::Failed(TerminalFailure::TextureTooLarge)
+    );
+    app.world_mut().entity_mut(kept).insert(Disabled);
+    sizing(&mut app, TerminalSizing::default());
+    app.world_mut().entity_mut(kept).remove::<Disabled>();
+    app.update();
+    assert!(matches!(status(&app), TerminalStatus::Ready(_)));
 }
 
 #[test]
