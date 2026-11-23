@@ -308,6 +308,7 @@ impl Default for RasterConfig {
 /// Public system set in [`PostUpdate`] for ordering application systems around
 /// terminal syncing.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, SystemSet)]
+#[non_exhaustive]
 pub enum TerminalSystems {
     /// Runs in [`PostUpdate`] (after Bevy registers newly loaded font assets)
     /// to read each terminal's grid and build the frame's scene. Systems in

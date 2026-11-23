@@ -1,8 +1,8 @@
 [package]
 name = "bevy_terminal"
-version = "0.10.0"
+version = "0.10.1"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.97.1"
 description = "A low-level terminal cell renderer built on Bevy text and the render world"
 license = "MIT"
 repository = "https://github.com/gold-silver-copper/bevy_terminal"

@@ -42,7 +42,7 @@ impl ExampleFonts {
     }
 
     /// Creates ordinary Bevy UI text using the regular face.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "shared by examples that each use part of it")]
     pub fn text_font(&self, font_size: f32) -> TextFont {
         TextFont::from_font_size(font_size).with_font(self.regular.clone())
     }

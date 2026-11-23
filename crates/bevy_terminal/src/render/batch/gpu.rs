@@ -41,8 +41,9 @@ const BATCH_SHADER: Handle<Shader> = uuid_handle!("3db953c8-0f3f-4124-9a1c-6aa74
 pub(super) fn load_shader(app: &mut App) {
     if let Some(mut shaders) = app.world_mut().get_resource_mut::<Assets<Shader>>() {
         let shader = Shader::from_wgsl(include_str!("batch.wgsl"), "bevy_terminal/batch.wgsl");
-        // A UUID handle's asset can always be inserted.
-        let _ = shaders.insert(BATCH_SHADER.id(), shader);
+        if let Err(error) = shaders.insert(BATCH_SHADER.id(), shader) {
+            warn!("bevy_terminal: the terminal shader could not be added: {error}");
+        }
     }
 }
 

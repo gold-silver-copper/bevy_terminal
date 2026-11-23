@@ -5,6 +5,7 @@ resolver = "3"
 [workspace.lints.rust]
 missing_docs = "warn"
 unsafe_code = "forbid"
+unused_must_use = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -12,12 +13,14 @@ all = { level = "warn", priority = -1 }
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
+# A silenced lint says why.
+allow_attributes_without_reason = "deny"
 
 [package]
 name = "bevy_terminal_ratatui"
-version = "0.10.0"
+version = "0.10.1"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.97.1"
 description = "A Ratatui backend for the bevy_terminal Bevy terminal renderer"
 license = "MIT"
 repository = "https://github.com/gold-silver-copper/bevy_terminal"
@@ -41,7 +44,7 @@ scrolling-regions = ["ratatui/scrolling-regions"]
 timings = ["bevy_terminal/timings"]
 
 [dependencies]
-bevy_terminal = { version = "0.10.0", path = "crates/bevy_terminal", default-features = false }
+bevy_terminal = { version = "0.10.1", path = "crates/bevy_terminal", default-features = false }
 # Only for the `Component` derive on `RatatuiTerminal`; the version is pinned by `bevy_terminal`.
 bevy = { version = "0.20", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["std", "underline-color"] }

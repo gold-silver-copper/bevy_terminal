@@ -201,7 +201,7 @@ semantics. These do not prescribe application presentation or input behavior.
 
 There are no UI or 3D presentation features. Applications enable the Bevy
 features their own presentation requires. This checkout targets Bevy 0.20 and
-Rust 1.95 or newer.
+Rust 1.97.1 or newer.
 
 ## Examples and verification
 

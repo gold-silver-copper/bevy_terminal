@@ -12,11 +12,11 @@ grid; it does not emulate a terminal, manage a PTY, or forward input.
 | `bevy_terminal` | Terminal grid component, font measurement, rendering, output geometry |
 | `bevy_terminal_ratatui` | Ratatui backend and optional ergonomic terminal wrapper |
 
-Version 0.10.0 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.95 or newer.
+Version 0.10.1 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.97.1 or newer (Bevy's minimum).
 
 ```toml
 [dependencies]
-bevy_terminal_ratatui = "0.10.0"
+bevy_terminal_ratatui = "0.10.1"
 ```
 
 ## Drawing and rendering
@@ -210,6 +210,10 @@ rather than mirrored across both crate roots.
 - **Cell symbols:** the Ratatui backend drops control characters and escape
   sequences (such as OSC 8 hyperlinks) from cell symbols instead of drawing
   them as text.
+
+0.10.1 declares the Rust version Bevy 0.20 already required (1.97.1), marks
+`TerminalSystems` `#[non_exhaustive]`, and no longer panics when a terminal
+entity is despawned while it is being added.
 
 ## Migrating from 0.8 to 0.9
 

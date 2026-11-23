@@ -325,10 +325,11 @@ fn initialize_terminal<S: TerminalSource>(add: On<Add<S>>, mut commands: Command
     let source_name = std::any::type_name::<S>();
     // Claim ownership inside the queued entity command so two `Add` observers
     // firing on the same `spawn((SourceA, SourceB))` bundle cannot race or
-    // clobber each other's texture.
+    // clobber each other's texture. An entity despawned before the command
+    // runs needs no terminal.
     commands
         .entity(add.entity)
-        .queue(move |mut entity: EntityWorldMut| {
+        .queue_silenced(move |mut entity: EntityWorldMut| {
             if !entity.contains::<TerminalRenderConfig>() {
                 return;
             }
