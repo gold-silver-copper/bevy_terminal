@@ -931,6 +931,7 @@ impl Harness {
                     } => (cell_size, font_size),
                     TerminalSizing::FitCellWidth(cell) => (cell, 0.0),
                     TerminalSizing::FromFont { font_size, .. } => (Vec2::ZERO, font_size),
+                    other => panic!("unknown sizing {other:?}"),
                 };
                 let need = (cell * scale).round().max(Vec2::ONE)
                     * Vec2::new(f32::from(grid.width), f32::from(grid.height));
@@ -951,7 +952,7 @@ impl Harness {
 
 fn resolved_scale(scale: f32) -> f32 {
     if scale.is_finite() && scale > 0.0 {
-        scale.clamp(1.0, 8.0)
+        scale.clamp(0.25, 8.0)
     } else {
         1.0
     }
@@ -1016,7 +1017,7 @@ fn check_geometry(
                 "fitted height must be at least the request"
             );
         }
-        TerminalSizing::FromFont { .. } => {}
+        _ => {}
     }
 }
 
