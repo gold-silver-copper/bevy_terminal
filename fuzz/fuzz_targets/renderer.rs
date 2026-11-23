@@ -902,6 +902,10 @@ impl Harness {
             match face {
                 FontSource::Handle(handle) => match fonts.get(handle) {
                     None => missing = true,
+                    // Bevy registers a font asset once: one removed and
+                    // restored between two updates keeps no alias and never
+                    // registers again.
+                    Some(font) if font.alias.is_empty() => missing = true,
                     // Bundled fonts register; only the garbage bytes cannot.
                     Some(_) => {
                         invalid |= Some(handle.id()) == garbage;
