@@ -10,10 +10,7 @@ mod scene;
 mod shaping;
 mod sprite;
 use gpu::{extract_batch_scenes, init_batch_pipelines, load_shader, render_batch_scenes};
-use metrics::{
-    LogicalMetrics, RasterMetrics, measure_advance, physical_config, refine_metrics,
-    resolve_metrics,
-};
+use metrics::{RasterMetrics, measure_advance, physical_config, refine_metrics, resolve_metrics};
 use quad::QuadInstance;
 use scene::{RowStates, SceneInput, SceneScratch, build_scene};
 use shaping::{AtlasUpload, ShapeCaches, UnifiedGlyphAtlas};
@@ -29,7 +26,7 @@ use std::{
 };
 
 #[cfg(feature = "timings")]
-use std::time::Instant;
+use bevy::platform::time::Instant;
 
 use bevy::{
     asset::{AssetId, RenderAssetUsages},
@@ -63,6 +60,7 @@ use crate::{
 /// materials and dark tones do not band in 8-bit storage.
 const TARGET_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
 const GLYPH_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
+/// The largest a terminal's glyph atlas grows.
 const GLYPH_ATLAS_SIZE: u32 = 2048;
 
 /// Installs the terminal renderer and draws every [`TerminalGrid`] entity.
@@ -70,7 +68,8 @@ const GLYPH_ATLAS_SIZE: u32 = 2048;
 /// Glyphs are shaped and rasterized by Bevy text. Each terminal is represented
 /// by compact GPU quad instances drawn into its own renderer-owned texture;
 /// GPU pipelines and scratch buffers are shared between terminals. Adding it
-/// more than once, or after a [`TerminalSourcePlugin`] added it, is harmless.
+/// more than once, after a [`TerminalSourcePlugin`] added it, or before
+/// Bevy's render plugin, is harmless.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TerminalPlugin;
 
@@ -90,12 +89,29 @@ impl Plugin for TerminalPlugin {
                 refresh_font_catalog.in_set(super::TerminalSystems::Sync),
             );
         register_source::<TerminalGrid>(app);
-        if app.get_sub_app(RenderApp).is_none() {
+    }
+
+    /// Sets the render world up once every plugin is built, so it does not
+    /// matter whether Bevy's render plugin was added before this one.
+    fn finish(&self, app: &mut App) {
+        let Some(device) = app
+            .world()
+            .get_resource::<SceneQueue>()
+            .map(|queue| Arc::clone(&queue.device))
+        else {
+            return;
+        };
+        if app
+            .get_sub_app(RenderApp)
+            .is_none_or(|render| render.world().contains_resource::<PendingBatchScenes>())
+        {
             return;
         }
         load_shader(app);
-        let device = app.world().resource::<SceneQueue>().device.clone();
-        app.sub_app_mut(RenderApp)
+        let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
+            return;
+        };
+        render_app
             .init_resource::<PendingBatchScenes>()
             .insert_resource(gpu::DeviceGeneration(device))
             .add_systems(RenderStartup, init_batch_pipelines)
@@ -304,25 +320,7 @@ impl TextResources<'_> {
 
 /// Gives a terminal its texture, statistics and renderer state as soon as
 /// its source is added.
-fn initialize_terminal<S: TerminalSource>(
-    add: On<Add<S>>,
-    terminals: Query<(&S, &TerminalRenderConfig)>,
-    mut commands: Commands,
-) {
-    let Ok((terminal, config)) = terminals.get(add.entity) else {
-        return;
-    };
-    let grid = terminal.grid().size();
-    let raster_scale = resolve_raster_scale(config.raster.scale);
-    let metrics = if config.sizing.is_valid() {
-        resolve_metrics(config, None)
-    } else {
-        LogicalMetrics {
-            cell_size: Vec2::ONE,
-            font_size: 16.0,
-        }
-    };
-    let requested = terminal_pixel_size(grid, &physical_config(metrics, raster_scale));
+fn initialize_terminal<S: TerminalSource>(add: On<Add<S>>, mut commands: Commands) {
     let source = TypeId::of::<S>();
     let source_name = std::any::type_name::<S>();
     // Claim ownership inside the queued entity command so two `Add` observers
@@ -331,6 +329,9 @@ fn initialize_terminal<S: TerminalSource>(
     commands
         .entity(add.entity)
         .queue(move |mut entity: EntityWorldMut| {
+            if !entity.contains::<TerminalRenderConfig>() {
+                return;
+            }
             if entity.contains::<BatchMainState>() {
                 warn!(
                     entity = ?entity.id(),
@@ -339,16 +340,11 @@ fn initialize_terminal<S: TerminalSource>(
                 );
                 return;
             }
+            // A placeholder: the first scene sizes the image to its geometry.
             let output = entity.world_scope(|world| {
-                let limit = texture_limit(world.get_resource::<RenderDevice>());
-                let size = if requested.max_element() <= limit {
-                    requested
-                } else {
-                    UVec2::ONE
-                };
                 world
                     .get_resource_mut::<Assets<Image>>()
-                    .map(|mut images| images.add(make_target_image(size)))
+                    .map(|mut images| images.add(make_target_image(UVec2::ONE)))
             });
             let Some(output) = output else {
                 return;
@@ -400,7 +396,7 @@ fn make_target_image(size: UVec2) -> Image {
 
 fn resolve_raster_scale(requested: f32) -> f32 {
     if requested.is_finite() && requested > 0.0 {
-        requested.clamp(1.0, 8.0)
+        requested.clamp(0.25, 8.0)
     } else {
         1.0
     }
@@ -414,6 +410,7 @@ struct BatchMainState {
     fonts: FontUse,
     /// The failure last logged, so a repeated one is not logged again.
     last_failure: Option<ShapingFailure>,
+    /// The effective configuration last synced.
     last_config: Option<TerminalRenderConfig>,
     /// The configured theme, resolved once per configuration change.
     palette: Palette,
@@ -431,33 +428,50 @@ struct BatchMainState {
     device: u64,
 }
 
-/// The fonts a terminal uses.
+/// The fonts a terminal's configuration names, walked once per font change.
 #[derive(Default)]
 struct FontUse {
-    /// Font asset ids in use, to scope re-measurement to this terminal's own
-    /// fonts.
+    /// Font asset ids in use (also inside [`FontSource::List`] fallbacks), to
+    /// scope re-measurement to this terminal's own fonts.
     ids: Vec<AssetId<Font>>,
+    /// Whether a face is a family rather than a handle, which any registered
+    /// font may come to resolve.
+    named: bool,
     /// Whether every handle font above is registered with the font context.
     ready: bool,
 }
 
-/// What measuring a terminal's fonts produced.
+impl FontUse {
+    fn of(faces: &super::FontFaces) -> Self {
+        let mut fonts = Self::default();
+        for source in std::iter::once(&faces.regular)
+            .chain(faces.bold.iter())
+            .chain(faces.italic.iter())
+            .chain(faces.bold_italic.iter())
+            .flat_map(FontSource::flatten)
+        {
+            match source {
+                FontSource::Handle(handle) if !fonts.ids.contains(&handle.id()) => {
+                    fonts.ids.push(handle.id());
+                }
+                FontSource::Handle(_) => {}
+                _ => fonts.named = true,
+            }
+        }
+        fonts
+    }
+}
+
+/// What measuring a terminal's fonts produced. It is reset the moment the
+/// fonts or the configuration that shapes them change, so nothing measured
+/// for other inputs outlives an update that fails before measuring again.
 #[derive(Default)]
 struct FontMeasurement {
     /// Advance of the regular font at the probe size; `None` until measured.
     advance: Option<f32>,
-    /// The metrics in use, which change together; `None` until measured and
-    /// after invalidation.
-    in_use: Option<MetricsInUse>,
-}
-
-#[derive(Clone, Copy)]
-struct MetricsInUse {
-    /// Logical font and cell size.
-    logical: LogicalMetrics,
-    /// The physical raster metrics refined from `logical` at `scale`.
-    raster: RasterMetrics,
-    scale: f32,
+    /// The raster metrics the shape cache and atlas hold glyphs for; `None`
+    /// until refined and after invalidation.
+    raster: Option<RasterMetrics>,
 }
 
 /// What a terminal's last scene drew.
@@ -529,7 +543,7 @@ impl BatchMainState {
     fn invalidate(&mut self, queue: &mut SceneQueue) {
         queue.discard(self.output.id(), &mut self.glyph_atlas);
         self.retained.drawn = None;
-        self.measure.in_use = None;
+        self.measure.raster = None;
     }
 
     fn new(source: TypeId, output: Handle<Image>) -> Self {
@@ -560,7 +574,7 @@ impl BatchMainState {
     /// The raster metrics in use.
     #[cfg(test)]
     fn raster(&self) -> RasterMetrics {
-        self.measure.in_use.expect("measured metrics").raster
+        self.measure.raster.expect("measured metrics")
     }
 
     /// The retained rows' ink reach and blinking.
@@ -594,6 +608,8 @@ struct BatchScene {
     destination: AssetId<Image>,
     /// The terminal's atlas texture, and the entries to write to it first.
     atlas: AssetId<Image>,
+    /// The atlas texture's width and height when this scene was built.
+    atlas_size: u32,
     atlas_uploads: Vec<AtlasUpload>,
     /// Whether `atlas_uploads` holds every entry of the atlas.
     atlas_fresh: bool,
@@ -822,62 +838,23 @@ struct SyncResources<'w> {
 
 fn sync_terminals<S: TerminalSource>(
     mut terminals: Query<TerminalQuery<S>>,
-    resources: SyncResources,
+    mut resources: SyncResources,
 ) {
     if terminals.is_empty() {
         return;
     }
+    if resources.text.is_none() {
+        warn_once!(
+            "bevy_terminal: Bevy's text resources are missing (add DefaultPlugins or \
+             TextPlugin); terminals will not render"
+        );
+    }
     let expected = TypeId::of::<S>();
-    resources.run(|frame| {
-        for (entity, source, config, state, output, stats) in &mut terminals {
-            if state.source != expected {
-                continue;
-            }
+    for (entity, source, config, state, output, stats) in &mut terminals {
+        if state.source == expected {
             let terminal = (entity, config, state, output, stats);
-            sync_entity(terminal, source.grid(), source.is_changed(), frame);
+            sync_entity(terminal, source.grid(), source.is_changed(), &mut resources);
         }
-    });
-}
-
-/// What every terminal's sync shares in one update.
-struct Frame<'a, 'w> {
-    text: Option<&'a mut TextResources<'w>>,
-    asset_server: Option<&'a AssetServer>,
-    catalog: &'a FontCatalog,
-    queue: &'a mut SceneQueue,
-    /// Seconds since startup, for blink phases.
-    elapsed: f64,
-    texture_limit: u32,
-    /// The render device generation (`SceneQueue::device`).
-    device: u64,
-}
-
-impl SyncResources<'_> {
-    fn run(self, sync: impl FnOnce(&mut Frame<'_, '_>)) {
-        let SyncResources {
-            mut text,
-            time,
-            asset_server,
-            device,
-            catalog,
-            mut queue,
-        } = self;
-        if text.is_none() {
-            warn_once!(
-                "bevy_terminal: Bevy's text resources are missing (add DefaultPlugins or \
-                 TextPlugin); terminals will not render"
-            );
-        }
-        let generation = queue.device.load(Ordering::Acquire);
-        sync(&mut Frame {
-            text: text.as_mut(),
-            asset_server: asset_server.as_deref(),
-            catalog: &catalog,
-            queue: &mut queue,
-            elapsed: time.as_ref().map_or(0.0, |time| time.elapsed_secs_f64()),
-            texture_limit: texture_limit(device.as_deref()),
-            device: generation,
-        });
     }
 }
 
@@ -887,24 +864,52 @@ fn sync_entity(
     (entity, config, mut state, mut output, mut stats): TerminalParts<'_>,
     grid: &TerminalGrid,
     source_changed: bool,
-    frame: &mut Frame<'_, '_>,
+    resources: &mut SyncResources<'_>,
 ) {
-    let Frame {
+    let SyncResources {
         text,
+        time,
         asset_server,
+        device,
         catalog,
         queue,
-        elapsed,
-        texture_limit,
-        device,
-    } = frame;
-    let (elapsed, texture_limit, device) = (*elapsed, *texture_limit, *device);
-    let device_changed = state.device != device;
+    } = resources;
+    let generation = queue.device.load(Ordering::Acquire);
+    let device_changed = state.device != generation;
     if device_changed {
         // A recreated render device starts with a blank texture and no
         // atlas: rebuild and repaint everything.
-        state.device = device;
+        state.device = generation;
         state.invalidate(queue);
+    }
+    // Inspect effective values only when the component was touched. Invalid
+    // scale/blink inputs have documented fallbacks and must compare as such.
+    // A change is recorded before anything below can fail, so none is missed.
+    let config_touched = config.is_changed();
+    let mut config_changed = false;
+    if config_touched || state.last_config.is_none() {
+        let mut effective = (*config).clone();
+        effective.raster.scale = resolve_raster_scale(effective.raster.scale);
+        for frequency in [
+            &mut effective.blink.slow_hz,
+            &mut effective.blink.rapid_hz,
+            &mut effective.cursor.blink_hz,
+        ] {
+            *frequency = frequency.filter(|hz| hz.is_finite() && *hz > 0.0);
+        }
+        if state.last_config.as_ref() != Some(&effective) {
+            config_changed = true;
+            if state.last_config.as_ref().is_none_or(|previous| {
+                previous.font != effective.font
+                    || previous.sizing != effective.sizing
+                    || previous.raster != effective.raster
+            }) {
+                state.measure = FontMeasurement::default();
+                state.fonts = FontUse::of(&effective.font);
+            }
+            state.palette = Palette::new(&effective.theme);
+            state.last_config = Some(effective);
+        }
     }
     let mut next_stats = TerminalStats::default();
     let result = 'sync: {
@@ -914,57 +919,24 @@ fn sync_entity(
         if !config.sizing.is_valid() {
             break 'sync Err(TerminalFailure::InvalidSizing.into());
         }
-        // Inspect effective values only when the component was touched. Invalid
-        // scale/blink inputs have documented fallbacks and must compare as such.
-        let config_touched = config.is_changed();
-        let mut config_changed = false;
-        let mut shaping_changed = false;
-        if config_touched || state.last_config.is_none() {
-            let mut effective = (*config).clone();
-            effective.raster.scale = resolve_raster_scale(effective.raster.scale);
-            for frequency in [
-                &mut effective.blink.slow_hz,
-                &mut effective.blink.rapid_hz,
-                &mut effective.cursor.blink_hz,
-            ] {
-                *frequency = frequency.filter(|hz| hz.is_finite() && *hz > 0.0);
-            }
-            config_changed = state.last_config.as_ref() != Some(&effective);
-            shaping_changed = state.last_config.as_ref().is_none_or(|previous| {
-                previous.font != effective.font
-                    || previous.sizing != effective.sizing
-                    || previous.raster.hinting != effective.raster.hinting
-            });
-            if config_changed {
-                state.palette = Palette::new(&effective.theme);
-                state.last_config = Some(effective);
-            }
-        }
         let config = &*config;
-        let face_ids = font_asset_ids(&config.font);
         // Handle fonts become usable only once Bevy registers them with the font
         // context (assigning an alias); glyphs shaped before that used a fallback
         // family and must be re-shaped afterwards.
-        let fonts_ready = face_ids.iter().all(|id| catalog.registered.contains(id));
-        let named_faces = std::iter::once(&config.font.regular)
-            .chain(config.font.bold.iter())
-            .chain(config.font.italic.iter())
-            .chain(config.font.bold_italic.iter())
-            .flat_map(FontSource::flatten)
-            .any(|face| !matches!(face, FontSource::Handle(_)));
-        let fonts_changed = (named_faces
-            && (catalog.registration_changed
-                || catalog
-                    .changed
-                    .iter()
-                    .any(|id| catalog.registered.contains(id))))
-            || state.fonts.ids != face_ids
-            || state.fonts.ready != fonts_ready
-            || face_ids.iter().any(|id| catalog.changed.contains(id));
-        state.fonts = FontUse {
-            ids: face_ids,
-            ready: fonts_ready,
-        };
+        let fonts = &state.fonts;
+        let fonts_ready = fonts.ids.iter().all(|id| catalog.registered.contains(id));
+        let fonts_changed = fonts.ready != fonts_ready
+            || fonts.ids.iter().any(|id| catalog.changed.contains(id))
+            || (fonts.named
+                && (catalog.registration_changed
+                    || catalog
+                        .changed
+                        .iter()
+                        .any(|id| catalog.registered.contains(id))));
+        state.fonts.ready = fonts_ready;
+        if fonts_changed {
+            state.measure = FontMeasurement::default();
+        }
         if !fonts_ready {
             let failed = state.fonts.ids.iter().any(|id| {
                 let invalid = text
@@ -1003,11 +975,8 @@ fn sync_entity(
             SyncInput {
                 config,
                 config_changed,
-                shaping_changed,
-                fonts_changed,
-                raster_scale: resolve_raster_scale(config.raster.scale),
-                elapsed,
-                texture_limit,
+                elapsed: time.as_ref().map_or(0.0, |time| time.elapsed_secs_f64()),
+                texture_limit: texture_limit(device.as_deref()),
             },
             &mut state,
             &mut next_stats,
@@ -1040,10 +1009,10 @@ fn sync_entity(
             // an idle oversized terminal skip measuring.
             let measured = state
                 .measure
-                .in_use
+                .raster
                 .filter(|_| status == TerminalStatus::Failed(TerminalFailure::TextureTooLarge));
             state.invalidate(queue);
-            state.measure.in_use = measured;
+            state.measure.raster = measured;
             status
         }
     };
@@ -1060,34 +1029,11 @@ fn sync_entity(
     }
 }
 
-/// Font asset ids referenced by a set of faces, including inside
-/// [`FontSource::List`] fallbacks (system/family sources have none).
-fn font_asset_ids(faces: &super::FontFaces) -> Vec<AssetId<Font>> {
-    let mut ids = Vec::new();
-    for source in std::iter::once(&faces.regular)
-        .chain(faces.bold.iter())
-        .chain(faces.italic.iter())
-        .chain(faces.bold_italic.iter())
-        .flat_map(FontSource::flatten)
-    {
-        if let FontSource::Handle(handle) = source {
-            let id = handle.id();
-            if !ids.contains(&id) {
-                ids.push(id);
-            }
-        }
-    }
-    ids
-}
-
-/// Resolved inputs for one terminal in this update. Separate invalidation
-/// causes preserve cached shaping for paint-only changes.
+/// Resolved inputs for one terminal in this update.
 struct SyncInput<'a> {
     config: &'a TerminalRenderConfig,
+    /// Whether the effective configuration changed, which repaints every row.
     config_changed: bool,
-    shaping_changed: bool,
-    fonts_changed: bool,
-    raster_scale: f32,
     /// Seconds since startup, for blink phases.
     elapsed: f64,
     texture_limit: u32,
@@ -1108,12 +1054,10 @@ fn sync_terminal(
     let SyncInput {
         config,
         config_changed,
-        shaping_changed,
-        fonts_changed,
-        raster_scale,
         elapsed,
         texture_limit,
     } = input;
+    let raster_scale = resolve_raster_scale(config.raster.scale);
     let BatchMainState {
         output,
         palette,
@@ -1128,10 +1072,7 @@ fn sync_terminal(
     } = state;
     // An unmeasured cell is not geometry: no scene or measured geometry is
     // published until the selected face shapes.
-    if config.sizing.needs_advance()
-        && (measure.advance.is_none() || shaping_changed || fonts_changed)
-    {
-        measure.advance = None;
+    if config.sizing.needs_advance() && measure.advance.is_none() {
         let advance = measure_advance(
             &config.font,
             &text.fonts,
@@ -1152,28 +1093,19 @@ fn sync_terminal(
     {
         return Err(TerminalFailure::TextureTooLarge.into());
     }
-    let text_assets_changed = shaping_changed
-        || fonts_changed
-        || measure
-            .in_use
-            .is_none_or(|in_use| in_use.logical != metrics || in_use.scale != raster_scale);
-    let raster = if let Some(in_use) = measure.in_use.filter(|_| !text_assets_changed) {
-        in_use.raster
+    // Glyphs cached for other metrics go with them.
+    let text_assets_changed = measure.raster.is_none();
+    let raster = if let Some(raster) = measure.raster {
+        raster
     } else {
-        measure.in_use = None;
         let mut cx = text.context();
         let raster = refine_metrics(config, measure.advance, requested, &mut cx);
         if let Some(failure) = cx.failure {
             return Err(failure.into());
         }
-        measure.in_use = Some(MetricsInUse {
-            logical: metrics,
-            raster,
-            scale: raster_scale,
-        });
         shapes.clear();
         glyph_atlas.clear();
-        raster
+        *measure.raster.insert(raster)
     };
     // Refining the cell to the font can grow it past the limit.
     let size = terminal_pixel_size(grid.size(), &raster);
@@ -1256,12 +1188,14 @@ fn sync_terminal(
         &mut retained.rows,
         stats,
     );
-    if glyph_atlas.overflowed {
-        // The atlas filled up: start it afresh with only what this frame
-        // shows. Glyphs that still do not fit are drawn from Bevy's atlases.
+    // The atlas filled up: start it afresh, larger while it can grow, with
+    // only what this frame shows. Glyphs that do not fit the largest atlas
+    // are drawn from Bevy's atlases.
+    let mut rebuild = glyph_atlas.overflowed;
+    while rebuild {
         debug!("bevy_terminal: glyph atlas full; rebuilding it for the current frame");
         shapes.clear();
-        glyph_atlas.clear();
+        let grew = glyph_atlas.restart();
         scene = build_scene(
             SceneInput {
                 full: true,
@@ -1274,7 +1208,11 @@ fn sync_terminal(
             &mut retained.rows,
             stats,
         );
+        rebuild = grew && glyph_atlas.overflowed;
     }
+    // An overflow is this update's alone: only a glyph that does not fit
+    // later starts the atlas afresh again.
+    glyph_atlas.overflowed = false;
     *repaint_rows = rows;
     if let Some(failure) = cx.failure {
         return Err(failure.into());

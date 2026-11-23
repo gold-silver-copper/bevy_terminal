@@ -7,7 +7,10 @@
         clippy::expect_used,
         clippy::indexing_slicing,
         clippy::panic,
-        clippy::unreachable
+        clippy::unreachable,
+        clippy::string_slice,
+        clippy::print_stdout,
+        clippy::print_stderr
     )
 )]
 

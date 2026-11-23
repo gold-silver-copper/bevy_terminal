@@ -79,7 +79,7 @@ impl Canvas {
         }
         for batch in &scene.batches {
             let texture = if batch.texture == scene.atlas {
-                Some((&atlas.pixels[..], GLYPH_ATLAS_SIZE, GLYPH_ATLAS_SIZE))
+                Some((&atlas.pixels[..], atlas.size, atlas.size))
             } else {
                 images.get(batch.texture).map(|image| {
                     (
@@ -166,21 +166,20 @@ pub(super) type PixelDifference = (UVec2, [u8; 4], [u8; 4]);
 
 /// The GPU atlas texture as the render world keeps it: every scene's
 /// uploads written in order.
+#[derive(Default)]
 pub(super) struct Atlas {
+    size: u32,
     pixels: Vec<u8>,
-}
-
-impl Default for Atlas {
-    fn default() -> Self {
-        Self {
-            pixels: vec![0; (GLYPH_ATLAS_SIZE * GLYPH_ATLAS_SIZE * 4) as usize],
-        }
-    }
 }
 
 impl Atlas {
     pub(super) fn upload(&mut self, scene: &BatchScene) {
-        let stride = GLYPH_ATLAS_SIZE as usize * 4;
+        if self.size != scene.atlas_size {
+            // A grown atlas is a new texture.
+            self.size = scene.atlas_size;
+            self.pixels = vec![0; (self.size * self.size * 4) as usize];
+        }
+        let stride = self.size as usize * 4;
         for upload in &scene.atlas_uploads {
             let row_bytes = upload.size.x as usize * 4;
             for row in 0..upload.size.y as usize {
@@ -589,7 +588,7 @@ fn atlas_uploads_reach_the_texture_across_font_switches() {
         .get::<BatchMainState>(replay.entity)
         .unwrap();
     let used = (state.glyph_atlas.cursor.y + state.glyph_atlas.row_height + 1) as usize
-        * GLYPH_ATLAS_SIZE as usize
+        * state.glyph_atlas.size as usize
         * 4;
     assert!(
         replay.atlas.pixels[..used] == state.glyph_atlas.shadow[..used],
@@ -714,4 +713,43 @@ fn unextracted_scenes_drop_entries_from_before_an_atlas_clear() {
     }
     replay.step();
     replay.assert_matches_full("after the clear");
+}
+
+/// The atlas starts small and grows with the glyphs shown: the grown atlas
+/// is a new texture that receives every entry.
+#[test]
+fn a_grown_atlas_receives_every_entry() {
+    let mut replay = Replay::new("jetbrains-mono", (16, 4), TerminalSizing::font(128.0), 1.0);
+    replay.write(0, "small", TerminalStyle::new());
+    replay.assert_matches_full("before growing");
+    assert_eq!(replay.atlas.size, GLYPH_ATLAS_SIZE / 4);
+    replay.write(1, "ABCDEFGHIJKLMNOP", TerminalStyle::new());
+    replay.write(2, "QRSTUVWXYZabcdef", TerminalStyle::new());
+    replay.write(3, "ghijklmnopqrstuv", TerminalStyle::new());
+    replay.assert_matches_full("after growing");
+    assert!(replay.atlas.size > GLYPH_ATLAS_SIZE / 4);
+    let scene_atlas = replay
+        .app
+        .world()
+        .get::<BatchMainState>(replay.entity)
+        .unwrap()
+        .glyph_atlas
+        .size;
+    assert_eq!(replay.atlas.size, scene_atlas);
+}
+
+/// Decorations are not tracked beyond their row, so they are kept inside it
+/// even where a row is a single pixel tall.
+#[test]
+fn decorations_stay_inside_their_row() {
+    let sizing = TerminalSizing::Fixed {
+        cell_size: Vec2::new(8.0, 1.0),
+        font_size: 1.0,
+    };
+    let mut replay = Replay::new("jetbrains-mono", (4, 3), sizing, 1.0);
+    let lines = StyleFlags::CROSSED_OUT | StyleFlags::UNDERLINED;
+    replay.write(0, "    ", TerminalStyle::new().with(lines));
+    replay.assert_matches_full("decorated");
+    replay.write(0, "    ", TerminalStyle::new());
+    replay.assert_matches_full("plain again");
 }

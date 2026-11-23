@@ -12,11 +12,11 @@ grid; it does not emulate a terminal, manage a PTY, or forward input.
 | `bevy_terminal` | Terminal grid component, font measurement, rendering, output geometry |
 | `bevy_terminal_ratatui` | Ratatui backend and optional ergonomic terminal wrapper |
 
-Version 0.9.2 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.95 or newer.
+Version 0.10.0 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.95 or newer.
 
 ```toml
 [dependencies]
-bevy_terminal_ratatui = "0.9.2"
+bevy_terminal_ratatui = "0.10.0"
 ```
 
 ## Drawing and rendering
@@ -106,11 +106,10 @@ an explicit `Terminal::resize()` for the application-owned area. Compare sizes
 before resizing to avoid a feedback loop; a geometry whose `grid()` differs from
 the terminal's size was measured before the last resize.
 
-`RatatuiPlugin` hands each `RatatuiTerminal` its measured geometry, so
-`Backend::window_size().pixels` reports it. A raw backend adopts geometry with
-`backend.set_geometry(geometry)`, which rejects geometry measured for another
-grid size; a resize hides the pixel size until geometry for the new size
-arrives.
+`RatatuiPlugin` (and `RatatuiSourcePlugin` for your own `RatatuiSource`) hands
+each backend its texture's measured geometry, so `Backend::window_size().pixels`
+reports it. The pixel size is zero while the terminal loads or has failed, and
+a resize hides it until geometry for the new size arrives.
 
 Measurement readiness is **not GPU completion**. Readback consumers must wait
 for their render-world readback result and establish that it represents the
@@ -145,7 +144,10 @@ coverage depends on the selected fonts and fallback; the `render_test` example
 shows the coverage of the fonts your application ships.
 
 The output is `Rgba8UnormSrgb` with straight alpha, suitable for Bevy UI, sprites,
-and materials. Transparent backgrounds are supported.
+and materials. The alpha is exact over an opaque theme background (the default).
+A translucent theme background is supported, but glyph edges and translucent
+foregrounds over it are blended into its color and present darker than straight
+alpha.
 
 `FontFaces` accepts explicit regular/bold/italic/bold-italic assets or Bevy font
 sources. `FontSource::Family("JetBrains Mono".into())` constructs a named source. Query Bevy's
@@ -164,15 +166,20 @@ fn choose_font(mut fonts: ResMut<FontCx>, mut config: Single<&mut TerminalRender
 
 Font assets are registered by Bevy asynchronously across updates. Family lookup
 should run after registration, or be repeated when the font collection changes.
+To replace a font, give the configuration a new handle. Bevy does not register
+again an asset removed and re-inserted under the same id before its next
+update, which leaves the terminal `Loading`.
 
 ## Features and diagnostics
 
 - `system_fonts` (default): discover host fonts. Disable defaults when supplying
   explicit assets and avoiding host font discovery.
-- `timings` (opt-in): populate the CPU scene timing field.
+- `timings` (opt-in): measure `TerminalStats::scene_ns`, which is zero otherwise.
 - `scrolling-regions` (adapter only, opt-in): enable Ratatui's extended backend
-  trait. Leave disabled when coexisting with backends implementing the standard
-  trait, such as `soft_ratatui`.
+  trait. Its methods become required of every backend in the build, so enable
+  this whenever anything else enables `ratatui/scrolling-regions`, and leave it
+  disabled when coexisting with backends implementing only the standard trait,
+  such as `soft_ratatui`.
 
 `TerminalStats` counters remain available without timing instrumentation and are
 zero on idle frames.
@@ -182,6 +189,27 @@ The adapter exports `RatatuiBackend`, `RatatuiTerminal`, `RatatuiPlugin`,
 `prelude` that also re-exports the renderer's (including `grid_for`).
 Advanced renderer modules are accessed through `bevy_terminal_ratatui::bevy_terminal`,
 rather than mirrored across both crate roots.
+
+## Migrating from 0.9 to 0.10
+
+- **Open enums:** `TerminalStatus`, `TerminalFailure`, `TerminalSizing` and
+  `CursorStyle` are `#[non_exhaustive]`: add a wildcard arm when matching them.
+  `TerminalStats` is too, so it is read rather than constructed; its `scene_ns`
+  field now always exists and is zero without the `timings` feature.
+- **Geometry hand-off:** `RatatuiBackend::set_geometry` is removed. The plugin
+  keeps every registered source's backend in step with its texture, including
+  after the component is replaced or the terminal fails.
+- **Raster scale:** `RasterConfig::scale` is clamped to `0.25..=8.0` (it was
+  `1.0..=8.0`), so a terminal presented below its logical size can be
+  rasterized at the size it is shown.
+- **Placeholder image:** a terminal's image is 1×1 until its first scene, which
+  sizes it together with the geometry it publishes.
+- **Plugin order and Bevy features:** `TerminalPlugin` may be added before
+  Bevy's render plugin. `bevy_terminal` no longer enables Bevy's
+  `multi_threaded` and `async_executor` features; applications choose them.
+- **Cell symbols:** the Ratatui backend drops control characters and escape
+  sequences (such as OSC 8 hyperlinks) from cell symbols instead of drawing
+  them as text.
 
 ## Migrating from 0.8 to 0.9
 

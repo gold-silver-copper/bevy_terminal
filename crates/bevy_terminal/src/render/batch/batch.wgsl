@@ -32,12 +32,13 @@ fn vertex(input: VertexInput, @builtin(vertex_index) index: u32) -> VertexOutput
     return output;
 }
 
+// `select` evaluates both branches, and `pow` of a negative base is undefined.
 fn linearize(v: f32) -> f32 {
-    return select(pow((v + 0.055) / 1.055, 2.4), v / 12.92, v <= 0.04045);
+    return select(pow((max(v, 0.0) + 0.055) / 1.055, 2.4), v / 12.92, v <= 0.04045);
 }
 
 fn unlinearize(v: f32) -> f32 {
-    return select(pow(v, 1.0 / 2.4) * 1.055 - 0.055, v * 12.92, v <= 0.0031308);
+    return select(pow(max(v, 0.0), 1.0 / 2.4) * 1.055 - 0.055, v * 12.92, v <= 0.0031308);
 }
 
 fn luminance(color: vec3<f32>) -> f32 {
@@ -49,7 +50,9 @@ fn fragment(input: VertexOutput) -> @location(0) vec4<f32> {
     if input.solid != 0u {
         return input.color;
     }
-    let sample = textureSample(glyph_atlas, glyph_sampler, input.uv);
+    // The atlas has one mip level; an explicit level is also valid after the
+    // branch above, where implicit derivatives are not.
+    let sample = textureSampleLevel(glyph_atlas, glyph_sampler, input.uv, 0.0);
     if input.color.a < 0.0 {
         return sample;
     }

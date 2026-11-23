@@ -99,7 +99,8 @@ history. Retain the last useful application layout while new geometry is
 unavailable.
 
 The image handle is stable throughout the terminal's lifetime, including
-resizes. Output uses `Rgba8UnormSrgb`, straight alpha, and nearest sampling.
+resizes. Output uses `Rgba8UnormSrgb`, straight alpha (exact over an opaque
+theme background), and nearest sampling.
 Applications bind it to their own UI, sprites, materials, or export targets.
 Rendering has bounded caches and reuses assets and GPU resources for idle and
 partial-update workloads.
@@ -195,8 +196,8 @@ semantics. These do not prescribe application presentation or input behavior.
 
 - `system_fonts` (default): discover host fonts. Disable defaults and supply
   explicit assets for deterministic font selection.
-- `timings` (opt-in): record CPU scene durations. Work counters remain
-  available without this feature.
+- `timings` (opt-in): record CPU scene durations in `TerminalStats::scene_ns`
+  (zero otherwise). Work counters remain available without this feature.
 
 There are no UI or 3D presentation features. Applications enable the Bevy
 features their own presentation requires. This checkout targets Bevy 0.20 and

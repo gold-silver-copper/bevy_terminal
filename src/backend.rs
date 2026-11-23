@@ -1,4 +1,4 @@
-use std::{convert::Infallible, fmt, marker::PhantomData};
+use std::{borrow::Cow, convert::Infallible, fmt, marker::PhantomData};
 
 use bevy_terminal::bevy::{ecs::component::Mutable, prelude::*};
 use bevy_terminal::prelude::{
@@ -8,7 +8,7 @@ use bevy_terminal::prelude::{
 };
 use ratatui::{
     backend::{Backend, ClearType, WindowSize},
-    buffer::{Cell, CellWidth},
+    buffer::{Cell, CellDiffOption, CellWidth},
     layout::{Position, Size},
     style::{Color, Modifier},
 };
@@ -70,17 +70,12 @@ impl Plugin for RatatuiPlugin {
     }
 }
 
-fn adopt_geometry<S: RatatuiSource>(
-    mut terminals: Query<(&mut S, &TerminalTexture), Changed<TerminalTexture>>,
-) {
+/// Keeps each backend's geometry that of its texture: gone while the terminal
+/// loads or has failed, and present on a backend that replaced another.
+fn adopt_geometry<S: RatatuiSource>(mut terminals: Query<(&mut S, &TerminalTexture)>) {
     for (mut terminal, texture) in &mut terminals {
-        if let Some(geometry) = texture.measured() {
-            // Pixel metrics do not change what is drawn.
-            terminal
-                .bypass_change_detection()
-                .backend_mut()
-                .set_geometry(geometry);
-        }
+        // Pixel metrics do not change what is drawn.
+        terminal.bypass_change_detection().backend_mut().geometry = texture.measured().copied();
     }
 }
 
@@ -88,8 +83,11 @@ fn adopt_geometry<S: RatatuiSource>(
 ///
 /// Wrap it in a [`RatatuiTerminal`] and spawn that, after adding
 /// [`RatatuiPlugin`], to draw it.
+#[derive(Debug)]
 pub struct RatatuiBackend {
     grid: TerminalGrid,
+    /// The texture's measurement, reported by [`Backend::window_size`] while
+    /// it describes the grid's size.
     geometry: Option<TerminalGeometry>,
 }
 
@@ -114,17 +112,6 @@ impl RatatuiBackend {
     #[must_use]
     pub const fn grid(&self) -> &TerminalGrid {
         &self.grid
-    }
-
-    /// Adopts a measurement for [`Backend::window_size`]. Returns false, and
-    /// keeps the last accepted measurement, when it was measured for another
-    /// grid size. [`RatatuiPlugin`] does this for spawned terminals.
-    pub fn set_geometry(&mut self, geometry: &TerminalGeometry) -> bool {
-        if geometry.grid() != self.grid.size() {
-            return false;
-        }
-        self.geometry = Some(*geometry);
-        true
     }
 
     /// Resizes the terminal grid, preserving cells in the overlapping area.
@@ -157,7 +144,7 @@ impl RatatuiBackend {
 ///     terminal.draw(|frame| frame.render_widget(Paragraph::new("hi"), frame.area()));
 /// }
 /// ```
-#[derive(Component, Deref, DerefMut)]
+#[derive(Component, Debug, Deref, DerefMut)]
 #[require(TerminalRenderConfig)]
 pub struct RatatuiTerminal(ratatui::Terminal<RatatuiBackend>);
 
@@ -222,7 +209,8 @@ impl From<ratatui::Terminal<RatatuiBackend>> for RatatuiTerminal {
 ///
 /// Wide symbols keep the width Ratatui declared for them so the renderer can
 /// anchor the glyph to its columns; the grid synthesizes the continuation
-/// cells that Ratatui omits from its diff iterator.
+/// cells that Ratatui omits from its diff iterator. Only what a terminal would
+/// show of the symbol is kept (see [`printable`]).
 fn translate_cell(cell: &Cell) -> TerminalCell {
     let style = TerminalStyle {
         foreground: translate_color(cell.fg),
@@ -230,7 +218,57 @@ fn translate_cell(cell: &Cell) -> TerminalCell {
         underline: translate_color(cell.underline_color),
         flags: translate_modifier(cell.modifier),
     };
-    TerminalCell::wide(cell.symbol(), cell.cell_width()).with_style(style)
+    let symbol = printable(cell.symbol());
+    let width = match cell.diff_option {
+        CellDiffOption::ForcedWidth(width) => width.get(),
+        _ => symbol.cell_width(),
+    };
+    TerminalCell::wide(&symbol, width).with_style(style)
+}
+
+/// What a terminal shows of `symbol`: nothing of its control characters, nor
+/// of the escape sequences (such as OSC 8 hyperlinks) it would interpret.
+fn printable(symbol: &str) -> Cow<'_, str> {
+    if !symbol.contains(char::is_control) {
+        return Cow::Borrowed(symbol);
+    }
+    // A C1 control is the one-character form of ESC and a letter.
+    let seven_bit = |c: char| match c {
+        '\u{80}'..='\u{9f}' => [Some('\x1b'), char::from_u32(u32::from(c) - 0x40)],
+        _ => [Some(c), None],
+    };
+    let symbol: String = symbol.chars().flat_map(seven_bit).flatten().collect();
+    let mut parts = symbol.split('\x1b');
+    let mut shown = String::from(parts.next().unwrap_or_default());
+    let mut in_string = false;
+    for part in parts {
+        let mut rest = part.chars();
+        let first = rest.next();
+        // A string (OSC, DCS, SOS, PM, APC) runs to its BEL or its ST,
+        // through any other sequence inside it.
+        in_string = (in_string && first != Some('\\'))
+            || matches!(first, Some(']' | 'P' | 'X' | '^' | '_'));
+        if in_string {
+            if let Some((_, text)) = part.split_once('\x07') {
+                in_string = false;
+                shown.push_str(text);
+            }
+        } else if first == Some('[') {
+            // A control sequence runs to its final byte.
+            rest.find(|c| ('\x40'..='\x7e').contains(c));
+            shown.push_str(rest.as_str());
+        } else {
+            // Any other sequence is intermediate bytes and a final one, as
+            // are ST and the two-character sequences with no intermediates.
+            let mut rest = part
+                .trim_start_matches(|c| (' '..='/').contains(&c))
+                .chars();
+            rest.next();
+            shown.push_str(rest.as_str());
+        }
+    }
+    shown.retain(|c| !c.is_control());
+    Cow::Owned(shown)
 }
 
 /// Maps Ratatui colors: named colors become their ANSI palette index, indexed
@@ -409,19 +447,40 @@ mod tests {
     ];
 
     #[test]
-    fn geometry_is_adopted_only_for_its_grid_size() {
+    fn geometry_is_reported_only_for_its_grid_size() {
         let mut backend = RatatuiBackend::new(4, 2);
         let measured = measure(backend.grid().clone(), Vec2::new(10.0, 20.0));
-        let geometry = *measured.measured().unwrap();
-        assert!(backend.set_geometry(&geometry));
+        backend.geometry = measured.measured().copied();
         assert_eq!(backend.window_size().unwrap().pixels, Size::new(40, 40));
         backend.draw([(0, 0, &Cell::new("A"))].into_iter()).unwrap();
-        assert!(backend.set_geometry(&geometry));
+        assert_eq!(backend.window_size().unwrap().pixels, Size::new(40, 40));
         // A resize makes the adopted geometry stale until a new one arrives.
         backend.resize(8, 2);
         assert_eq!(backend.window_size().unwrap().pixels, Size::default());
-        assert!(!backend.set_geometry(&geometry));
-        assert!(!RatatuiBackend::new(5, 2).set_geometry(&geometry));
+    }
+
+    #[test]
+    fn escape_sequences_and_control_characters_are_not_drawn() {
+        use std::num::NonZeroU16;
+        let mut link = Cell::new("\x1b]8;;http://example.com\x1b\\link\x1b]8;;\x1b\\");
+        link.set_diff_option(CellDiffOption::ForcedWidth(NonZeroU16::new(4).unwrap()));
+        let cell = translate_cell(&link);
+        assert_eq!(cell.symbol(), "link");
+        assert_eq!(cell.occupancy().columns(), 4);
+        assert_eq!(printable("\x1b]0;title\x07a\x1b[1;31mb\tc"), "abc");
+        // Charset selection, strings ending in ST, and the one-character C1 forms.
+        assert_eq!(
+            printable("\x1b(Ba\x1bPq#0~~\x1b\\b\x1b_Gf=1;AA\x1b\\c"),
+            "abc"
+        );
+        assert_eq!(printable("\u{9d}0;title\u{9c}a\u{9b}31mb\x1b7c"), "abc");
+        // A string hides the sequences inside it.
+        assert_eq!(
+            printable("\x1bXa\x1b[31mb\x1b\\c\x1b]0;d\u{84}e\x07f"),
+            "cf"
+        );
+        assert_eq!(translate_cell(&Cell::new("\x07")).symbol(), "");
+        assert!(matches!(printable("e\u{301}"), Cow::Borrowed(_)));
     }
 
     #[test]
@@ -723,18 +782,14 @@ mod tests {
         assert_eq!(window_size.columns_rows, Size::new(2, 3));
         assert_eq!(window_size.pixels, Size::new(0, 0));
 
-        backend.set_geometry(
-            measure(backend.grid().clone(), Vec2::new(11.0, 20.0))
-                .measured()
-                .unwrap(),
-        );
+        backend.geometry = measure(backend.grid().clone(), Vec2::new(11.0, 20.0))
+            .measured()
+            .copied();
         assert_eq!(backend.window_size().unwrap().pixels, Size::new(22, 60));
         let mut other = RatatuiBackend::from_grid(backend.grid().clone());
-        other.set_geometry(
-            measure(other.grid().clone(), Vec2::new(22.0, 40.0))
-                .measured()
-                .unwrap(),
-        );
+        other.geometry = measure(other.grid().clone(), Vec2::new(22.0, 40.0))
+            .measured()
+            .copied();
         assert_eq!(backend.window_size().unwrap().pixels, Size::new(22, 60));
         assert_eq!(other.window_size().unwrap().pixels, Size::new(44, 120));
         // Geometry measured for another grid size is not reported...
@@ -822,6 +877,22 @@ mod tests {
         assert_eq!(terminal.grid().row_text(0), "Hello");
         let pixels = terminal.backend_mut().window_size().unwrap().pixels;
         assert_eq!(pixels, Size::new(50, 40));
+
+        // A backend that replaces another is handed the geometry too...
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(RatatuiTerminal::new(5, 2));
+        app.update();
+        let mut terminal = app.world_mut().get_mut::<RatatuiTerminal>(entity).unwrap();
+        let pixels = terminal.backend_mut().window_size().unwrap().pixels;
+        assert_eq!(pixels, Size::new(50, 40));
+        // ...and loses it when the terminal can no longer be drawn.
+        let config = app.world_mut().get_mut::<TerminalRenderConfig>(entity);
+        config.unwrap().sizing = TerminalSizing::font(f32::NAN);
+        app.update();
+        let mut terminal = app.world_mut().get_mut::<RatatuiTerminal>(entity).unwrap();
+        let pixels = terminal.backend_mut().window_size().unwrap().pixels;
+        assert_eq!(pixels, Size::default());
     }
 
     #[test]

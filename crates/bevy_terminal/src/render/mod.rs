@@ -29,6 +29,7 @@ pub use terminal::{
 
 /// Visual shape used for the terminal cursor.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum CursorStyle {
     /// A translucent rectangle covering the entire cell.
     #[default]
@@ -178,6 +179,7 @@ impl<T: Into<FontSource>> From<T> for FontFaces {
 /// into its neighbours, and only the texture's edges clip it.
 /// Read effective dimensions from [`TerminalTexture::measured`].
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum TerminalSizing {
     /// Derive cells from a logical font size and line-height multiplier.
     /// Width follows the font advance; height follows ascent, descent and
@@ -214,6 +216,7 @@ impl TerminalSizing {
     }
 
     /// Checks that every requested dimension and multiplier is finite and positive.
+    #[must_use]
     pub fn is_valid(self) -> bool {
         let positive = |value: f32| value.is_finite() && value > 0.0;
         match self {
@@ -279,7 +282,7 @@ pub struct RasterConfig {
     /// Explicit physical-to-logical pixel ratio, independent of presentation.
     ///
     /// Defaults to `1.0`. Non-finite and non-positive values fall back to `1.0`;
-    /// valid values are clamped to `1.0..=8.0`. Applications choose the scale
+    /// valid values are clamped to `0.25..=8.0`. Applications choose the scale
     /// for their window, camera, UI, or offscreen target.
     pub scale: f32,
     /// Glyph rasterization hinting.

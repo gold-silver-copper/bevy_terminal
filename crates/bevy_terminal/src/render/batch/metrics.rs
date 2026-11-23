@@ -6,8 +6,8 @@ use crate::render::{FontFaces, TerminalSizing};
 use bevy::{
     prelude::*,
     text::{
-        ComputedTextBlock, FontCx, FontSource, LayoutCx, LetterSpacing, LineHeight, RemSize,
-        TextElement, TextPipeline,
+        ComputedTextBlock, FontCx, LayoutCx, LetterSpacing, LineHeight, RemSize, TextElement,
+        TextPipeline,
     },
 };
 
@@ -21,8 +21,6 @@ const UNMEASURED_FONT_SIZE: f32 = 16.0;
 /// Why the regular font's advance could not be measured.
 #[derive(Debug, PartialEq)]
 pub(in crate::render) enum AdvanceError {
-    /// The font asset is not registered with the font context yet.
-    NotRegistered,
     /// Bevy could not lay the probe run out.
     Layout(bevy::text::TextError),
     /// The font produced a non-finite or non-positive advance.
@@ -32,7 +30,6 @@ pub(in crate::render) enum AdvanceError {
 impl std::fmt::Display for AdvanceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotRegistered => f.write_str("font asset has not registered"),
             Self::Layout(error) => write!(f, "{error}"),
             Self::Invalid(advance) => write!(f, "font produced invalid advance {advance}"),
         }
@@ -40,7 +37,8 @@ impl std::fmt::Display for AdvanceError {
 }
 
 /// Measures the average advance of the regular font at [`PROBE_FONT_SIZE`] by
-/// shaping a run of `0` glyphs, preserving the reason measurement failed.
+/// shaping a run of `0` glyphs, preserving the reason measurement failed. The
+/// caller measures only once Bevy has registered the terminal's font assets.
 pub(in crate::render) fn measure_advance(
     faces: &FontFaces,
     fonts: &Assets<Font>,
@@ -48,23 +46,6 @@ pub(in crate::render) fn measure_advance(
     font_cx: &mut FontCx,
     layout_cx: &mut LayoutCx,
 ) -> Result<f32, AdvanceError> {
-    // Font assets are only usable once Bevy has registered them with the font
-    // context (which assigns their alias); measuring before that would shape a
-    // fallback font or fail with `NoSuchFont`. Report "not yet" so the caller
-    // retries next frame.
-    if faces
-        .regular
-        .flatten()
-        .into_iter()
-        .any(|source| match source {
-            FontSource::Handle(handle) => fonts
-                .get(handle.id())
-                .is_none_or(|font| font.alias.is_empty()),
-            _ => false,
-        })
-    {
-        return Err(AdvanceError::NotRegistered);
-    }
     let font = TextFont {
         font: faces.regular.clone(),
         font_size: PROBE_FONT_SIZE.into(),

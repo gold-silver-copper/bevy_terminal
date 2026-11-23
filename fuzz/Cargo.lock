@@ -1180,12 +1180,10 @@ version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fbd8116f12dc50bde3758a72fba85e1f4c00e6c66d0ad58bdc46c0c0690829a8"
 dependencies = [
- "async-channel",
  "async-executor",
  "async-task",
  "atomic-waker",
  "bevy_platform",
- "concurrent-queue",
  "crossbeam-queue",
  "derive_more",
  "futures-lite",
@@ -1195,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_terminal"
-version = "0.8.1"
+version = "0.10.0"
 dependencies = [
  "bevy",
 ]
@@ -1213,7 +1211,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_terminal_ratatui"
-version = "0.8.1"
+version = "0.10.0"
 dependencies = [
  "bevy",
  "bevy_terminal",

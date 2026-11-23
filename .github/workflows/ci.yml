@@ -126,6 +126,10 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
 
+      # The feature set dependents such as bevy_ratatui build with.
+      - name: Clippy without default features
+        run: cargo clippy --workspace --no-default-features --lib --locked -- -D warnings
+
       - name: Unit and integration tests
         run: cargo test --workspace --all-features --lib --tests --locked
 

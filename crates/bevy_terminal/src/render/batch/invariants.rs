@@ -121,6 +121,9 @@ fn adding_glyphs_never_modifies_terminal_owned_images() {
         .unwrap()
         .image
         .id();
+    // The first scene sized the placeholder image; forget that.
+    app.update();
+    app.world_mut().resource_mut::<Modified>().0.clear();
     // Every step shows 80 letters never seen before.
     let letters = repertoire();
     for (step, chunk) in letters.chunks(80).take(6).enumerate() {
@@ -206,36 +209,59 @@ fn alternating_working_sets_keep_their_shape_cache_misses() {
 #[test]
 fn queued_atlas_uploads_never_exceed_one_atlas() {
     // Large glyphs, no render world to take scenes: uploads accumulate
-    // across superseded scenes and the atlas overflows and restarts.
+    // across superseded scenes. Either half of the letters fits the atlas
+    // but not both, so each switch overflows it and starts it afresh.
     let (mut app, entities) = app(1, 200.0);
     let letters = repertoire();
+    let halves: Vec<_> = letters.chunks(150).take(2).collect();
     let entity = &entities[0];
     let limit = u64::from(GLYPH_ATLAS_SIZE) * u64::from(GLYPH_ATLAS_SIZE);
-    let mut restarts = 0;
-    let mut previous = UVec2::ZERO;
-    for step in 0..12 {
-        let offset = step * 160 % letters.len();
-        fill_with(
-            &mut app,
-            *entity,
-            letters.iter().cycle().skip(offset).copied(),
-        );
+    for step in 0..8 {
+        fill_with(&mut app, *entity, halves[step % 2].iter().cycle().copied());
         app.update();
+        // A half seen before is shaped again only because the restart forgot it.
+        assert!(shape_misses(&app, *entity) >= 150, "step {step} restarted");
         let state = app.world().get::<BatchMainState>(*entity).unwrap();
-        let cursor = state.glyph_atlas.cursor;
-        if cursor.y < previous.y {
-            restarts += 1;
-        }
-        previous = cursor;
-        let queued: u64 = queued(app.world(), *entity)
-            .into_iter()
-            .flat_map(|scene| &scene.atlas_uploads)
+        let scene = queued(app.world(), *entity).unwrap();
+        assert!(
+            scene
+                .batches
+                .iter()
+                .all(|batch| batch.texture == scene.atlas),
+            "step {step}: a half must fit the atlas"
+        );
+        let queued: u64 = (scene.atlas_uploads.iter())
             .chain(&state.glyph_atlas.uploads)
             .map(|upload| u64::from(upload.size.x) * u64::from(upload.size.y))
             .sum();
         assert!(queued <= limit, "step {step}: {queued} texels queued");
     }
-    assert!(restarts > 0, "the scenario must overflow the atlas");
+}
+
+/// A screen whose glyphs overflow the largest atlas draws the rest from
+/// Bevy's atlases; the overflow is not remembered, so a later change that
+/// brings no new glyph shapes nothing.
+#[test]
+fn a_screen_larger_than_the_atlas_is_not_reshaped_on_every_change() {
+    let (mut app, entities) = app(1, 200.0);
+    let entity = entities[0];
+    fill_with(&mut app, entity, repertoire().into_iter().cycle());
+    app.update();
+    assert!(shape_misses(&app, entity) > 0);
+    let scene = queued(app.world(), entity).unwrap();
+    assert_eq!(scene.atlas_size, GLYPH_ATLAS_SIZE);
+    assert!(
+        scene
+            .batches
+            .iter()
+            .any(|batch| batch.texture != scene.atlas),
+        "the scenario must overflow the largest atlas"
+    );
+    let mut grid = app.world_mut().get_mut::<TerminalGrid>(entity).unwrap();
+    grid.set_cursor_position((3, 3));
+    app.update();
+    assert!(queued(app.world(), entity).is_some());
+    assert_eq!(shape_misses(&app, entity), 0);
 }
 
 #[test]
