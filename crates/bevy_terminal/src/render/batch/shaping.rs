@@ -455,6 +455,10 @@ impl UnifiedGlyphAtlas {
         ) {
             return Some((uv, ink));
         }
+        // What the largest atlas could not hold is not resampled at all.
+        if scaled.max_element() > GLYPH_ATLAS_SIZE - 2 {
+            return None;
+        }
         let pixels = resample(
             &source_pixels(source, images)?,
             UVec2::new(source.width, source.height),
@@ -924,19 +928,18 @@ pub(super) fn cached_shape<'s>(
             cell_height: cell.y,
             box_thickness: raster.box_thickness,
         };
-        // A sprite may overshoot its cell by a quarter on each side: one the
-        // atlas could never hold is not drawn at all.
-        let drawn = (cell.max_element() <= GLYPH_ATLAS_SIZE / 2)
+        // A sprite spans its cell: one in a cell the largest atlas could not
+        // hold is not drawn at all. Without room in the atlas it is blank
+        // until the atlas starts afresh, which forgets the cached run.
+        let Some((drawn, uv)) = (cell.max_element() <= GLYPH_ATLAS_SIZE - 2)
             .then(|| sprite::draw(codepoint, metrics))
-            .flatten();
-        let Some(drawn) = drawn else {
+            .flatten()
+            .and_then(|drawn| {
+                let uv = glyph_atlas.cache_sprite(codepoint, cell, &drawn)?;
+                Some((drawn, uv))
+            })
+        else {
             return shapes.insert(face, text, columns, Vec::new());
-        };
-        let Some(uv) = glyph_atlas.cache_sprite(codepoint, cell, &drawn) else {
-            // No room: not cached, so the rebuild after an atlas overflow
-            // (or the next frame) tries again.
-            debug!("bevy_terminal: no atlas space for sprite {text:?}");
-            return Cow::Owned(Vec::new());
         };
         let glyph = CachedGlyph {
             texture: glyph_atlas.id,
@@ -968,9 +971,6 @@ pub(super) fn cached_shape<'s>(
         },
         None => (shaped, translate + centered, None),
     };
-    // A stretched glyph drawn unstretched (no atlas room) is not cached, so
-    // the next shaping tries again.
-    let mut complete = true;
     let mut cached = Vec::with_capacity(shaped.glyphs.len());
     for glyph in shaped.glyphs {
         let Some(image) = cx.images.get(glyph.atlas_info.texture) else {
@@ -1023,8 +1023,8 @@ pub(super) fn cached_shape<'s>(
                 });
                 continue;
             }
-            debug!("bevy_terminal: no atlas space to stretch {text:?}; drawn as rasterized");
-            complete = false;
+            // Without room in the atlas it is drawn as rasterized, until the
+            // atlas starts afresh.
         }
         let atlas_size = image.texture_descriptor.size;
         let source_uv = Vec4::new(
@@ -1044,9 +1044,6 @@ pub(super) fn cached_shape<'s>(
             alpha_mask,
             ink: inked_columns(image, rect),
         });
-    }
-    if !complete {
-        return Cow::Owned(cached);
     }
     shapes.insert(face, text, columns, cached)
 }

@@ -882,6 +882,35 @@ fn sync_entity(
         state.device = generation;
         state.invalidate(queue);
     }
+    // Inspect effective values only when the component was touched. Invalid
+    // scale/blink inputs have documented fallbacks and must compare as such.
+    // A change is recorded before anything below can fail, so none is missed.
+    let config_touched = config.is_changed();
+    let mut config_changed = false;
+    if config_touched || state.last_config.is_none() {
+        let mut effective = (*config).clone();
+        effective.raster.scale = resolve_raster_scale(effective.raster.scale);
+        for frequency in [
+            &mut effective.blink.slow_hz,
+            &mut effective.blink.rapid_hz,
+            &mut effective.cursor.blink_hz,
+        ] {
+            *frequency = frequency.filter(|hz| hz.is_finite() && *hz > 0.0);
+        }
+        if state.last_config.as_ref() != Some(&effective) {
+            config_changed = true;
+            if state.last_config.as_ref().is_none_or(|previous| {
+                previous.font != effective.font
+                    || previous.sizing != effective.sizing
+                    || previous.raster != effective.raster
+            }) {
+                state.measure = FontMeasurement::default();
+                state.fonts = FontUse::of(&effective.font);
+            }
+            state.palette = Palette::new(&effective.theme);
+            state.last_config = Some(effective);
+        }
+    }
     let mut next_stats = TerminalStats::default();
     let result = 'sync: {
         let Some(text) = text.as_mut() else {
@@ -889,34 +918,6 @@ fn sync_entity(
         };
         if !config.sizing.is_valid() {
             break 'sync Err(TerminalFailure::InvalidSizing.into());
-        }
-        // Inspect effective values only when the component was touched. Invalid
-        // scale/blink inputs have documented fallbacks and must compare as such.
-        let config_touched = config.is_changed();
-        let mut config_changed = false;
-        if config_touched || state.last_config.is_none() {
-            let mut effective = (*config).clone();
-            effective.raster.scale = resolve_raster_scale(effective.raster.scale);
-            for frequency in [
-                &mut effective.blink.slow_hz,
-                &mut effective.blink.rapid_hz,
-                &mut effective.cursor.blink_hz,
-            ] {
-                *frequency = frequency.filter(|hz| hz.is_finite() && *hz > 0.0);
-            }
-            if state.last_config.as_ref() != Some(&effective) {
-                config_changed = true;
-                if state.last_config.as_ref().is_none_or(|previous| {
-                    previous.font != effective.font
-                        || previous.sizing != effective.sizing
-                        || previous.raster != effective.raster
-                }) {
-                    state.measure = FontMeasurement::default();
-                    state.fonts = FontUse::of(&effective.font);
-                }
-                state.palette = Palette::new(&effective.theme);
-                state.last_config = Some(effective);
-            }
         }
         let config = &*config;
         // Handle fonts become usable only once Bevy registers them with the font

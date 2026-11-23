@@ -209,34 +209,33 @@ fn alternating_working_sets_keep_their_shape_cache_misses() {
 #[test]
 fn queued_atlas_uploads_never_exceed_one_atlas() {
     // Large glyphs, no render world to take scenes: uploads accumulate
-    // across superseded scenes and the atlas overflows and restarts.
+    // across superseded scenes. Either half of the letters fits the atlas
+    // but not both, so each switch overflows it and starts it afresh.
     let (mut app, entities) = app(1, 200.0);
     let letters = repertoire();
+    let halves: Vec<_> = letters.chunks(150).take(2).collect();
     let entity = &entities[0];
     let limit = u64::from(GLYPH_ATLAS_SIZE) * u64::from(GLYPH_ATLAS_SIZE);
-    let mut restarts = 0;
-    for step in 0..12 {
-        let offset = step * 160 % letters.len();
-        fill_with(
-            &mut app,
-            *entity,
-            letters.iter().cycle().skip(offset).copied(),
-        );
+    for step in 0..8 {
+        fill_with(&mut app, *entity, halves[step % 2].iter().cycle().copied());
         app.update();
+        // A half seen before is shaped again only because the restart forgot it.
+        assert!(shape_misses(&app, *entity) >= 150, "step {step} restarted");
         let state = app.world().get::<BatchMainState>(*entity).unwrap();
-        // A scene after the first that carries the whole atlas follows a restart.
-        if step > 0 && queued(app.world(), *entity).is_some_and(|scene| scene.atlas_fresh) {
-            restarts += 1;
-        }
-        let queued: u64 = queued(app.world(), *entity)
-            .into_iter()
-            .flat_map(|scene| &scene.atlas_uploads)
+        let scene = queued(app.world(), *entity).unwrap();
+        assert!(
+            scene
+                .batches
+                .iter()
+                .all(|batch| batch.texture == scene.atlas),
+            "step {step}: a half must fit the atlas"
+        );
+        let queued: u64 = (scene.atlas_uploads.iter())
             .chain(&state.glyph_atlas.uploads)
             .map(|upload| u64::from(upload.size.x) * u64::from(upload.size.y))
             .sum();
         assert!(queued <= limit, "step {step}: {queued} texels queued");
     }
-    assert!(restarts > 1, "the scenario must overflow the atlas");
 }
 
 /// A screen whose glyphs overflow the largest atlas draws the rest from

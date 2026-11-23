@@ -232,21 +232,36 @@ fn printable(symbol: &str) -> Cow<'_, str> {
     if !symbol.contains(char::is_control) {
         return Cow::Borrowed(symbol);
     }
+    // A C1 control is the one-character form of ESC and a letter.
+    let seven_bit = |c: char| match c {
+        '\u{80}'..='\u{9f}' => [Some('\x1b'), char::from_u32(u32::from(c) - 0x40)],
+        _ => [Some(c), None],
+    };
+    let symbol: String = symbol.chars().flat_map(seven_bit).flatten().collect();
     let mut parts = symbol.split('\x1b');
     let mut shown = String::from(parts.next().unwrap_or_default());
     for part in parts {
         let mut rest = part.chars();
         shown.push_str(match rest.next() {
-            // A string sequence runs to its BEL, or to the ST starting the
-            // next part.
-            Some(']') => part.split_once('\x07').map_or("", |(_, text)| text),
+            // A string (OSC, DCS, SOS, PM, APC) runs to its BEL, or to the
+            // ST starting the next part.
+            Some(']' | 'P' | 'X' | '^' | '_') => {
+                part.split_once('\x07').map_or("", |(_, text)| text)
+            }
             // A control sequence runs to its final byte.
             Some('[') => {
                 rest.find(|c| ('\x40'..='\x7e').contains(c));
                 rest.as_str()
             }
-            // ST and the other two-character sequences.
-            _ => rest.as_str(),
+            // Any other sequence is intermediate bytes and a final one, as
+            // are ST and the two-character sequences with no intermediates.
+            _ => {
+                let mut rest = part
+                    .trim_start_matches(|c| (' '..='/').contains(&c))
+                    .chars();
+                rest.next();
+                rest.as_str()
+            }
         });
     }
     shown.retain(|c| !c.is_control());
@@ -450,6 +465,12 @@ mod tests {
         assert_eq!(cell.symbol(), "link");
         assert_eq!(cell.occupancy().columns(), 4);
         assert_eq!(printable("\x1b]0;title\x07a\x1b[1;31mb\tc"), "abc");
+        // Charset selection, strings ending in ST, and the one-character C1 forms.
+        assert_eq!(
+            printable("\x1b(Ba\x1bPq#0~~\x1b\\b\x1b_Gf=1;AA\x1b\\c"),
+            "abc"
+        );
+        assert_eq!(printable("\u{9d}0;title\u{9c}a\u{9b}31mb\x1b7c"), "abc");
         assert_eq!(translate_cell(&Cell::new("\x07")).symbol(), "");
         assert!(matches!(printable("e\u{301}"), Cow::Borrowed(_)));
     }
