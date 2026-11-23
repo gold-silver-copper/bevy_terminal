@@ -288,7 +288,6 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         SyncInput {
             config: &unavailable,
             config_changed: true,
-            raster_scale: 1.0,
             elapsed: 0.0,
             texture_limit: 8192,
         },
@@ -314,7 +313,6 @@ fn failed_advance_discards_previous_measurement_and_pending_content() {
         SyncInput {
             config: &config,
             config_changed: false,
-            raster_scale: 1.0,
             elapsed: 0.0,
             texture_limit: 8192,
         },

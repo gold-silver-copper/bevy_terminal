@@ -70,14 +70,9 @@ impl Plugin for RatatuiPlugin {
     }
 }
 
-/// Terminals whose texture changed, or whose source was drawn or replaced.
-type Unsettled<S> = Or<(Changed<TerminalTexture>, Changed<S>)>;
-
 /// Keeps each backend's geometry that of its texture: gone while the terminal
 /// loads or has failed, and present on a backend that replaced another.
-fn adopt_geometry<S: RatatuiSource>(
-    mut terminals: Query<(&mut S, &TerminalTexture), Unsettled<S>>,
-) {
+fn adopt_geometry<S: RatatuiSource>(mut terminals: Query<(&mut S, &TerminalTexture)>) {
     for (mut terminal, texture) in &mut terminals {
         // Pixel metrics do not change what is drawn.
         terminal.bypass_change_detection().backend_mut().geometry = texture.measured().copied();

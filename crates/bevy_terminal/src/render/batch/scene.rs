@@ -1,5 +1,5 @@
 //! CPU scene construction, glyph fitting, and quad geometry.
-use super::super::pixel_rect;
+use super::super::{CursorStyle, pixel_rect};
 use super::quad::Ink;
 use super::shaping::{
     CachedGlyph, Run, RunLayout, ShapeCaches, ShapeContext, UnifiedGlyphAtlas, cached_shape,
@@ -507,36 +507,25 @@ pub(super) fn build_scene(
             .is_some_and(|paint| paint.repaint)
     {
         let position = grid.cursor_position();
-        let cursor_thickness = raster.scale.round().max(1.0) * 2.0;
-        let (x, y, width, height) = match config.cursor.style {
-            super::super::CursorStyle::Block => (0.0, 0.0, raster.cell_size.x, raster.cell_size.y),
-            super::super::CursorStyle::Bar => (
-                0.0,
-                0.0,
-                cursor_thickness.min(raster.cell_size.x),
-                raster.cell_size.y,
-            ),
-            super::super::CursorStyle::Underline => (
-                0.0,
-                (raster.cell_size.y - cursor_thickness).max(0.0),
-                raster.cell_size.x,
-                cursor_thickness.min(raster.cell_size.y),
+        let cell = raster.cell_size;
+        let thickness = raster.scale.round().max(1.0) * 2.0;
+        // How far below its cell's top the cursor starts, and its size.
+        let (top, extent) = match config.cursor.style {
+            CursorStyle::Block => (0.0, cell),
+            CursorStyle::Bar => (0.0, Vec2::new(thickness.min(cell.x), cell.y)),
+            CursorStyle::Underline => (
+                (cell.y - thickness).max(0.0),
+                Vec2::new(cell.x, thickness.min(cell.y)),
             ),
         };
+        let origin =
+            Vec2::new(f32::from(position.x), f32::from(position.y)) * cell + Vec2::new(0.0, top);
+        let cursor = Rect::from_corners(origin, origin + extent);
         solid_quads += 1;
         quads.push(
             primary_atlas,
             Blend::Alpha,
-            QuadInstance::solid(
-                pixel_rect(
-                    f32::from(position.x) * raster.cell_size.x + x,
-                    f32::from(position.y) * raster.cell_size.y + y,
-                    width,
-                    height,
-                ),
-                config.cursor.color,
-                size,
-            ),
+            QuadInstance::solid(cursor, config.cursor.color, size),
         );
     }
 

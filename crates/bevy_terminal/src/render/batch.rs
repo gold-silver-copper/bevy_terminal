@@ -838,62 +838,23 @@ struct SyncResources<'w> {
 
 fn sync_terminals<S: TerminalSource>(
     mut terminals: Query<TerminalQuery<S>>,
-    resources: SyncResources,
+    mut resources: SyncResources,
 ) {
     if terminals.is_empty() {
         return;
     }
+    if resources.text.is_none() {
+        warn_once!(
+            "bevy_terminal: Bevy's text resources are missing (add DefaultPlugins or \
+             TextPlugin); terminals will not render"
+        );
+    }
     let expected = TypeId::of::<S>();
-    resources.run(|frame| {
-        for (entity, source, config, state, output, stats) in &mut terminals {
-            if state.source != expected {
-                continue;
-            }
+    for (entity, source, config, state, output, stats) in &mut terminals {
+        if state.source == expected {
             let terminal = (entity, config, state, output, stats);
-            sync_entity(terminal, source.grid(), source.is_changed(), frame);
+            sync_entity(terminal, source.grid(), source.is_changed(), &mut resources);
         }
-    });
-}
-
-/// What every terminal's sync shares in one update.
-struct Frame<'a, 'w> {
-    text: Option<&'a mut TextResources<'w>>,
-    asset_server: Option<&'a AssetServer>,
-    catalog: &'a FontCatalog,
-    queue: &'a mut SceneQueue,
-    /// Seconds since startup, for blink phases.
-    elapsed: f64,
-    texture_limit: u32,
-    /// The render device generation (`SceneQueue::device`).
-    device: u64,
-}
-
-impl SyncResources<'_> {
-    fn run(self, sync: impl FnOnce(&mut Frame<'_, '_>)) {
-        let SyncResources {
-            mut text,
-            time,
-            asset_server,
-            device,
-            catalog,
-            mut queue,
-        } = self;
-        if text.is_none() {
-            warn_once!(
-                "bevy_terminal: Bevy's text resources are missing (add DefaultPlugins or \
-                 TextPlugin); terminals will not render"
-            );
-        }
-        let generation = queue.device.load(Ordering::Acquire);
-        sync(&mut Frame {
-            text: text.as_mut(),
-            asset_server: asset_server.as_deref(),
-            catalog: &catalog,
-            queue: &mut queue,
-            elapsed: time.as_ref().map_or(0.0, |time| time.elapsed_secs_f64()),
-            texture_limit: texture_limit(device.as_deref()),
-            device: generation,
-        });
     }
 }
 
@@ -903,23 +864,22 @@ fn sync_entity(
     (entity, config, mut state, mut output, mut stats): TerminalParts<'_>,
     grid: &TerminalGrid,
     source_changed: bool,
-    frame: &mut Frame<'_, '_>,
+    resources: &mut SyncResources<'_>,
 ) {
-    let Frame {
+    let SyncResources {
         text,
+        time,
         asset_server,
+        device,
         catalog,
         queue,
-        elapsed,
-        texture_limit,
-        device,
-    } = frame;
-    let (elapsed, texture_limit, device) = (*elapsed, *texture_limit, *device);
-    let device_changed = state.device != device;
+    } = resources;
+    let generation = queue.device.load(Ordering::Acquire);
+    let device_changed = state.device != generation;
     if device_changed {
         // A recreated render device starts with a blank texture and no
         // atlas: rebuild and repaint everything.
-        state.device = device;
+        state.device = generation;
         state.invalidate(queue);
     }
     let mut next_stats = TerminalStats::default();
@@ -1014,9 +974,8 @@ fn sync_entity(
             SyncInput {
                 config,
                 config_changed,
-                raster_scale: resolve_raster_scale(config.raster.scale),
-                elapsed,
-                texture_limit,
+                elapsed: time.as_ref().map_or(0.0, |time| time.elapsed_secs_f64()),
+                texture_limit: texture_limit(device.as_deref()),
             },
             &mut state,
             &mut next_stats,
@@ -1074,7 +1033,6 @@ struct SyncInput<'a> {
     config: &'a TerminalRenderConfig,
     /// Whether the effective configuration changed, which repaints every row.
     config_changed: bool,
-    raster_scale: f32,
     /// Seconds since startup, for blink phases.
     elapsed: f64,
     texture_limit: u32,
@@ -1095,10 +1053,10 @@ fn sync_terminal(
     let SyncInput {
         config,
         config_changed,
-        raster_scale,
         elapsed,
         texture_limit,
     } = input;
+    let raster_scale = resolve_raster_scale(config.raster.scale);
     let BatchMainState {
         output,
         palette,
