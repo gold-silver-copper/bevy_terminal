@@ -19,9 +19,6 @@ fn fit_to_resizes_the_grid_exactly_when_the_fit_changes() {
         Vec2::new(805.0, 245.0)
     ));
     assert_eq!(terminal.size().unwrap(), Size::new(80, 12));
-    // Old geometry is no longer authoritative after fitting resized the grid.
-    assert!(!app::fit_grid(&mut terminal, &texture, Vec2::new(5.0, 5.0)));
-    let texture = measure(terminal.grid().clone(), Vec2::new(10.0, 20.0));
     assert!(!app::fit_grid(
         &mut terminal,
         &texture,

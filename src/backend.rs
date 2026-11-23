@@ -89,6 +89,10 @@ pub struct RatatuiBackend {
     /// The texture's measurement, reported by [`Backend::window_size`] while
     /// it describes the grid's size.
     geometry: Option<TerminalGeometry>,
+    /// The grid as last written, while only resizes have followed. Ratatui
+    /// still holds that frame as drawn, so a resize brings back from it the
+    /// cells an earlier resize cut off.
+    written: Option<TerminalGrid>,
 }
 
 impl RatatuiBackend {
@@ -105,6 +109,7 @@ impl RatatuiBackend {
         Self {
             grid,
             geometry: None,
+            written: None,
         }
     }
 
@@ -119,8 +124,36 @@ impl RatatuiBackend {
     /// draw, or immediately through `Terminal::autoresize`. Fixed viewports
     /// remain application-owned; use `Terminal::resize` to change their area.
     /// The grid is clamped to [`TerminalGrid::MAX_CELLS`].
+    ///
+    /// Until something is drawn, resizes are relative to the last frame: a
+    /// grid that shrinks and grows back shows that frame whole again, as
+    /// Ratatui, which redraws only what differs from it, takes it to.
     pub fn resize(&mut self, columns: u16, rows: u16) {
-        self.grid.resize((columns, rows));
+        if self.grid.size() == GridSize::new(columns, rows) {
+            return;
+        }
+        let resized_before = self.written.is_some();
+        let written = self.written.get_or_insert_with(|| self.grid.clone());
+        if self.grid.resize((columns, rows)) && resized_before {
+            for (position, cell) in written.iter() {
+                self.grid.set_cell(position, cell);
+            }
+        }
+    }
+
+    /// Resizes the grid to the largest that fits `physical_size` pixels at
+    /// the cell `texture` measured (see
+    /// [`CellGeometry::grid_for`](bevy_terminal::prelude::CellGeometry::grid_for)), and
+    /// returns whether it changed. Does nothing until the cell is measured.
+    /// It needs no geometry for the current grid, so it also brings a grid
+    /// too large for a texture back to one that can be drawn.
+    pub fn fit(&mut self, texture: &TerminalTexture, physical_size: Vec2) -> bool {
+        let Some(grid) = texture.cell().map(|cell| cell.grid_for(physical_size)) else {
+            return false;
+        };
+        let changed = grid != self.grid.size();
+        self.resize(grid.width, grid.height);
+        changed
     }
 }
 
@@ -315,6 +348,7 @@ impl Backend for RatatuiBackend {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
+        self.written = None;
         for (x, y, cell) in content {
             // Positions outside the grid are ignored by the grid.
             self.grid.set_cell((x, y), &translate_cell(cell));
@@ -348,11 +382,13 @@ impl Backend for RatatuiBackend {
     }
 
     fn clear(&mut self) -> Result<(), Self::Error> {
+        self.written = None;
         self.grid.clear();
         Ok(())
     }
 
     fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Self::Error> {
+        self.written = None;
         let cursor = self.grid.cursor_position();
         match clear_type {
             ClearType::All => self.grid.clear(),
@@ -391,6 +427,7 @@ impl Backend for RatatuiBackend {
         let cursor = self.grid.cursor_position();
         let last_row = size.height.saturating_sub(1);
         let rows_below = last_row.saturating_sub(cursor.y);
+        self.written = None;
         if line_count > rows_below {
             self.grid.scroll_up(0..size.height, line_count - rows_below);
         }
@@ -407,6 +444,7 @@ impl Backend for RatatuiBackend {
         region: std::ops::Range<u16>,
         line_count: u16,
     ) -> Result<(), Self::Error> {
+        self.written = None;
         self.grid.scroll_up(region, line_count);
         Ok(())
     }
@@ -417,6 +455,7 @@ impl Backend for RatatuiBackend {
         region: std::ops::Range<u16>,
         line_count: u16,
     ) -> Result<(), Self::Error> {
+        self.written = None;
         self.grid.scroll_down(region, line_count);
         Ok(())
     }
@@ -811,6 +850,79 @@ mod tests {
         assert_eq!(terminal.grid().cell((5, 0)).unwrap().symbol(), "n");
         assert_eq!(terminal.grid().row_text(0), "wide n");
         assert_eq!(terminal.grid().to_string(), "wide n\n      \n      ");
+    }
+
+    /// However a grid is resized between draws, what a draw leaves is what
+    /// drawing the same frame on a new terminal of that size shows: Ratatui
+    /// writes only what differs from its last frame, so the grid must still
+    /// hold that frame wherever the sizes overlap.
+    #[test]
+    fn resizes_between_draws_never_leave_a_stale_frame() {
+        // Narrow text only: Ratatui's own diff skips the cell after a wide
+        // glyph at a row's end, on any backend.
+        const FRAMES: [&str; 3] = ["ABCDEFGHIJKLMNOPQRSTUVWX", "abcdefgh ijkl mn", ""];
+        let draw = |terminal: &mut RatatuiTerminal, frame: usize| {
+            let text = ratatui::widgets::Paragraph::new(FRAMES[frame])
+                .wrap(ratatui::widgets::Wrap { trim: false });
+            terminal.draw(|frame| frame.render_widget(text, frame.area()));
+        };
+        // A fixed sequence of pseudo-random numbers.
+        let mut state = 0x2545_f491_u32;
+        let mut next = |below: u32| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state % below) as u16
+        };
+        let mut terminal = RatatuiTerminal::new(6, 3);
+        let mut frame = 0;
+        draw(&mut terminal, frame);
+        for step in 0..2000 {
+            // Mostly resizes, as a dragged window makes, and mostly the same
+            // frame again, as an application that draws on change makes.
+            if next(4) > 0 {
+                let (columns, rows) = (1 + next(8), 1 + next(4));
+                terminal.backend_mut().resize(columns, rows);
+                continue;
+            }
+            if next(4) == 0 {
+                frame = usize::from(next(3));
+            }
+            draw(&mut terminal, frame);
+            let size = terminal.grid().size();
+            let mut fresh = RatatuiTerminal::new(size.width, size.height);
+            draw(&mut fresh, frame);
+            assert_eq!(
+                terminal.grid().to_string(),
+                fresh.grid().to_string(),
+                "step {step}, frame {frame}, {size:?}"
+            );
+        }
+    }
+
+    /// Any run of resizes leaves the last frame as one resize to the final
+    /// size would, wide glyphs cut and brought back whole.
+    #[test]
+    fn a_run_of_resizes_is_one_resize_of_the_last_frame() {
+        let mut backend = RatatuiBackend::new(7, 3);
+        draw_text(&mut backend, "a日本bc語defghi日本語jk", 7);
+        let frame = backend.grid().clone();
+        let mut state = 0x9e37_79b9_u32;
+        let mut next = |below: u32| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state % below) as u16
+        };
+        for step in 0..500 {
+            let (columns, rows) = (1 + next(9), 1 + next(5));
+            backend.resize(columns, rows);
+            let mut once = frame.clone();
+            once.resize((columns, rows));
+            assert_eq!(backend.grid().cells(), once.cells(), "step {step}");
+        }
+        backend.resize(7, 3);
+        assert_eq!(backend.grid().cells(), frame.cells());
     }
 
     #[test]

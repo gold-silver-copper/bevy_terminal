@@ -46,9 +46,9 @@ use bevy::{
 };
 
 use super::{
-    Face, Palette, ResolvedStyle, TerminalFailure, TerminalGeometry, TerminalRenderConfig,
-    TerminalSource, TerminalStats, TerminalStatus, TerminalTexture, cell_span,
-    cursor_should_be_visible, text_font,
+    CellGeometry, Face, Palette, ResolvedStyle, TerminalFailure, TerminalGeometry,
+    TerminalRenderConfig, TerminalSource, TerminalStats, TerminalStatus, TerminalTexture,
+    cell_span, cursor_should_be_visible, text_font,
 };
 use crate::{
     grid::TerminalGrid,
@@ -354,6 +354,7 @@ fn initialize_terminal<S: TerminalSource>(add: On<Add<S>>, mut commands: Command
                 TerminalTexture {
                     status: TerminalStatus::Loading,
                     image: output.clone(),
+                    cell: None,
                 },
                 BatchMainState::new(source, output),
                 TerminalStats::default(),
@@ -875,6 +876,7 @@ fn sync_entity(
         catalog,
         queue,
     } = resources;
+    let limit = texture_limit(device.as_deref());
     let generation = queue.device.load(Ordering::Acquire);
     let device_changed = state.device != generation;
     if device_changed {
@@ -977,7 +979,7 @@ fn sync_entity(
                 config,
                 config_changed,
                 elapsed: time.as_ref().map_or(0.0, |time| time.elapsed_secs_f64()),
-                texture_limit: texture_limit(device.as_deref()),
+                texture_limit: limit,
             },
             &mut state,
             &mut next_stats,
@@ -985,7 +987,7 @@ fn sync_entity(
             queue,
         )
     };
-    // The one place a terminal's statistics and status are written.
+    // The one place a terminal's statistics, status and cell are written.
     stats.set_if_neq(next_stats);
     let status = match result {
         Ok(Some(geometry)) => {
@@ -1027,6 +1029,16 @@ fn sync_entity(
             );
         }
         output.status = status;
+    }
+    // The measured cell outlives a grid too large for it, so the grid can be
+    // fitted to it.
+    let cell = state.measure.raster.map(|raster| CellGeometry {
+        physical_size: raster.cell_size,
+        raster_scale: raster.scale,
+        texture_limit: limit,
+    });
+    if output.cell != cell {
+        output.cell = cell;
     }
 }
 
@@ -1089,9 +1101,10 @@ fn sync_terminal(
     }
     let metrics = resolve_metrics(config, measure.advance);
     let requested = physical_config(metrics, raster_scale);
-    if terminal_pixel_size(grid.size(), &requested).max_element() > texture_limit
-        || requested.font_size > texture_limit as f32
-    {
+    // A font or a cell larger than a texture cannot be measured. A grid that
+    // is too large can: its cell is measured first, to say which grid fits.
+    let fits = |pixels: f32| pixels <= texture_limit as f32;
+    if !fits(requested.font_size) || !fits(requested.cell_size.max_element()) {
         return Err(TerminalFailure::TextureTooLarge.into());
     }
     // Glyphs cached for other metrics go with them.

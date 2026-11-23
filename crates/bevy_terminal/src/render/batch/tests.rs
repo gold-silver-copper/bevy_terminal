@@ -1189,6 +1189,37 @@ fn invalid_and_oversized_geometry_is_observable_and_can_recover() {
 }
 
 #[test]
+fn a_grid_too_large_is_still_measured_and_fits_in_one_step() {
+    let mut app = text_app();
+    // A thousand columns exceed any texture before a font is measured.
+    let entity = app.world_mut().spawn(TerminalGrid::new((1000, 10))).id();
+    for _ in 0..3 {
+        app.update();
+    }
+    let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+    assert_eq!(
+        texture.status,
+        TerminalStatus::Failed(TerminalFailure::TextureTooLarge)
+    );
+    let cell = *texture.cell().expect("the cell is measured all the same");
+    let grid = cell.grid_for(Vec2::splat(1e6));
+    assert!(grid.width < 1000, "{grid:?}");
+    app.world_mut()
+        .get_mut::<TerminalGrid>(entity)
+        .unwrap()
+        .resize(grid);
+    app.update();
+    let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+    let geometry = texture.measured().expect("the fitted grid is drawn");
+    assert_eq!(geometry.grid(), grid);
+    assert_eq!(geometry.physical_cell_size(), cell.physical_size());
+    assert!(geometry.size().max_element() <= 8192);
+    // One more cell either way would not have fitted.
+    assert!(geometry.size().x as f32 + cell.physical_size().x > 8192.0);
+    assert_eq!(texture.cell(), Some(&cell));
+}
+
+#[test]
 fn a_terminal_too_large_only_after_refining_its_cell_goes_idle() {
     let mut app = text_app();
     // 387 rows fit the requested 20 px cell, but not the cell refined to fit

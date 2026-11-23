@@ -23,7 +23,7 @@ pub use batch::{TerminalPlugin, TerminalSourcePlugin};
 use color::Palette;
 pub use color::TerminalTheme;
 pub use terminal::{
-    TerminalFailure, TerminalGeometry, TerminalSource, TerminalStats, TerminalStatus,
+    CellGeometry, TerminalFailure, TerminalGeometry, TerminalSource, TerminalStats, TerminalStatus,
     TerminalTexture, grid_for,
 };
 

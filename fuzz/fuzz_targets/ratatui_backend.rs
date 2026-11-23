@@ -28,7 +28,10 @@
 //!   model); a real terminal would wrap or drop it, which no grid can mirror.
 //! - N4 Resize: `TestBackend::resize` truncates its flat cell vector, which
 //!   reflows rows; a terminal keeps the overlapping rectangle and clamps the
-//!   cursor into the new grid. The reference is rebuilt that way.
+//!   cursor into the new grid. The reference is rebuilt that way, from the
+//!   frame as last written: resizes that follow one another with no write
+//!   between are one resize of that frame, so cells a resize cut off come
+//!   back when the grid grows again (Ratatui still holds them as drawn).
 //! - N5 Window pixels: `TestBackend` reports a fixed 640x480; bevy reports
 //!   zero until a renderer measured it. Only `columns_rows` is compared.
 //! - N6 Out-of-domain calls: `TestBackend` panics when drawing outside its
@@ -502,6 +505,8 @@ struct RefBackend {
     screen: Screen,
     /// Whether any symbol wider than one column was drawn (raw-mode check).
     saw_wide: bool,
+    /// The buffer and screen as last written, while only resizes followed.
+    written: Option<(ratatui::buffer::Buffer, Screen)>,
 }
 
 impl RefBackend {
@@ -510,13 +515,17 @@ impl RefBackend {
             tb: TestBackend::new(width, height),
             screen: Screen::new(width, height),
             saw_wide: false,
+            written: None,
         }
     }
 
     /// Copies the visible grid into a fresh `TestBackend` of `width` x
     /// `height` (N4, N8).
     fn rebuild(&mut self, width: u16, height: u16) {
-        let old = self.tb.buffer().clone();
+        self.rebuild_from(self.tb.buffer().clone(), width, height);
+    }
+
+    fn rebuild_from(&mut self, old: ratatui::buffer::Buffer, width: u16, height: u16) {
         let mut tb = TestBackend::new(width, height);
         let cells: Vec<_> = (0..height.min(old.area.height))
             .flat_map(|y| (0..width.min(old.area.width)).map(move |x| (x, y)))
@@ -536,8 +545,12 @@ impl RefBackend {
         if self.screen_size() == Size::new(width, height) {
             return;
         }
-        self.rebuild(width, height);
-        self.screen = self.screen.resized(width, height);
+        let (buffer, screen) = self
+            .written
+            .get_or_insert_with(|| (self.tb.buffer().clone(), self.screen.clone()));
+        let (buffer, screen) = (buffer.clone(), screen.resized(width, height));
+        self.rebuild_from(buffer, width, height);
+        self.screen = screen;
         // N4: a terminal clamps the cursor into the resized grid.
         let Position { x, y } = self.tb.cursor_position();
         let clamped = Position::new(
@@ -559,6 +572,7 @@ impl Backend for RefBackend {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
+        self.written = None;
         let Size { width, height } = self.screen_size();
         // N6: TestBackend panics outside its buffer.
         let cells: Vec<_> = content
@@ -594,6 +608,7 @@ impl Backend for RefBackend {
     }
 
     fn clear(&mut self) -> Result<(), Infallible> {
+        self.written = None;
         let len = self.screen.slots.len();
         if len > 0 {
             self.screen.clear_indices(0..=len - 1);
@@ -602,6 +617,7 @@ impl Backend for RefBackend {
     }
 
     fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Infallible> {
+        self.written = None;
         if clear_type == ClearType::All {
             return self.clear();
         }
@@ -627,6 +643,7 @@ impl Backend for RefBackend {
     }
 
     fn append_lines(&mut self, line_count: u16) -> Result<(), Infallible> {
+        self.written = None;
         let Position { y, .. } = self.tb.cursor_position();
         let max_y = self.screen.height.saturating_sub(1);
         if self.screen.width == 0 {
