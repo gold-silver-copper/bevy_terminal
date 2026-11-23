@@ -1035,7 +1035,7 @@ fn sync_entity(
     let cell = state
         .measure
         .raster
-        .filter(|raster| raster.cell_size.max_element() <= limit as f32)
+        .filter(|raster| raster.cell_size.cmple(Vec2::splat(limit as f32)).all())
         .map(|raster| CellGeometry {
             physical_size: raster.cell_size,
             raster_scale: raster.scale,
@@ -1107,8 +1107,10 @@ fn sync_terminal(
     let requested = physical_config(metrics, raster_scale);
     // A font or a cell larger than a texture cannot be measured. A grid that
     // is too large can: its cell is measured first, to say which grid fits.
+    // Each side is asked, as a side that is not a number fits nothing.
     let fits = |pixels: f32| pixels <= texture_limit as f32;
-    if !fits(requested.font_size) || !fits(requested.cell_size.max_element()) {
+    let cell_fits = |cell: Vec2| fits(cell.x) && fits(cell.y);
+    if !fits(requested.font_size) || !cell_fits(requested.cell_size) {
         return Err(TerminalFailure::TextureTooLarge.into());
     }
     // Glyphs cached for other metrics go with them.
@@ -1127,7 +1129,7 @@ fn sync_terminal(
     };
     // Refining the cell to the font can grow it past the limit.
     let size = terminal_pixel_size(grid.size(), &raster);
-    if size.max_element() > texture_limit || !fits(raster.cell_size.max_element()) {
+    if size.max_element() > texture_limit || !cell_fits(raster.cell_size) {
         return Err(TerminalFailure::TextureTooLarge.into());
     }
     let blink = BlinkPhases::at(elapsed, config);
