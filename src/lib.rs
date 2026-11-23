@@ -8,10 +8,7 @@
         clippy::indexing_slicing,
         clippy::panic,
         clippy::unreachable,
-        clippy::todo,
-        clippy::unimplemented,
         clippy::string_slice,
-        clippy::dbg_macro,
         clippy::print_stdout,
         clippy::print_stderr
     )

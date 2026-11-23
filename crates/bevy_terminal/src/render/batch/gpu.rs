@@ -5,7 +5,7 @@ use super::{
 };
 use bevy::{
     asset::uuid_handle,
-    platform::collections::{HashMap, hash_map::Entry},
+    platform::collections::HashMap,
     prelude::*,
     render::{
         MainWorld,
@@ -235,22 +235,21 @@ fn upload_atlas(
         return;
     }
     let size = scene.atlas_size;
-    let atlas = match atlases.entry(scene.atlas) {
-        Entry::Occupied(atlas) if atlas.get().texture.width() == size => atlas.into_mut(),
-        entry => {
-            let texture = atlas_texture(
-                device,
-                size,
-                TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-            );
-            let bind_group = atlas_bind_group(device, layout, &texture, sampler);
-            entry
-                .insert(GpuAtlas {
-                    texture,
-                    bind_group,
-                })
-                .into_mut()
-        }
+    if atlases
+        .get(&scene.atlas)
+        .is_none_or(|atlas| atlas.texture.width() != size)
+    {
+        let usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+        let texture = atlas_texture(device, size, usage);
+        let bind_group = atlas_bind_group(device, layout, &texture, sampler);
+        let atlas = GpuAtlas {
+            texture,
+            bind_group,
+        };
+        atlases.insert(scene.atlas, atlas);
+    }
+    let Some(atlas) = atlases.get(&scene.atlas) else {
+        return;
     };
     // Entries are packed inside the atlas; one that is not would abort the
     // device's validation, so it is skipped instead.

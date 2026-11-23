@@ -7,7 +7,11 @@ missing_docs = "warn"
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
-all = "warn"
+all = { level = "warn", priority = -1 }
+# Unfinished and debugging code, which tests should not hold either.
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
 
 [package]
 name = "bevy_terminal_ratatui"
