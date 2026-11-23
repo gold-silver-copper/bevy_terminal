@@ -386,33 +386,34 @@ fn render_after_steps(
     let captured = Captured(Arc::new(Mutex::new(None)));
     let sink = captured.clone();
     let mut app = App::new();
-    app.add_plugins(
-        DefaultPlugins
-            .set(WindowPlugin {
-                primary_window: None,
-                exit_condition: bevy::window::ExitCondition::DontExit,
-                close_when_requested: false,
-                ..default()
-            })
-            .set(RenderPlugin {
-                render_creation: RenderCreation::Automatic(Box::default()),
-                synchronous_pipeline_compilation: true,
-                ..default()
-            })
-            .disable::<WinitPlugin>(),
-    )
-    .add_plugins((
-        ScheduleRunnerPlugin::run_loop(std::time::Duration::from_millis(1)),
-        TerminalPlugin,
-    ))
-    .insert_resource(captured)
-    .add_systems(
-        Startup,
-        move |mut commands: Commands, mut fonts: ResMut<Assets<Font>>| {
-            let config = config.take().expect("startup runs once")(&mut fonts);
-            commands.spawn((grid.clone(), config));
-        },
-    );
+    // Added before Bevy's render plugin: the order must not matter.
+    app.add_plugins(TerminalPlugin)
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: None,
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    close_when_requested: false,
+                    ..default()
+                })
+                .set(RenderPlugin {
+                    render_creation: RenderCreation::Automatic(Box::default()),
+                    synchronous_pipeline_compilation: true,
+                    ..default()
+                })
+                .disable::<WinitPlugin>(),
+        )
+        .add_plugins(ScheduleRunnerPlugin::run_loop(
+            std::time::Duration::from_millis(1),
+        ))
+        .insert_resource(captured)
+        .add_systems(
+            Startup,
+            move |mut commands: Commands, mut fonts: ResMut<Assets<Font>>| {
+                let config = config.take().expect("startup runs once")(&mut fonts);
+                commands.spawn((grid.clone(), config));
+            },
+        );
     let mut steps = steps;
     let mut frame = 0u32;
     app.add_systems(
@@ -509,4 +510,51 @@ fn atlas_entries_survive_font_switches_and_partial_repaints() {
         differing, 0,
         "{differing} pixels differ from a fresh terminal"
     );
+}
+
+/// The atlas starts small and is replaced by a larger texture when the glyphs
+/// shown outgrow it; what is drawn from the grown atlas must be what a
+/// terminal that showed everything at once draws.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn a_grown_atlas_draws_like_a_fresh_one() {
+    let jetbrains = include_bytes!("../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf");
+    let write = |grid: &mut TerminalGrid, row: u16, text: &str| {
+        for (x, c) in text.chars().enumerate() {
+            grid.set_cell((x as u16, row), &TerminalCell::new(&c.to_string()));
+        }
+    };
+    let config = |fonts: &mut Assets<Font>| {
+        font_driven_config(fonts.add(Font::from_bytes(jetbrains.to_vec())), 128.0)
+    };
+    let rows = [
+        "small",
+        "ABCDEFGHIJKLMNOP",
+        "QRSTUVWXYZabcdef",
+        "ghijklmnopqrstuv",
+    ];
+    let mut grid = TerminalGrid::new((16, 4));
+    write(&mut grid, 0, rows[0]);
+    let (data, size) = render_after_steps(
+        grid,
+        config,
+        vec![Box::new(move |world: &mut World| {
+            let mut grid = world
+                .query::<&mut TerminalGrid>()
+                .single_mut(world)
+                .unwrap();
+            for (row, text) in (1..).zip(&rows[1..]) {
+                write(&mut grid, row, text);
+            }
+        })],
+    );
+    let mut fresh = TerminalGrid::new((16, 4));
+    for (row, text) in (0..).zip(rows) {
+        write(&mut fresh, row, text);
+    }
+    let (expected, expected_size) = render_headless_with(fresh, config);
+    assert_eq!(size, expected_size);
+    assert!(data == expected, "the grown atlas draws differently");
+    // The glyphs are there at all.
+    assert!(data.chunks(4).any(|texel| texel[0] > 128));
 }
