@@ -436,7 +436,7 @@ struct BatchMainState {
 struct FontUse {
     /// Font asset ids in use, to scope re-measurement to this terminal's own
     /// fonts.
-    ids: [Option<AssetId<Font>>; 4],
+    ids: Vec<AssetId<Font>>,
     /// Whether every handle font above is registered with the font context.
     ready: bool,
 }
@@ -945,14 +945,12 @@ fn sync_entity(
         // Handle fonts become usable only once Bevy registers them with the font
         // context (assigning an alias); glyphs shaped before that used a fallback
         // family and must be re-shaped afterwards.
-        let fonts_ready = face_ids
-            .iter()
-            .flatten()
-            .all(|id| catalog.registered.contains(id));
+        let fonts_ready = face_ids.iter().all(|id| catalog.registered.contains(id));
         let named_faces = std::iter::once(&config.font.regular)
             .chain(config.font.bold.iter())
             .chain(config.font.italic.iter())
             .chain(config.font.bold_italic.iter())
+            .flat_map(FontSource::flatten)
             .any(|face| !matches!(face, FontSource::Handle(_)));
         let fonts_changed = (named_faces
             && (catalog.registration_changed
@@ -962,16 +960,13 @@ fn sync_entity(
                     .any(|id| catalog.registered.contains(id))))
             || state.fonts.ids != face_ids
             || state.fonts.ready != fonts_ready
-            || face_ids
-                .iter()
-                .flatten()
-                .any(|id| catalog.changed.contains(id));
+            || face_ids.iter().any(|id| catalog.changed.contains(id));
         state.fonts = FontUse {
             ids: face_ids,
             ready: fonts_ready,
         };
         if !fonts_ready {
-            let failed = face_ids.iter().flatten().any(|id| {
+            let failed = state.fonts.ids.iter().any(|id| {
                 let invalid = text
                     .fonts
                     .get(*id)
@@ -1065,18 +1060,24 @@ fn sync_entity(
     }
 }
 
-/// Font asset ids referenced by a set of faces (system/family sources have none).
-fn font_asset_ids(faces: &super::FontFaces) -> [Option<AssetId<Font>>; 4] {
-    let id = |source: Option<&FontSource>| match source {
-        Some(FontSource::Handle(handle)) => Some(handle.id()),
-        _ => None,
-    };
-    [
-        id(Some(&faces.regular)),
-        id(faces.bold.as_ref()),
-        id(faces.italic.as_ref()),
-        id(faces.bold_italic.as_ref()),
-    ]
+/// Font asset ids referenced by a set of faces, including inside
+/// [`FontSource::List`] fallbacks (system/family sources have none).
+fn font_asset_ids(faces: &super::FontFaces) -> Vec<AssetId<Font>> {
+    let mut ids = Vec::new();
+    for source in std::iter::once(&faces.regular)
+        .chain(faces.bold.iter())
+        .chain(faces.italic.iter())
+        .chain(faces.bold_italic.iter())
+        .flat_map(FontSource::flatten)
+    {
+        if let FontSource::Handle(handle) = source {
+            let id = handle.id();
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
 }
 
 /// Resolved inputs for one terminal in this update. Separate invalidation

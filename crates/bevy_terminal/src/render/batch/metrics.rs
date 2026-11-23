@@ -48,13 +48,20 @@ pub(in crate::render) fn measure_advance(
     font_cx: &mut FontCx,
     layout_cx: &mut LayoutCx,
 ) -> Result<f32, AdvanceError> {
-    // A font asset is only usable once Bevy has registered it with the font
-    // context (which assigns its alias); measuring before that would shape a
-    // fallback font. Report "not yet" so the caller retries next frame.
-    if let FontSource::Handle(handle) = &faces.regular
-        && fonts
-            .get(handle.id())
-            .is_none_or(|font| font.alias.is_empty())
+    // Font assets are only usable once Bevy has registered them with the font
+    // context (which assigns their alias); measuring before that would shape a
+    // fallback font or fail with `NoSuchFont`. Report "not yet" so the caller
+    // retries next frame.
+    if faces
+        .regular
+        .flatten()
+        .into_iter()
+        .any(|source| match source {
+            FontSource::Handle(handle) => fonts
+                .get(handle.id())
+                .is_none_or(|font| font.alias.is_empty()),
+            _ => false,
+        })
     {
         return Err(AdvanceError::NotRegistered);
     }

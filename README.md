@@ -12,11 +12,11 @@ grid; it does not emulate a terminal, manage a PTY, or forward input.
 | `bevy_terminal` | Terminal grid component, font measurement, rendering, output geometry |
 | `bevy_terminal_ratatui` | Ratatui backend and optional ergonomic terminal wrapper |
 
-Version 0.9.1 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.95 or newer.
+Version 0.9.2 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.95 or newer.
 
 ```toml
 [dependencies]
-bevy_terminal_ratatui = "0.9.1"
+bevy_terminal_ratatui = "0.9.2"
 ```
 
 ## Drawing and rendering
