@@ -1,4 +1,4 @@
-use std::{convert::Infallible, marker::PhantomData};
+use std::{convert::Infallible, fmt, marker::PhantomData};
 
 use bevy_terminal::bevy::{ecs::component::Mutable, prelude::*};
 use bevy_terminal::prelude::{
@@ -31,6 +31,22 @@ pub struct RatatuiSourcePlugin<S>(PhantomData<fn() -> S>);
 impl<S> Default for RatatuiSourcePlugin<S> {
     fn default() -> Self {
         Self(PhantomData)
+    }
+}
+
+impl<S> Clone for RatatuiSourcePlugin<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Copy for RatatuiSourcePlugin<S> {}
+
+impl<S> fmt::Debug for RatatuiSourcePlugin<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("RatatuiSourcePlugin")
+            .field(&std::any::type_name::<S>())
+            .finish()
     }
 }
 

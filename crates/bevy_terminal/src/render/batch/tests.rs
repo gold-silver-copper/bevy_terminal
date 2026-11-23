@@ -2412,3 +2412,85 @@ fn publish_failure_reports_output_unavailable() {
         Err(SyncError::Failed(TerminalFailure::OutputUnavailable))
     ));
 }
+
+#[test]
+fn same_bundle_dual_sources_keep_first_source_without_clobbering() {
+    #[derive(Component)]
+    struct ExtraSource(TerminalGrid);
+
+    impl TerminalSource for ExtraSource {
+        fn grid(&self) -> &TerminalGrid {
+            &self.0
+        }
+    }
+
+    let mut app = text_app();
+    app.add_plugins(TerminalSourcePlugin::<ExtraSource>::default());
+    let entity = app
+        .world_mut()
+        .spawn((
+            TerminalGrid::new((5, 2)),
+            ExtraSource(TerminalGrid::new((9, 4))),
+        ))
+        .id();
+    let image_count = app.world().resource::<Assets<Image>>().len();
+    app.update();
+
+    let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+    assert_eq!(
+        texture.measured().map(TerminalGeometry::grid),
+        Some(GridSize::new(5, 2)),
+        "first source in a same-bundle spawn must own the terminal"
+    );
+    // Only one output image should have been allocated for the entity.
+    assert_eq!(image_count, 1);
+
+    // Removing the ignored second source must leave the first source intact.
+    app.world_mut().entity_mut(entity).remove::<ExtraSource>();
+    assert!(app.world().get::<TerminalTexture>(entity).is_some());
+}
+
+#[test]
+fn output_unavailable_stays_idle_until_inputs_change() {
+    #[derive(Resource, Default)]
+    struct Changes(usize);
+    type Published = Or<(Changed<TerminalTexture>, Changed<TerminalStats>)>;
+
+    let mut app = text_app();
+    app.init_resource::<Changes>().add_systems(
+        PostUpdate,
+        (|changed: Query<(), Published>, mut count: ResMut<Changes>| {
+            count.0 += changed.iter().count();
+        })
+        .after(super::super::TerminalSystems::Sync),
+    );
+    let entity = app.world_mut().spawn(TerminalGrid::new((4, 2))).id();
+    app.update();
+    assert!(
+        app.world()
+            .get::<TerminalTexture>(entity)
+            .unwrap()
+            .measured()
+            .is_some()
+    );
+
+    // Put the terminal into OutputUnavailable; subsequent idle updates must stay idle.
+    app.world_mut()
+        .get_mut::<TerminalTexture>(entity)
+        .unwrap()
+        .status = TerminalStatus::Failed(TerminalFailure::OutputUnavailable);
+    app.update();
+    app.world_mut().resource_mut::<Changes>().0 = 0;
+    for _ in 0..5 {
+        app.update();
+    }
+    assert_eq!(
+        app.world().resource::<Changes>().0,
+        0,
+        "OutputUnavailable terminal must stay idle until inputs change"
+    );
+    assert_eq!(
+        app.world().get::<TerminalTexture>(entity).unwrap().status(),
+        &TerminalStatus::Failed(TerminalFailure::OutputUnavailable)
+    );
+}
