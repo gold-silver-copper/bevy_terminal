@@ -2,9 +2,9 @@ use std::{borrow::Cow, convert::Infallible, fmt, marker::PhantomData};
 
 use bevy_terminal::bevy::{ecs::component::Mutable, prelude::*};
 use bevy_terminal::prelude::{
-    GridSize, StyleFlags, TerminalCell, TerminalColor, TerminalGeometry, TerminalGrid,
-    TerminalRenderConfig, TerminalSource, TerminalSourcePlugin, TerminalStyle, TerminalSystems,
-    TerminalTexture,
+    CellPosition, GridSize, StyleFlags, TerminalCell, TerminalColor, TerminalGeometry,
+    TerminalGrid, TerminalRenderConfig, TerminalSource, TerminalSourcePlugin, TerminalStyle,
+    TerminalSystems, TerminalTexture,
 };
 use ratatui::{
     backend::{Backend, ClearType, WindowSize},
@@ -89,10 +89,10 @@ pub struct RatatuiBackend {
     /// The texture's measurement, reported by [`Backend::window_size`] while
     /// it describes the grid's size.
     geometry: Option<TerminalGeometry>,
-    /// The grid as last written, while only resizes have followed. Ratatui
-    /// still holds that frame as drawn, so a resize brings back from it the
-    /// cells an earlier resize cut off.
-    written: Option<TerminalGrid>,
+    /// The grid as last written and where the cursor was last put, while
+    /// only resizes have followed. Ratatui still holds that frame as drawn,
+    /// so a resize brings back from it what an earlier resize cut off.
+    written: Option<(TerminalGrid, CellPosition)>,
 }
 
 impl RatatuiBackend {
@@ -125,19 +125,35 @@ impl RatatuiBackend {
     /// remain application-owned; use `Terminal::resize` to change their area.
     /// The grid is clamped to [`TerminalGrid::MAX_CELLS`].
     ///
-    /// Until something is drawn, resizes are relative to the last frame: a
-    /// grid that shrinks and grows back shows that frame whole again, as
-    /// Ratatui, which redraws only what differs from it, takes it to.
+    /// Until cells are written again, resizes are relative to the last
+    /// frame: a grid that shrinks and grows back shows that frame whole
+    /// again, as Ratatui, which redraws only what differs from it, takes it
+    /// to, with its cursor where it was put. A fixed viewport that draws
+    /// while the grid is smaller than its area loses what did not fit.
     pub fn resize(&mut self, columns: u16, rows: u16) {
-        if self.grid.size() == GridSize::new(columns, rows) {
+        let size = GridSize::new(columns, rows).bounded();
+        if self.grid.size() == size {
             return;
         }
         let resized_before = self.written.is_some();
-        let written = self.written.get_or_insert_with(|| self.grid.clone());
-        if self.grid.resize((columns, rows)) && resized_before {
-            for (position, cell) in written.iter() {
-                self.grid.set_cell(position, cell);
+        let (written, cursor) = self
+            .written
+            .get_or_insert_with(|| (self.grid.clone(), self.grid.cursor_position()));
+        self.grid.resize(size);
+        if resized_before {
+            for y in 0..size.height.min(written.size().height) {
+                for (x, cell) in (0..size.width).zip(written.row(y)) {
+                    self.grid.set_cell((x, y), cell);
+                }
             }
+        }
+        self.grid.set_cursor_position(*cursor);
+    }
+
+    /// Notes a cursor that was moved as the one resizes return to.
+    fn keep_cursor(&mut self) {
+        if let Some((_, cursor)) = &mut self.written {
+            *cursor = self.grid.cursor_position();
         }
     }
 
@@ -147,6 +163,11 @@ impl RatatuiBackend {
     /// returns whether it changed. Does nothing until the cell is measured.
     /// It needs no geometry for the current grid, so it also brings a grid
     /// too large for a texture back to one that can be drawn.
+    ///
+    /// Reaching the backend through a Bevy `Mut` marks the terminal changed
+    /// whether or not it is resized: to leave an unchanged terminal alone,
+    /// compare `cell.grid_for(..)` with the grid's size first and call
+    /// [`resize`](Self::resize) only when they differ.
     pub fn fit(&mut self, texture: &TerminalTexture, physical_size: Vec2) -> bool {
         let Some(grid) = texture.cell().map(|cell| cell.grid_for(physical_size)) else {
             return false;
@@ -348,8 +369,9 @@ impl Backend for RatatuiBackend {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
-        self.written = None;
         for (x, y, cell) in content {
+            // A draw that writes nothing leaves the frame as it was.
+            self.written = None;
             // Positions outside the grid are ignored by the grid.
             self.grid.set_cell((x, y), &translate_cell(cell));
         }
@@ -378,6 +400,7 @@ impl Backend for RatatuiBackend {
         // The grid clamps the cursor into itself, as a terminal does.
         let position = position.into();
         self.grid.set_cursor_position((position.x, position.y));
+        self.keep_cursor();
         Ok(())
     }
 
@@ -427,14 +450,15 @@ impl Backend for RatatuiBackend {
         let cursor = self.grid.cursor_position();
         let last_row = size.height.saturating_sub(1);
         let rows_below = last_row.saturating_sub(cursor.y);
-        self.written = None;
         if line_count > rows_below {
+            self.written = None;
             self.grid.scroll_up(0..size.height, line_count - rows_below);
         }
         self.grid.set_cursor_position((
             cursor.x.saturating_add(1),
             cursor.y.saturating_add(line_count),
         ));
+        self.keep_cursor();
         Ok(())
     }
 
@@ -444,8 +468,9 @@ impl Backend for RatatuiBackend {
         region: std::ops::Range<u16>,
         line_count: u16,
     ) -> Result<(), Self::Error> {
-        self.written = None;
-        self.grid.scroll_up(region, line_count);
+        if self.grid.scroll_up(region, line_count) {
+            self.written = None;
+        }
         Ok(())
     }
 
@@ -455,8 +480,9 @@ impl Backend for RatatuiBackend {
         region: std::ops::Range<u16>,
         line_count: u16,
     ) -> Result<(), Self::Error> {
-        self.written = None;
-        self.grid.scroll_down(region, line_count);
+        if self.grid.scroll_down(region, line_count) {
+            self.written = None;
+        }
         Ok(())
     }
 }
@@ -905,8 +931,18 @@ mod tests {
     #[test]
     fn a_run_of_resizes_is_one_resize_of_the_last_frame() {
         let mut backend = RatatuiBackend::new(7, 3);
-        draw_text(&mut backend, "a日本bc語defghi日本語jk", 7);
+        let cells = [(0, 0, "a"), (1, 0, "界"), (3, 0, "b"), (5, 0, "語")];
+        let cells = cells
+            .into_iter()
+            .chain([(0, 1, "日"), (2, 1, "本"), (6, 2, "c")]);
+        let cells: Vec<_> = cells
+            .map(|(x, y, symbol)| (x, y, Cell::new(symbol)))
+            .collect();
+        let draw = cells.iter().map(|(x, y, cell)| (*x, *y, cell));
+        backend.draw(draw).unwrap();
         let frame = backend.grid().clone();
+        assert!(frame.cell((2, 0)).unwrap().is_continuation());
+        assert!(frame.cell((6, 0)).unwrap().is_continuation());
         let mut state = 0x9e37_79b9_u32;
         let mut next = |below: u32| {
             state ^= state << 13;
@@ -923,6 +959,32 @@ mod tests {
         }
         backend.resize(7, 3);
         assert_eq!(backend.grid().cells(), frame.cells());
+    }
+
+    #[test]
+    fn a_draw_that_writes_nothing_keeps_the_frame_resizes_restore() {
+        let mut backend = RatatuiBackend::new(4, 1);
+        draw_text(&mut backend, "ABCD", 4);
+        backend.resize(2, 1);
+        backend.draw(std::iter::empty()).unwrap();
+        backend.append_lines(0).unwrap();
+        backend.resize(4, 1);
+        assert_eq!(backend.grid().row_text(0), "ABCD");
+        // The cursor comes back too, to where it was last put.
+        let mut backend = RatatuiBackend::new(6, 3);
+        backend.set_cursor_position((5, 2)).unwrap();
+        backend.resize(3, 1);
+        assert_eq!(backend.get_cursor_position().unwrap(), Position::new(2, 0));
+        backend.resize(6, 4);
+        assert_eq!(backend.get_cursor_position().unwrap(), Position::new(5, 2));
+        backend.resize(2, 2);
+        backend.set_cursor_position((0, 1)).unwrap();
+        backend.resize(6, 3);
+        assert_eq!(backend.get_cursor_position().unwrap(), Position::new(0, 1));
+        // Asking for more than the grid can hold changes nothing and keeps no copy.
+        let mut backend = RatatuiBackend::new(1024, 1024);
+        backend.resize(1024, 1025);
+        assert!(backend.written.is_none());
     }
 
     #[test]

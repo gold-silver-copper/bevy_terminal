@@ -1217,6 +1217,23 @@ fn a_grid_too_large_is_still_measured_and_fits_in_one_step() {
     // One more cell either way would not have fitted.
     assert!(geometry.size().x as f32 + cell.physical_size().x > 8192.0);
     assert_eq!(texture.cell(), Some(&cell));
+    // A size that is not a number fits one cell, not the largest grid.
+    assert_eq!(cell.grid_for(Vec2::NAN), GridSize::new(1, 1));
+    // A cell larger than a texture fits no grid, so none is offered.
+    app.world_mut()
+        .get_mut::<TerminalRenderConfig>(entity)
+        .unwrap()
+        .sizing = TerminalSizing::FromFont {
+        font_size: 20.0,
+        line_height: 1000.0,
+    };
+    app.update();
+    let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+    assert_eq!(
+        texture.status,
+        TerminalStatus::Failed(TerminalFailure::TextureTooLarge)
+    );
+    assert_eq!(texture.cell(), None);
 }
 
 #[test]

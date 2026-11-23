@@ -1031,12 +1031,16 @@ fn sync_entity(
         output.status = status;
     }
     // The measured cell outlives a grid too large for it, so the grid can be
-    // fitted to it.
-    let cell = state.measure.raster.map(|raster| CellGeometry {
-        physical_size: raster.cell_size,
-        raster_scale: raster.scale,
-        texture_limit: limit,
-    });
+    // fitted to it, unless one cell alone is too large and no grid fits.
+    let cell = state
+        .measure
+        .raster
+        .filter(|raster| raster.cell_size.max_element() <= limit as f32)
+        .map(|raster| CellGeometry {
+            physical_size: raster.cell_size,
+            raster_scale: raster.scale,
+            texture_limit: limit,
+        });
     if output.cell != cell {
         output.cell = cell;
     }
@@ -1123,7 +1127,7 @@ fn sync_terminal(
     };
     // Refining the cell to the font can grow it past the limit.
     let size = terminal_pixel_size(grid.size(), &raster);
-    if size.max_element() > texture_limit {
+    if size.max_element() > texture_limit || !fits(raster.cell_size.max_element()) {
         return Err(TerminalFailure::TextureTooLarge.into());
     }
     let blink = BlinkPhases::at(elapsed, config);

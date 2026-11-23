@@ -28,7 +28,8 @@ impl GridSize {
 
     /// Drops rows until the grid holds at most
     /// [`TerminalGrid::MAX_CELLS`](crate::grid::TerminalGrid::MAX_CELLS).
-    pub(crate) fn bounded(self) -> Self {
+    #[must_use]
+    pub fn bounded(self) -> Self {
         let rows = crate::grid::TerminalGrid::MAX_CELLS / usize::from(self.width.max(1));
         let rows = u16::try_from(rows).unwrap_or(u16::MAX);
         Self::new(self.width, self.height.min(rows))

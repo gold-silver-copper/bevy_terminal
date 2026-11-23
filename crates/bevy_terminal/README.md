@@ -95,8 +95,9 @@ fitting a logical rectangle.
 
 `texture.cell()` is the measured cell alone: its physical size, the raster
 scale and the device's texture limit. It depends on the fonts and the sizing,
-not on the grid, so it is also there while the status is
-`Failed(TextureTooLarge)`. `cell.grid_for(available_physical_pixels)` is the
+not on the grid, so it is also there while the grid is too large
+(`Failed(TextureTooLarge)`); a font or cell that is itself larger than a
+texture has none. A change of cell also fires `Changed<TerminalTexture>`. `cell.grid_for(available_physical_pixels)` is the
 largest grid that fits both those pixels and a texture: resize the grid to it
 to fill a space, or to bring a grid that is too large back to one that can be
 drawn.

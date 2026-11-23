@@ -112,7 +112,9 @@ size, clears and repaints on its next draw; until then the grid shows the last
 frame, cut to its size, and a grid that shrinks and grows back shows it whole
 again. The wrapper's `resize_grid` also resizes Ratatui's buffers at once,
 which clears the grid. Fixed viewports require an explicit `Terminal::resize()`
-for the application-owned area.
+for the application-owned area, and with an inline viewport call
+`Terminal::autoresize()` after a resize before `insert_before`: both otherwise
+draw at the size Ratatui last knew.
 
 `RatatuiPlugin` (and `RatatuiSourcePlugin` for your own `RatatuiSource`) hands
 each backend its texture's measured geometry, so `Backend::window_size().pixels`
