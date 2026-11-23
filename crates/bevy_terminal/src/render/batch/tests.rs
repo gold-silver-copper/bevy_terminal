@@ -460,6 +460,50 @@ fn replacing_a_grid_with_equal_revision_refreshes_retained_content() {
 }
 
 #[test]
+fn a_disabled_terminal_is_released_and_catches_up_when_enabled() {
+    use bevy::ecs::entity_disabling::Disabled;
+    let mut app = text_app();
+    // A source's plugin added again, as two plugins that each need it do.
+    app.add_plugins(super::TerminalSourcePlugin::<TerminalGrid>::default());
+    let spawn = |app: &mut App| {
+        let mut terminal = TerminalGrid::new((4, 2));
+        write_text(&mut terminal, "text");
+        let entity = app.world_mut().spawn(terminal).id();
+        for _ in 0..4 {
+            app.update();
+        }
+        entity
+    };
+    let (kept, dropped) = (spawn(&mut app), spawn(&mut app));
+    let mut pending = PendingBatchScenes::default();
+    collect_batch_scenes(app.world_mut(), &mut pending);
+    assert_eq!(pending.scenes.len(), 2);
+    let cell = |app: &App| {
+        let texture = app.world().get::<TerminalTexture>(kept).unwrap();
+        texture.measured().unwrap().physical_cell_size()
+    };
+    let before = cell(&app);
+
+    app.world_mut().entity_mut(kept).insert(Disabled);
+    app.world_mut().entity_mut(dropped).insert(Disabled);
+    app.world_mut()
+        .get_mut::<TerminalRenderConfig>(kept)
+        .unwrap()
+        .sizing = TerminalSizing::FitCellWidth(Vec2::new(22.0, 40.0));
+    for _ in 0..3 {
+        app.update();
+    }
+    app.world_mut().despawn(dropped);
+    app.world_mut().entity_mut(kept).remove::<Disabled>();
+    for _ in 0..3 {
+        app.update();
+    }
+    collect_batch_scenes(app.world_mut(), &mut pending);
+    assert_eq!(pending.released_atlases.len(), 1, "its atlas is freed");
+    assert_eq!(cell(&app).x, before.x * 2.0, "the new sizing is drawn");
+}
+
+#[test]
 fn repeated_despawns_release_owned_images_and_pending_scenes() {
     let mut app = text_app();
     // Fontique independently prunes/reloads system-font data, which can create

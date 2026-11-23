@@ -12,11 +12,11 @@ grid; it does not emulate a terminal, manage a PTY, or forward input.
 | `bevy_terminal` | Terminal grid component, font measurement, rendering, output geometry |
 | `bevy_terminal_ratatui` | Ratatui backend and optional ergonomic terminal wrapper |
 
-Version 0.10.2 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.97.1 or newer (Bevy's minimum).
+Version 0.10.3 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.97.1 or newer (Bevy's minimum).
 
 ```toml
 [dependencies]
-bevy_terminal_ratatui = "0.10.2"
+bevy_terminal_ratatui = "0.10.3"
 ```
 
 ## Drawing and rendering
@@ -62,8 +62,10 @@ fn present(mut terminals: Query<(&TerminalTexture, &mut ImageNode, &mut Node)>) 
 }
 ```
 
-The default font is Bevy's generic monospace source. Enable system font discovery
-or supply a loaded `Font` asset. The runnable examples use bundled font faces.
+The default font is Bevy's built-in one, which covers ASCII and has a single
+face (the renderer draws box-drawing, block, shade and braille symbols itself).
+For more, supply loaded `Font` assets, or `FontSource::monospace()` with the
+`system_fonts` feature. The runnable examples use bundled font faces.
 Each terminal entity has its own grid and texture. Query the `RatatuiTerminal`
 component and draw again when application content changes.
 
@@ -220,6 +222,13 @@ rather than mirrored across both crate roots.
 - **Cell symbols:** the Ratatui backend drops control characters and escape
   sequences (such as OSC 8 hyperlinks) from cell symbols instead of drawing
   them as text.
+
+0.10.3 changes the default font: `FontFaces::default()` is Bevy's built-in font
+instead of the system's monospace family, so a default terminal draws without
+system fonts. Set `FontSource::monospace()` to keep the old one. It also frees
+the atlas of a terminal despawned while `Disabled`, adds
+`TerminalSystems::Build`, and lets a system ordered after `TerminalSystems::Sync`
+read the frame's `window_size()`.
 
 0.10.2 adds `TerminalTexture::cell()` and `RatatuiBackend::fit`, measures the
 cell of a grid too large for a texture, and makes repeated

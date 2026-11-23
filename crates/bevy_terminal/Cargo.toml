@@ -1,6 +1,6 @@
 [package]
 name = "bevy_terminal"
-version = "0.10.2"
+version = "0.10.3"
 edition = "2024"
 rust-version = "1.97.1"
 description = "A low-level terminal cell renderer built on Bevy text and the render world"
@@ -23,7 +23,8 @@ include = [
 
 [features]
 default = ["system_fonts"]
-# Discover system fonts so generic families such as `FontSource::Monospace` resolve.
+# Discover system fonts, for fallback and so generic families such as
+# `FontSource::monospace()` resolve.
 system_fonts = ["bevy/system_font_discovery"]
 
 # Measure CPU snapshot and scene construction time; counters remain available without this.
@@ -37,6 +38,8 @@ bevy = { version = "0.20", default-features = false, features = [
     "bevy_render",
     "bevy_image",
     "bevy_text",
+    # The font `FontFaces::default()` names.
+    "default_font",
 ] }
 
 [dev-dependencies]
