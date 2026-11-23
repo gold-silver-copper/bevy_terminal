@@ -30,7 +30,7 @@ use bevy::platform::time::Instant;
 
 use bevy::{
     asset::{AssetId, RenderAssetUsages},
-    ecs::component::RequiredComponentsError,
+    ecs::{component::RequiredComponentsError, entity_disabling::Disabled, query::Allow},
     image::ImageSampler,
     platform::collections::{HashMap, HashSet},
     prelude::*,
@@ -84,10 +84,15 @@ impl Plugin for TerminalPlugin {
                 PostUpdate,
                 super::TerminalSystems::Sync.after(load_font_assets_into_font_collection),
             )
+            .configure_sets(
+                PostUpdate,
+                super::TerminalSystems::Build.in_set(super::TerminalSystems::Sync),
+            )
             .add_systems(
                 PostUpdate,
                 refresh_font_catalog.in_set(super::TerminalSystems::Sync),
-            );
+            )
+            .add_observer(reenable_terminal);
         register_source::<TerminalGrid>(app);
     }
 
@@ -161,9 +166,24 @@ impl<S: TerminalSource> Plugin for TerminalSourcePlugin<S> {
         app.add_plugins(TerminalPlugin);
         register_source::<S>(app);
     }
+
+    fn is_unique(&self) -> bool {
+        false
+    }
 }
 
+/// The sources registered, so that adding a source's plugin twice (as two
+/// plugins that each need it do) registers it once.
+#[derive(Resource, Default)]
+struct RegisteredSources(HashSet<TypeId>);
+
 fn register_source<S: TerminalSource>(app: &mut App) {
+    let mut registered = app
+        .world_mut()
+        .get_resource_or_insert_with(RegisteredSources::default);
+    if !registered.0.insert(TypeId::of::<S>()) {
+        return;
+    }
     if let Err(RequiredComponentsError::ArchetypeExists(_)) = app
         .world_mut()
         .try_register_required_components::<S, TerminalRenderConfig>()
@@ -179,7 +199,7 @@ fn register_source<S: TerminalSource>(app: &mut App) {
         .add_systems(
             PostUpdate,
             sync_terminals::<S>
-                .in_set(super::TerminalSystems::Sync)
+                .in_set(super::TerminalSystems::Build)
                 .after(refresh_font_catalog),
         );
 }
@@ -189,7 +209,7 @@ fn register_source<S: TerminalSource>(app: &mut App) {
 /// its scene and free its atlas.
 fn release_terminal<S: TerminalSource>(
     remove: On<Remove<S>>,
-    states: Query<&BatchMainState>,
+    states: Query<&BatchMainState, Allow<Disabled>>,
     mut queue: ResMut<SceneQueue>,
     mut commands: Commands,
 ) {
@@ -203,6 +223,18 @@ fn release_terminal<S: TerminalSource>(
     commands
         .entity(remove.entity)
         .try_remove::<(BatchMainState, TerminalTexture, TerminalStats)>();
+}
+
+/// A terminal that was disabled missed what changed meanwhile: its
+/// configuration is compared and its fonts measured again. Only Bevy's own
+/// `Disabled` is followed, not other disabling components.
+fn reenable_terminal(
+    remove: On<Remove<Disabled>>,
+    mut states: Query<&mut BatchMainState, Allow<Disabled>>,
+) {
+    if let Ok(mut state) = states.get_mut(remove.entity) {
+        state.last_config = None;
+    }
 }
 
 /// Everything the sync system touches on a terminal entity.
@@ -969,7 +1001,11 @@ fn sync_entity(
                     | TerminalFailure::TextureTooLarge
                     | TerminalFailure::OutputUnavailable
             )
-        ) && !(source_changed || config_touched || fonts_changed || device_changed)
+        ) && !(source_changed
+            || config_touched
+            || config_changed
+            || fonts_changed
+            || device_changed)
         {
             break 'sync Ok(None);
         }

@@ -100,7 +100,9 @@ impl BlinkConfig {
 /// exactly as is (no faux bold or oblique).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontFaces {
-    /// Regular text. The generic monospace family enables system fallback.
+    /// Regular text. The default is Bevy's built-in font, which covers
+    /// ASCII; [`FontSource::monospace`] is the system's monospace family,
+    /// which needs the `system_fonts` feature.
     pub regular: FontSource,
     /// Optional face for bold text.
     pub bold: Option<FontSource>,
@@ -159,7 +161,7 @@ impl FontFaces {
 
 impl Default for FontFaces {
     fn default() -> Self {
-        Self::regular(FontSource::monospace())
+        Self::regular(FontSource::default())
     }
 }
 
@@ -317,6 +319,11 @@ pub enum TerminalSystems {
     /// Newly spawned terminals get their [`TerminalTexture`] earlier, from an
     /// observer that runs when their [`TerminalSource`] is added.
     Sync,
+    /// The part of [`Sync`](Self::Sync) that builds the scenes and sets each
+    /// [`TerminalTexture`]'s status. A system `.in_set(Sync).after(Build)`
+    /// sees this frame's status and still runs before everything ordered
+    /// after `Sync`.
+    Build,
 }
 
 /// Which of the four faces a run of text uses.

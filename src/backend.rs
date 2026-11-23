@@ -24,8 +24,9 @@ pub trait RatatuiSource: TerminalSource + Component<Mutability = Mutable> {
 
 /// Draws every [`RatatuiSource`] `S`, adding the renderer's
 /// [`TerminalPlugin`](bevy_terminal::prelude::TerminalPlugin) if it is
-/// missing, and hands each terminal's measured geometry to its backend in
-/// [`PostUpdate`] after [`TerminalSystems::Sync`].
+/// missing, and hands each terminal's measured geometry to its backend
+/// inside [`TerminalSystems::Sync`], so a system ordered after `Sync` reads
+/// this frame's.
 pub struct RatatuiSourcePlugin<S>(PhantomData<fn() -> S>);
 
 impl<S> Default for RatatuiSourcePlugin<S> {
@@ -53,7 +54,14 @@ impl<S> fmt::Debug for RatatuiSourcePlugin<S> {
 impl<S: RatatuiSource> Plugin for RatatuiSourcePlugin<S> {
     fn build(&self, app: &mut App) {
         app.add_plugins(TerminalSourcePlugin::<S>::default())
-            .add_systems(PostUpdate, adopt_geometry::<S>.after(TerminalSystems::Sync));
+            // Inside `Sync`, so that a system ordered after it reads this
+            // frame's `window_size`.
+            .add_systems(
+                PostUpdate,
+                adopt_geometry::<S>
+                    .in_set(TerminalSystems::Sync)
+                    .after(TerminalSystems::Build),
+            );
     }
 }
 
@@ -211,7 +219,10 @@ impl RatatuiTerminal {
         Self::from_backend(RatatuiBackend::new(columns, rows))
     }
 
-    /// Wraps an existing backend in a fullscreen Ratatui terminal.
+    /// Wraps an existing backend in a fullscreen Ratatui terminal. As on any
+    /// terminal, Ratatui takes the screen to be blank: call
+    /// [`clear`](ratatui::Terminal::clear) first if the backend's grid is
+    /// not, or what it holds stays wherever the frames drawn leave blanks.
     #[must_use]
     pub fn from_backend(backend: RatatuiBackend) -> Self {
         let Ok(terminal) = ratatui::Terminal::new(backend);
@@ -1011,6 +1022,9 @@ mod tests {
         assert_eq!(backend.grid().cursor_position().y, 2);
     }
 
+    #[derive(Resource, Default)]
+    struct SeenAfterSync(Vec<Size>);
+
     #[test]
     fn the_plugin_draws_spawned_terminals_and_hands_them_their_geometry() {
         use bevy_terminal::prelude::{FontFaces, TerminalSizing};
@@ -1021,7 +1035,22 @@ mod tests {
             bevy_terminal::bevy::text::TextPlugin,
         ))
         .init_asset::<Image>()
-        .add_plugins(RatatuiPlugin);
+        // The renderer's own plugin for the source may come first.
+        .add_plugins(TerminalSourcePlugin::<RatatuiTerminal>::default())
+        .add_plugins(RatatuiPlugin)
+        // A system after `Sync` reads the pixels of the frame just measured.
+        .init_resource::<SeenAfterSync>()
+        .add_systems(
+            PostUpdate,
+            (|mut terminal: Single<&mut RatatuiTerminal>, mut seen: ResMut<SeenAfterSync>| {
+                let Ok(size) = terminal
+                    .bypass_change_detection()
+                    .backend_mut()
+                    .window_size();
+                seen.0.push(size.pixels);
+            })
+            .after(TerminalSystems::Sync),
+        );
         let font = app
             .world_mut()
             .resource_mut::<Assets<Font>>()
@@ -1052,6 +1081,11 @@ mod tests {
         }
         let texture = app.world().get::<TerminalTexture>(entity).unwrap();
         assert_eq!(texture.measured().unwrap().grid(), GridSize::new(5, 2));
+        let seen = &app.world().resource::<SeenAfterSync>().0;
+        assert!(
+            seen.iter().all(|pixels| *pixels == Size::new(50, 40)),
+            "{seen:?}"
+        );
         let mut terminal = app.world_mut().get_mut::<RatatuiTerminal>(entity).unwrap();
         assert_eq!(terminal.grid().row_text(0), "Hello");
         let pixels = terminal.backend_mut().window_size().unwrap().pixels;
