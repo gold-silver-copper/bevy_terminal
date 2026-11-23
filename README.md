@@ -12,11 +12,11 @@ grid; it does not emulate a terminal, manage a PTY, or forward input.
 | `bevy_terminal` | Terminal grid component, font measurement, rendering, output geometry |
 | `bevy_terminal_ratatui` | Ratatui backend and optional ergonomic terminal wrapper |
 
-Version 0.10.1 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.97.1 or newer (Bevy's minimum).
+Version 0.10.2 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.97.1 or newer (Bevy's minimum).
 
 ```toml
 [dependencies]
-bevy_terminal_ratatui = "0.10.1"
+bevy_terminal_ratatui = "0.10.2"
 ```
 
 ## Drawing and rendering
@@ -98,13 +98,23 @@ describes the image exactly. The image handle remains stable across
 remeasurement; applications retain their last useful presentation while
 replacement geometry is unavailable.
 
-Applications choose available space and when to resize. Compute
-`grid_for(available_logical_size, geometry.cell_size())` and use the wrapper's
-`resize_grid` when dimensions change. With a raw backend, resize it and call
-`Terminal::autoresize()` for fullscreen/inline viewports. Fixed viewports require
-an explicit `Terminal::resize()` for the application-owned area. Compare sizes
-before resizing to avoid a feedback loop; a geometry whose `grid()` differs from
-the terminal's size was measured before the last resize.
+Applications choose available space and when to resize. To fill a space, call
+`terminal.backend_mut().fit(texture, available_physical_pixels)` every frame: it
+resizes the grid to the largest that fits those pixels and a texture, at the
+cell `texture.cell()` measured, and returns whether the grid changed. The cell
+is known whatever the grid's size, so this also recovers a grid that was too
+large to draw (`TextureTooLarge`), in one step. Pass physical pixels: whole
+pixels divide into whole cells exactly, which logical sizes do not at
+fractional scales.
+
+`RatatuiBackend::resize` and `fit` keep what is drawn. Ratatui adopts the new
+size, clears and repaints on its next draw; until then the grid shows the last
+frame, cut to its size, and a grid that shrinks and grows back shows it whole
+again. The wrapper's `resize_grid` also resizes Ratatui's buffers at once,
+which clears the grid. Fixed viewports require an explicit `Terminal::resize()`
+for the application-owned area, and with an inline viewport call
+`Terminal::autoresize()` after a resize before `insert_before`: both otherwise
+draw at the size Ratatui last knew.
 
 `RatatuiPlugin` (and `RatatuiSourcePlugin` for your own `RatatuiSource`) hands
 each backend its texture's measured geometry, so `Backend::window_size().pixels`
@@ -210,6 +220,11 @@ rather than mirrored across both crate roots.
 - **Cell symbols:** the Ratatui backend drops control characters and escape
   sequences (such as OSC 8 hyperlinks) from cell symbols instead of drawing
   them as text.
+
+0.10.2 adds `TerminalTexture::cell()` and `RatatuiBackend::fit`, measures the
+cell of a grid too large for a texture, and makes repeated
+`RatatuiBackend::resize` calls between draws keep the last frame consistent
+with Ratatui's.
 
 0.10.1 declares the Rust version Bevy 0.20 already required (1.97.1), marks
 `TerminalSystems` `#[non_exhaustive]`, and no longer panics when a terminal

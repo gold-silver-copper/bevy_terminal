@@ -28,7 +28,10 @@
 //!   model); a real terminal would wrap or drop it, which no grid can mirror.
 //! - N4 Resize: `TestBackend::resize` truncates its flat cell vector, which
 //!   reflows rows; a terminal keeps the overlapping rectangle and clamps the
-//!   cursor into the new grid. The reference is rebuilt that way.
+//!   cursor into the new grid. The reference is rebuilt that way, from the
+//!   frame as last written: resizes that follow one another with no write
+//!   between are one resize of that frame, so cells a resize cut off come
+//!   back when the grid grows again (Ratatui still holds them as drawn).
 //! - N5 Window pixels: `TestBackend` reports a fixed 640x480; bevy reports
 //!   zero until a renderer measured it. Only `columns_rows` is compared.
 //! - N6 Out-of-domain calls: `TestBackend` panics when drawing outside its
@@ -502,6 +505,9 @@ struct RefBackend {
     screen: Screen,
     /// Whether any symbol wider than one column was drawn (raw-mode check).
     saw_wide: bool,
+    /// The buffer and screen as last written and where the cursor was last
+    /// put, while only resizes followed.
+    written: Option<(ratatui::buffer::Buffer, Screen, Position)>,
 }
 
 impl RefBackend {
@@ -510,13 +516,17 @@ impl RefBackend {
             tb: TestBackend::new(width, height),
             screen: Screen::new(width, height),
             saw_wide: false,
+            written: None,
         }
     }
 
     /// Copies the visible grid into a fresh `TestBackend` of `width` x
     /// `height` (N4, N8).
     fn rebuild(&mut self, width: u16, height: u16) {
-        let old = self.tb.buffer().clone();
+        self.rebuild_from(self.tb.buffer().clone(), width, height);
+    }
+
+    fn rebuild_from(&mut self, old: ratatui::buffer::Buffer, width: u16, height: u16) {
         let mut tb = TestBackend::new(width, height);
         let cells: Vec<_> = (0..height.min(old.area.height))
             .flat_map(|y| (0..width.min(old.area.width)).map(move |x| (x, y)))
@@ -536,10 +546,19 @@ impl RefBackend {
         if self.screen_size() == Size::new(width, height) {
             return;
         }
-        self.rebuild(width, height);
-        self.screen = self.screen.resized(width, height);
-        // N4: a terminal clamps the cursor into the resized grid.
-        let Position { x, y } = self.tb.cursor_position();
+        let (buffer, screen, cursor) = self.written.get_or_insert_with(|| {
+            (
+                self.tb.buffer().clone(),
+                self.screen.clone(),
+                self.tb.cursor_position(),
+            )
+        });
+        let (buffer, screen) = (buffer.clone(), screen.resized(width, height));
+        let Position { x, y } = *cursor;
+        self.rebuild_from(buffer, width, height);
+        self.screen = screen;
+        // N4: a terminal clamps the cursor into the resized grid; it goes
+        // back to where it was last put as the grid allows.
         let clamped = Position::new(
             x.min(width.saturating_sub(1)),
             y.min(height.saturating_sub(1)),
@@ -549,6 +568,13 @@ impl RefBackend {
 
     fn screen_size(&self) -> Size {
         self.tb.buffer().area.as_size()
+    }
+
+    /// Notes where the cursor was put as where resizes return it to.
+    fn keep_cursor(&mut self, position: Position) {
+        if let Some((_, _, cursor)) = &mut self.written {
+            *cursor = position;
+        }
     }
 }
 
@@ -560,8 +586,14 @@ impl Backend for RefBackend {
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
         let Size { width, height } = self.screen_size();
+        let cells: Vec<_> = content.collect();
+        // A draw that writes nothing leaves the frame as it was.
+        if !cells.is_empty() {
+            self.written = None;
+        }
         // N6: TestBackend panics outside its buffer.
-        let cells: Vec<_> = content
+        let cells: Vec<_> = cells
+            .into_iter()
             .filter(|(x, y, _)| *x < width && *y < height)
             .collect();
         for (x, y, cell) in &cells {
@@ -587,13 +619,17 @@ impl Backend for RefBackend {
         // N6: a terminal clamps the cursor into the grid.
         let Position { x, y } = position.into();
         let Size { width, height } = self.screen_size();
-        self.tb.set_cursor_position(Position::new(
+        let Ok(()) = self.tb.set_cursor_position(Position::new(
             x.min(width.saturating_sub(1)),
             y.min(height.saturating_sub(1)),
-        ))
+        ));
+        // As asked for, not as this grid clamped it.
+        self.keep_cursor(Position::new(x, y));
+        Ok(())
     }
 
     fn clear(&mut self) -> Result<(), Infallible> {
+        self.written = None;
         let len = self.screen.slots.len();
         if len > 0 {
             self.screen.clear_indices(0..=len - 1);
@@ -602,6 +638,7 @@ impl Backend for RefBackend {
     }
 
     fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Infallible> {
+        self.written = None;
         if clear_type == ClearType::All {
             return self.clear();
         }
@@ -629,12 +666,18 @@ impl Backend for RefBackend {
     fn append_lines(&mut self, line_count: u16) -> Result<(), Infallible> {
         let Position { y, .. } = self.tb.cursor_position();
         let max_y = self.screen.height.saturating_sub(1);
+        // Only a scroll writes cells.
+        if line_count > max_y.saturating_sub(y) {
+            self.written = None;
+        }
         if self.screen.width == 0 {
             // TestBackend divides by the width here; move its cursor the way
             // it would on any other grid.
-            return self
+            let Ok(()) = self
                 .tb
                 .set_cursor_position(Position::new(0, y.saturating_add(line_count).min(max_y)));
+            self.keep_cursor(self.tb.cursor_position());
+            return Ok(());
         }
         let after = max_y.saturating_sub(y);
         if line_count > after {
@@ -643,6 +686,7 @@ impl Backend for RefBackend {
         let Ok(()) = self.tb.append_lines(line_count);
         let Size { width, height } = self.screen_size();
         self.rebuild(width, height);
+        self.keep_cursor(self.tb.cursor_position());
         Ok(())
     }
 

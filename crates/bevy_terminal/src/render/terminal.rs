@@ -73,12 +73,14 @@ pub enum TerminalFailure {
 ///
 /// Attached to every terminal entity by [`super::TerminalPlugin`] as soon as
 /// its [`TerminalSource`] is added, and removed with it. The component
-/// changes (for `Changed<TerminalTexture>`) only when the status does,
-/// including the geometry, never on content alone.
+/// changes (for `Changed<TerminalTexture>`) only when the status or the
+/// measured [`cell`](Self::cell) does, including the geometry, never on
+/// content alone.
 #[derive(Clone, Debug, PartialEq, Component)]
 pub struct TerminalTexture {
     pub(crate) image: Handle<Image>,
     pub(crate) status: TerminalStatus,
+    pub(crate) cell: Option<CellGeometry>,
 }
 
 impl TerminalTexture {
@@ -106,6 +108,64 @@ impl TerminalTexture {
             TerminalStatus::Ready(geometry) => Some(geometry),
             _ => None,
         }
+    }
+
+    /// Returns the cell the fonts and sizing measure to, whatever the grid's
+    /// size: also while the status is
+    /// [`TextureTooLarge`](TerminalFailure::TextureTooLarge) because of the
+    /// grid, which can then be fitted with [`CellGeometry::grid_for`]. `None`
+    /// until the fonts are measured, after any other failure, and when the
+    /// requested font or one cell alone is larger than a texture, which no
+    /// grid fits.
+    #[must_use]
+    pub const fn cell(&self) -> Option<&CellGeometry> {
+        self.cell.as_ref()
+    }
+}
+
+/// The cell a terminal is drawn with and the largest texture that can hold
+/// its grid. It depends on the fonts, the sizing and the render device, not
+/// on the grid, so it says which grid fits a space before that grid is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CellGeometry {
+    pub(super) physical_size: Vec2,
+    pub(super) raster_scale: f32,
+    pub(super) texture_limit: u32,
+}
+
+impl CellGeometry {
+    /// Physical cell size in whole pixels.
+    #[must_use]
+    pub const fn physical_size(&self) -> Vec2 {
+        self.physical_size
+    }
+
+    /// Physical pixels per logical pixel.
+    #[must_use]
+    pub const fn raster_scale(&self) -> f32 {
+        self.raster_scale
+    }
+
+    /// Returns the largest grid of these cells that fits `physical_size`
+    /// pixels and a texture (at least 1×1, as [`grid_for`] bounds it, which
+    /// is what a size that is negative or not a number gives). Whole pixels
+    /// divide into whole cells exactly, which logical sizes do not at
+    /// fractional scales: scale a logical size by [`Self::raster_scale`] only
+    /// when no physical one is at hand.
+    #[must_use]
+    pub fn grid_for(&self, physical_size: Vec2) -> GridSize {
+        // What is not a number stays so, to fit one cell, where `min` alone
+        // would make it the limit.
+        let limit = self.texture_limit as f32;
+        let drawable = |pixels: f32| {
+            if pixels.is_nan() {
+                pixels
+            } else {
+                pixels.min(limit)
+            }
+        };
+        let size = Vec2::new(drawable(physical_size.x), drawable(physical_size.y));
+        grid_for(size, self.physical_size)
     }
 }
 

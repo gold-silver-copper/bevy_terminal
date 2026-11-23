@@ -1189,6 +1189,62 @@ fn invalid_and_oversized_geometry_is_observable_and_can_recover() {
 }
 
 #[test]
+fn a_grid_too_large_is_still_measured_and_fits_in_one_step() {
+    let mut app = text_app();
+    // A thousand columns exceed any texture before a font is measured.
+    let entity = app.world_mut().spawn(TerminalGrid::new((1000, 10))).id();
+    for _ in 0..3 {
+        app.update();
+    }
+    let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+    assert_eq!(
+        texture.status,
+        TerminalStatus::Failed(TerminalFailure::TextureTooLarge)
+    );
+    let cell = *texture.cell().expect("the cell is measured all the same");
+    // As many whole cells as a texture holds, each way.
+    let grid = cell.grid_for(Vec2::splat(1e6));
+    let most = (Vec2::splat(8192.0) / cell.physical_size()).floor();
+    assert_eq!(grid, GridSize::new(most.x as u16, most.y as u16));
+    assert_eq!(cell.grid_for(Vec2::INFINITY), grid);
+    assert!(grid.width < 1000 && grid.height > 100, "{grid:?}");
+    app.world_mut()
+        .get_mut::<TerminalGrid>(entity)
+        .unwrap()
+        .resize(grid);
+    app.update();
+    let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+    let geometry = texture.measured().expect("the fitted grid is drawn");
+    assert_eq!(geometry.grid(), grid);
+    assert_eq!(geometry.physical_cell_size(), cell.physical_size());
+    assert!(geometry.size().max_element() <= 8192);
+    // A space smaller than a texture is filled as far as it reaches.
+    let small = cell.physical_size() * Vec2::new(80.5, 1000.5);
+    let fitted = cell.grid_for(small);
+    assert_eq!(fitted.width, 80);
+    assert_eq!(fitted.height, most.y.min(1000.0) as u16);
+    assert_eq!(cell.grid_for(Vec2::new(-5.0, 0.0)), GridSize::new(1, 1));
+    assert_eq!(texture.cell(), Some(&cell));
+    // A size that is not a number fits one cell, not the largest grid.
+    assert_eq!(cell.grid_for(Vec2::NAN), GridSize::new(1, 1));
+    // A cell larger than a texture fits no grid, so none is offered.
+    app.world_mut()
+        .get_mut::<TerminalRenderConfig>(entity)
+        .unwrap()
+        .sizing = TerminalSizing::FromFont {
+        font_size: 20.0,
+        line_height: 1000.0,
+    };
+    app.update();
+    let texture = app.world().get::<TerminalTexture>(entity).unwrap();
+    assert_eq!(
+        texture.status,
+        TerminalStatus::Failed(TerminalFailure::TextureTooLarge)
+    );
+    assert_eq!(texture.cell(), None);
+}
+
+#[test]
 fn a_terminal_too_large_only_after_refining_its_cell_goes_idle() {
     let mut app = text_app();
     // 387 rows fit the requested 20 px cell, but not the cell refined to fit

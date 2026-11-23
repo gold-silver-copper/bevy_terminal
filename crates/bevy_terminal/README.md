@@ -93,6 +93,15 @@ until the next one; compare `geometry.grid()` with the grid's size to tell.
 `render::grid_for(available_size, geometry.cell_size())` returns a bounded grid
 fitting a logical rectangle.
 
+`texture.cell()` is the measured cell alone: its physical size, the raster
+scale and the device's texture limit. It depends on the fonts and the sizing,
+not on the grid, so it is also there while the grid is too large
+(`Failed(TextureTooLarge)`); a font or cell that is itself larger than a
+texture has none. A change of cell also fires `Changed<TerminalTexture>`. `cell.grid_for(available_physical_pixels)` is the
+largest grid that fits both those pixels and a texture: resize the grid to it
+to fill a space, or to bring a grid that is too large back to one that can be
+drawn.
+
 Geometry is created only together with the image it describes, so the two
 cannot disagree. Readiness is persistent, so late consumers need no event
 history. Retain the last useful application layout while new geometry is

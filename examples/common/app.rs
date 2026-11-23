@@ -4,7 +4,7 @@
 
 use bevy::{prelude::*, ui::UiSystems, window::PrimaryWindow};
 use bevy_terminal_ratatui::prelude::{
-    RatatuiTerminal, TerminalRenderConfig, TerminalSystems, TerminalTexture, grid_for,
+    RatatuiTerminal, TerminalRenderConfig, TerminalSystems, TerminalTexture,
 };
 
 /// A terminal presented through a Bevy UI image node positioned absolutely at
@@ -33,26 +33,15 @@ pub fn headless_terminal(terminal: impl Bundle, config: TerminalRenderConfig) ->
     (terminal, config)
 }
 
-/// Fits the example's grid to logical space at the measured cell size, once
-/// the geometry describes the current grid. Returns whether the grid changed,
-/// so callers can redraw only when needed.
+/// Fits the example's grid to logical space at the measured cell size.
+/// Returns whether the grid changed, so callers can redraw only when needed.
 pub fn fit_grid(
     terminal: &mut RatatuiTerminal,
     texture: &TerminalTexture,
     available: Vec2,
 ) -> bool {
-    let Some(geometry) = texture.measured() else {
-        return false;
-    };
-    if geometry.grid() != terminal.grid().size() {
-        return false;
-    }
-    let grid = grid_for(available, geometry.cell_size());
-    if terminal.grid().size() == grid {
-        return false;
-    }
-    terminal.resize_grid(grid.width, grid.height);
-    true
+    let scale = texture.cell().map_or(1.0, |cell| cell.raster_scale());
+    terminal.backend_mut().fit(texture, available * scale)
 }
 
 /// Fits `terminal`'s grid to the primary window (minus `margin` on every
@@ -68,11 +57,19 @@ pub fn fit_grid_to_window(
     let (Ok(texture), Ok(window)) = (textures.single(), windows.single()) else {
         return false;
     };
-    let available = window.resolution.size() - Vec2::splat(margin * 2.0);
+    let Some(cell) = texture.cell() else {
+        return false;
+    };
+    // The window in the pixels the terminal is rasterized in, which are its
+    // own physical pixels while the terminal follows its scale: whole pixels
+    // divide into whole cells exactly.
+    let scale = cell.raster_scale();
+    let available = window.resolution.physical_size().as_vec2() * (scale / window.scale_factor())
+        - Vec2::splat(margin * 2.0 * scale);
     if available.x <= 0.0 || available.y <= 0.0 {
         return false;
     }
-    fit_grid(terminal, texture, available)
+    terminal.backend_mut().fit(texture, available)
 }
 
 /// Installs application-owned UI layout without changing the requested raster scale.

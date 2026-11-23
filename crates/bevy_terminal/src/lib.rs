@@ -34,10 +34,10 @@ pub mod prelude {
     pub use crate::{
         grid::TerminalGrid,
         render::{
-            BlinkConfig, CursorConfig, CursorStyle, FontFaces, RasterConfig, TerminalFailure,
-            TerminalGeometry, TerminalPlugin, TerminalRenderConfig, TerminalSizing, TerminalSource,
-            TerminalSourcePlugin, TerminalStats, TerminalStatus, TerminalSystems, TerminalTexture,
-            TerminalTheme, grid_for,
+            BlinkConfig, CellGeometry, CursorConfig, CursorStyle, FontFaces, RasterConfig,
+            TerminalFailure, TerminalGeometry, TerminalPlugin, TerminalRenderConfig,
+            TerminalSizing, TerminalSource, TerminalSourcePlugin, TerminalStats, TerminalStatus,
+            TerminalSystems, TerminalTexture, TerminalTheme, grid_for,
         },
         scene::{
             CellOccupancy, CellPosition, GridSize, StyleFlags, TerminalCell, TerminalColor,
