@@ -4,7 +4,7 @@ use super::{
     shaping::AtlasUpload,
 };
 use bevy::{
-    asset::{load_internal_asset, uuid_handle},
+    asset::uuid_handle,
     platform::collections::{HashMap, hash_map::Entry},
     prelude::*,
     render::{
@@ -39,7 +39,11 @@ const BATCH_SHADER: Handle<Shader> = uuid_handle!("3db953c8-0f3f-4124-9a1c-6aa74
 /// internal ones. Loading it through the asset server would take frames, and
 /// the pipelines (so a new terminal's first scenes) would wait for it.
 pub(super) fn load_shader(app: &mut App) {
-    load_internal_asset!(app, BATCH_SHADER, "batch.wgsl", Shader::from_wgsl);
+    if let Some(mut shaders) = app.world_mut().get_resource_mut::<Assets<Shader>>() {
+        let shader = Shader::from_wgsl(include_str!("batch.wgsl"), "bevy_terminal/batch.wgsl");
+        // A UUID handle's asset can always be inserted.
+        let _ = shaders.insert(BATCH_SHADER.id(), shader);
+    }
 }
 
 pub(super) fn extract_batch_scenes(

@@ -121,6 +121,9 @@ fn adding_glyphs_never_modifies_terminal_owned_images() {
         .unwrap()
         .image
         .id();
+    // The first scene sized the placeholder image; forget that.
+    app.update();
+    app.world_mut().resource_mut::<Modified>().0.clear();
     // Every step shows 80 letters never seen before.
     let letters = repertoire();
     for (step, chunk) in letters.chunks(80).take(6).enumerate() {
@@ -234,6 +237,32 @@ fn queued_atlas_uploads_never_exceed_one_atlas() {
         assert!(queued <= limit, "step {step}: {queued} texels queued");
     }
     assert!(restarts > 1, "the scenario must overflow the atlas");
+}
+
+/// A screen whose glyphs overflow the largest atlas draws the rest from
+/// Bevy's atlases; the overflow is not remembered, so a later change that
+/// brings no new glyph shapes nothing.
+#[test]
+fn a_screen_larger_than_the_atlas_is_not_reshaped_on_every_change() {
+    let (mut app, entities) = app(1, 200.0);
+    let entity = entities[0];
+    fill_with(&mut app, entity, repertoire().into_iter().cycle());
+    app.update();
+    assert!(shape_misses(&app, entity) > 0);
+    let scene = queued(app.world(), entity).unwrap();
+    assert_eq!(scene.atlas_size, GLYPH_ATLAS_SIZE);
+    assert!(
+        scene
+            .batches
+            .iter()
+            .any(|batch| batch.texture != scene.atlas),
+        "the scenario must overflow the largest atlas"
+    );
+    let mut grid = app.world_mut().get_mut::<TerminalGrid>(entity).unwrap();
+    grid.set_cursor_position((3, 3));
+    app.update();
+    assert!(queued(app.world(), entity).is_some());
+    assert_eq!(shape_misses(&app, entity), 0);
 }
 
 #[test]

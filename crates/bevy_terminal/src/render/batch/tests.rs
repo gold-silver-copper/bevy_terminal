@@ -1968,8 +1968,7 @@ fn cached_ink(app: &App, entity: Entity, text: &str, columns: u16) -> Rect {
         let rect = glyph.uv * atlas_size as f32;
         for y in 0..glyph.size.y as u32 {
             for x in 0..glyph.size.x as u32 {
-                let offset =
-                    ((rect.y as u32 + y) * atlas_size + rect.x as u32 + x) as usize * 4;
+                let offset = ((rect.y as u32 + y) * atlas_size + rect.x as u32 + x) as usize * 4;
                 if data[offset + 3] == 0 {
                     continue;
                 }
@@ -2598,4 +2597,79 @@ fn font_source_list_waits_for_all_handles_and_resolves_fallbacks() {
         emoji_glyphs.iter().any(|glyph| !glyph.alpha_mask),
         "expected color emoji glyph (`alpha_mask == false`) from FontSource::List"
     );
+}
+
+/// The render world is set up when the app finishes building, so a render
+/// plugin added after the terminal's is found.
+#[test]
+fn the_render_world_is_set_up_whatever_the_plugin_order() {
+    let mut app = App::new();
+    app.init_resource::<Assets<Image>>()
+        .init_resource::<Assets<bevy::shader::Shader>>()
+        .add_plugins(TerminalPlugin)
+        .insert_sub_app(RenderApp, bevy::app::SubApp::new());
+    app.finish();
+    let render = app.sub_app(RenderApp).world();
+    assert!(render.contains_resource::<PendingBatchScenes>());
+    assert_eq!(
+        app.world().resource::<Assets<bevy::shader::Shader>>().len(),
+        1
+    );
+}
+
+/// A font swap in the update that also makes the terminal too large must not
+/// leave the old font's metrics and glyphs in use once it fits again.
+#[test]
+fn a_font_swapped_while_too_large_is_shaped_once_the_terminal_fits() {
+    let mut app = text_app();
+    let mut load = |path: &str| {
+        let bytes = std::fs::read(format!(
+            "{}/assets/fonts/{path}",
+            env!("CARGO_MANIFEST_DIR")
+        ));
+        app.world_mut()
+            .resource_mut::<Assets<Font>>()
+            .add(Font::from_bytes(bytes.unwrap()))
+    };
+    let first = load("jetbrains-mono/JetBrainsMono-Regular.ttf");
+    let second = load("dejavu-sans-mono/DejaVuSansMono.ttf");
+    let mut terminal = TerminalGrid::new((4, 2));
+    write_text(&mut terminal, "test");
+    let config = TerminalRenderConfig {
+        font: super::super::FontFaces::regular(first),
+        sizing: TerminalSizing::Fixed {
+            cell_size: Vec2::new(12.0, 24.0),
+            font_size: 20.0,
+        },
+        ..default()
+    };
+    let entity = app.world_mut().spawn((terminal, config)).id();
+    for _ in 0..3 {
+        app.update();
+    }
+    let status = |app: &App| {
+        app.world()
+            .get::<TerminalTexture>(entity)
+            .unwrap()
+            .status
+            .clone()
+    };
+    assert!(matches!(status(&app), TerminalStatus::Ready(_)));
+
+    app.world_mut()
+        .get_mut::<TerminalRenderConfig>(entity)
+        .unwrap()
+        .font = super::super::FontFaces::regular(second);
+    grid(&mut app, entity).resize((1000, 2));
+    app.update();
+    assert_eq!(
+        status(&app),
+        TerminalStatus::Failed(TerminalFailure::TextureTooLarge)
+    );
+
+    grid(&mut app, entity).resize((4, 2));
+    app.update();
+    assert!(matches!(status(&app), TerminalStatus::Ready(_)));
+    let stats = app.world().get::<TerminalStats>(entity).unwrap();
+    assert_eq!(stats.shape_misses, 3, "`t`, `e` and `s` are shaped anew");
 }

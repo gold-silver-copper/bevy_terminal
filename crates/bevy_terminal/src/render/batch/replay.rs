@@ -714,3 +714,42 @@ fn unextracted_scenes_drop_entries_from_before_an_atlas_clear() {
     replay.step();
     replay.assert_matches_full("after the clear");
 }
+
+/// The atlas starts small and grows with the glyphs shown: the grown atlas
+/// is a new texture that receives every entry.
+#[test]
+fn a_grown_atlas_receives_every_entry() {
+    let mut replay = Replay::new("jetbrains-mono", (16, 4), TerminalSizing::font(128.0), 1.0);
+    replay.write(0, "small", TerminalStyle::new());
+    replay.assert_matches_full("before growing");
+    assert_eq!(replay.atlas.size, GLYPH_ATLAS_SIZE / 4);
+    replay.write(1, "ABCDEFGHIJKLMNOP", TerminalStyle::new());
+    replay.write(2, "QRSTUVWXYZabcdef", TerminalStyle::new());
+    replay.write(3, "ghijklmnopqrstuv", TerminalStyle::new());
+    replay.assert_matches_full("after growing");
+    assert!(replay.atlas.size > GLYPH_ATLAS_SIZE / 4);
+    let scene_atlas = replay
+        .app
+        .world()
+        .get::<BatchMainState>(replay.entity)
+        .unwrap()
+        .glyph_atlas
+        .size;
+    assert_eq!(replay.atlas.size, scene_atlas);
+}
+
+/// Decorations are not tracked beyond their row, so they are kept inside it
+/// even where a row is a single pixel tall.
+#[test]
+fn decorations_stay_inside_their_row() {
+    let sizing = TerminalSizing::Fixed {
+        cell_size: Vec2::new(8.0, 1.0),
+        font_size: 1.0,
+    };
+    let mut replay = Replay::new("jetbrains-mono", (4, 3), sizing, 1.0);
+    let lines = StyleFlags::CROSSED_OUT | StyleFlags::UNDERLINED;
+    replay.write(0, "    ", TerminalStyle::new().with(lines));
+    replay.assert_matches_full("decorated");
+    replay.write(0, "    ", TerminalStyle::new());
+    replay.assert_matches_full("plain again");
+}
