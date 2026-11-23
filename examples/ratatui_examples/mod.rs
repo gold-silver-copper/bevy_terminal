@@ -5,7 +5,7 @@
 //! with Bevy input, while the exporter creates canonical state and fixed local
 //! data so every scene can still be compared reproducibly.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared by examples that each use part of it")]
 
 mod apps;
 mod interaction;
@@ -18,7 +18,7 @@ use ratatui::Frame;
 pub const COLUMNS: u16 = 100;
 pub const ROWS: u16 = 62;
 
-#[allow(unused_imports)]
+#[allow(unused_imports, reason = "shared by examples that each use part of it")]
 pub use interaction::{ExampleKey, ExampleState, KeyModifiers};
 
 #[derive(Clone, Copy)]

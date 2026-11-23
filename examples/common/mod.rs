@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 pub mod app;
-#[allow(dead_code)]
+#[allow(dead_code, reason = "shared by examples that each use part of it")]
 pub mod export;
 pub mod fonts;
 
@@ -15,7 +15,7 @@ pub const COLUMNS: u16 = 72;
 pub const ROWS: u16 = 22;
 
 /// A Ratatui terminal showing the representative scene at the default grid.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "shared by examples that each use part of it")]
 pub fn demo_terminal() -> RatatuiTerminal {
     let mut terminal = RatatuiTerminal::new(COLUMNS, ROWS);
     terminal.draw(draw_demo_frame);
@@ -23,13 +23,13 @@ pub fn demo_terminal() -> RatatuiTerminal {
 }
 
 /// Draws the representative scene into `terminal` at its current size.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "shared by examples that each use part of it")]
 pub fn draw_demo(terminal: &mut RatatuiTerminal) {
     terminal.draw(draw_demo_frame);
 }
 
 /// Draws the representative scene into one Ratatui frame.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "shared by examples that each use part of it")]
 pub fn draw_demo_frame(frame: &mut ratatui::Frame<'_>) {
     {
         {

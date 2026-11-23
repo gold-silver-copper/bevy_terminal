@@ -1,6 +1,6 @@
 //! Shared spawning helpers for the executable examples.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared by examples that each use part of it")]
 
 use bevy::{prelude::*, ui::UiSystems, window::PrimaryWindow};
 use bevy_terminal_ratatui::prelude::{

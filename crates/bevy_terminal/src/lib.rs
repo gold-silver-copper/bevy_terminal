@@ -10,7 +10,12 @@
         clippy::unreachable,
         clippy::string_slice,
         clippy::print_stdout,
-        clippy::print_stderr
+        clippy::print_stderr,
+        clippy::panic_in_result_fn,
+        clippy::fallible_impl_from,
+        clippy::let_underscore_must_use,
+        clippy::exit,
+        clippy::mem_forget
     )
 )]
 

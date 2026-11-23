@@ -3,7 +3,7 @@
 //! Everything here writes cells directly into a `TerminalGrid`; no terminal UI
 //! library is involved.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "shared by examples that each use part of it")]
 
 use bevy::prelude::*;
 use bevy_terminal::prelude::*;

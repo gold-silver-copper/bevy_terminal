@@ -275,7 +275,7 @@ impl FpsWidget {
     /// at least 2 frames since the last calculation. This avoids noise in the
     /// fps calculation when rendering on slow machines that can't render at
     /// least 2 frames per second.
-    #[expect(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "screen coordinates are small")]
     fn calculate_fps(&mut self) {
         self.frame_count += 1;
         let elapsed = self.last_instant.elapsed();
@@ -315,7 +315,7 @@ impl ColorsWidget {
     ///
     /// This is called once per frame to setup the colors to render. It caches
     /// the colors so that they don't need to be recalculated every frame.
-    #[expect(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "screen coordinates are small")]
     fn setup_colors(&mut self, size: Rect) {
         let Rect { width, height, .. } = size;
         // double the height because each screen row has two rows of half block pixels

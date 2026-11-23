@@ -23,7 +23,7 @@
 //! `j`/`k` (one line), `PageUp`/`PageDown` (one page), `Home`/`End`, or the
 //! mouse wheel.
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "shared by examples that each use part of it")]
 mod common;
 
 use bevy::{
