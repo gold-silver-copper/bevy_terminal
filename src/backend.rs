@@ -26,7 +26,8 @@ pub trait RatatuiSource: TerminalSource + Component<Mutability = Mutable> {
 /// [`TerminalPlugin`](bevy_terminal::prelude::TerminalPlugin) if it is
 /// missing, and hands each terminal's measured geometry to its backend
 /// inside [`TerminalSystems::Sync`], so a system ordered after `Sync` reads
-/// this frame's.
+/// this frame's. It may be added more than once, as plugins that each need
+/// it do.
 pub struct RatatuiSourcePlugin<S>(PhantomData<fn() -> S>);
 
 impl<S> Default for RatatuiSourcePlugin<S> {
@@ -52,7 +53,14 @@ impl<S> fmt::Debug for RatatuiSourcePlugin<S> {
 }
 
 impl<S: RatatuiSource> Plugin for RatatuiSourcePlugin<S> {
+    fn is_unique(&self) -> bool {
+        false
+    }
+
     fn build(&self, app: &mut App) {
+        if app.is_plugin_added::<Self>() {
+            return;
+        }
         app.add_plugins(TerminalSourcePlugin::<S>::default())
             // Inside `Sync`, so that a system ordered after it reads this
             // frame's `window_size`.

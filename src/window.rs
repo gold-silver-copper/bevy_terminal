@@ -3,21 +3,25 @@
 use std::{fmt, marker::PhantomData};
 
 use bevy_terminal::bevy::{
+    camera::RenderTarget,
     prelude::*,
     ui::{DefaultUiCamera, UiSystems},
-    window::PrimaryWindow,
+    window::{PrimaryWindow, WindowRef},
 };
 use bevy_terminal::prelude::{TerminalRenderConfig, TerminalSystems, TerminalTexture};
 
 use crate::{RatatuiSource, RatatuiSourcePlugin};
 
 /// Shows the terminal with the source `S` filling the primary window, adding
-/// [`RatatuiSourcePlugin<S>`] if it is missing.
+/// [`RatatuiSourcePlugin<S>`]. Add it before the terminal is spawned, and for
+/// one source type: two would each fill the window.
 ///
 /// Every frame the grid is resized to the largest that fits the window, the
 /// terminal is rasterized at the window's scale factor times [`UiScale`], and
 /// a UI node centered in the window is sized to the texture. A 2D camera is
-/// spawned unless the primary window already has an active one.
+/// spawned unless the primary window already has an active one, which should
+/// then draw to the whole window: a smaller viewport clips the terminal. The
+/// camera is chosen once, on the first frame.
 ///
 /// The plugin owns what an application would otherwise set: the grid's size
 /// and [`RasterConfig::scale`](bevy_terminal::prelude::RasterConfig::scale),
@@ -25,13 +29,14 @@ use crate::{RatatuiSource, RatatuiSourcePlugin};
 /// [`TerminalRenderConfig`] is the application's.
 ///
 /// Only the backend's grid is resized. Ratatui adopts the new size, and
-/// repaints, on its next draw; until then the last frame stays on screen
-/// through any number of resizes, so an application may draw only when its
-/// state changes. Draw in `Update` to draw at the size fitted this frame.
+/// repaints, on its next draw (unless its viewport is fixed, which keeps its
+/// area); until then the last frame stays on screen through any number of
+/// resizes, so an application may draw only when its state changes. Draw in
+/// `Update` to draw at the size fitted this frame.
 ///
-/// There must be exactly one entity with `S`: with none, or several, the
-/// plugin does nothing. Lay several terminals out yourself, as the
-/// `multiple_terminals` example does.
+/// There must be exactly one entity with `S`: with none, or several, nothing
+/// is fitted and the window shows no terminal. Lay several terminals out
+/// yourself, as the `multiple_terminals` example does.
 pub struct RatatuiWindowPlugin<S>(PhantomData<fn() -> S>);
 
 impl<S> Default for RatatuiWindowPlugin<S> {
@@ -58,38 +63,38 @@ impl<S> fmt::Debug for RatatuiWindowPlugin<S> {
 
 /// When [`RatatuiWindowPlugin`] works, for ordering other systems against it.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum RatatuiWindowSystems {
     /// In `PreUpdate`: the grid is resized to the window and the raster scale
     /// set. Before any `Update` system draws, so that a resize never clears a
     /// frame already drawn.
     Fit,
-    /// In `PostUpdate`, after [`TerminalSystems::Sync`] and before UI layout:
-    /// the UI node is sized to the texture measured this frame.
+    /// In `PostUpdate`, after [`TerminalSystems::Sync`] and before Bevy UI
+    /// measures and lays out its nodes: the UI node is sized to the texture
+    /// measured this frame.
     Present,
 }
 
 impl<S: RatatuiSource> Plugin for RatatuiWindowPlugin<S> {
     fn build(&self, app: &mut App) {
-        if !app.is_plugin_added::<RatatuiSourcePlugin<S>>() {
-            app.add_plugins(RatatuiSourcePlugin::<S>::default());
-        }
-        app.configure_sets(
-            PostUpdate,
-            RatatuiWindowSystems::Present
-                .after(TerminalSystems::Sync)
-                .before(UiSystems::Layout),
-        )
-        // The first `PreUpdate` is after every startup schedule, so a camera
-        // spawned in any of them is seen.
-        .add_systems(PreUpdate, setup::<S>.run_if(run_once))
-        .add_systems(
-            PreUpdate,
-            (follow_window_scale::<S>, fit_to_window::<S>).in_set(RatatuiWindowSystems::Fit),
-        )
-        .add_systems(
-            PostUpdate,
-            present::<S>.in_set(RatatuiWindowSystems::Present),
-        );
+        app.add_plugins(RatatuiSourcePlugin::<S>::default())
+            .configure_sets(
+                PostUpdate,
+                RatatuiWindowSystems::Present
+                    .after(TerminalSystems::Sync)
+                    .before(UiSystems::Content),
+            )
+            // The first `PreUpdate` is after every startup schedule, so a camera
+            // spawned in any of them is seen.
+            .add_systems(PreUpdate, setup::<S>.run_if(run_once))
+            .add_systems(
+                PreUpdate,
+                (follow_window_scale::<S>, fit_to_window::<S>).in_set(RatatuiWindowSystems::Fit),
+            )
+            .add_systems(
+                PostUpdate,
+                present::<S>.in_set(RatatuiWindowSystems::Present),
+            );
     }
 }
 
@@ -98,14 +103,19 @@ impl<S: RatatuiSource> Plugin for RatatuiWindowPlugin<S> {
 struct TerminalView<S>(PhantomData<fn() -> S>);
 
 /// Spawns the UI node showing the terminal, and a 2D camera unless the
-/// application spawned an active one that Bevy UI draws to by default: one on
-/// the primary window, or marked `IsDefaultUiCamera`. A camera on another
-/// window or an image, or an inactive one, would show nothing; the node is
-/// then shown by the camera spawned here, whichever Bevy UI would pick.
+/// primary window has an active one.
+///
+/// Bevy UI draws a node to its default camera: the one marked
+/// `IsDefaultUiCamera`, or the highest-order one on the primary window. Where
+/// that is an active camera on the primary window the node is left to it.
+/// Where it is not (it is inactive, or marked on another window or an image)
+/// the node is bound to another active camera on the primary window, or to
+/// the one spawned here.
 fn setup<S: RatatuiSource>(
     mut commands: Commands,
     ui_camera: DefaultUiCamera,
-    cameras: Query<&Camera>,
+    cameras: Query<(Entity, &Camera, &RenderTarget)>,
+    primary_window: Query<(), With<PrimaryWindow>>,
 ) {
     let mut view = commands.spawn((
         TerminalView::<S>(PhantomData),
@@ -116,11 +126,23 @@ fn setup<S: RatatuiSource>(
             ..default()
         },
     ));
-    let usable = ui_camera.get().and_then(|camera| cameras.get(camera).ok());
-    if !usable.is_some_and(|camera| camera.is_active) {
-        let camera = view.commands().spawn(Camera2d).id();
-        view.insert(UiTargetCamera(camera));
+    let usable = cameras.iter().filter(|(_, camera, target)| {
+        camera.is_active
+            && match target {
+                RenderTarget::Window(WindowRef::Primary) => true,
+                RenderTarget::Window(WindowRef::Entity(window)) => primary_window.contains(*window),
+                _ => false,
+            }
+    });
+    let default = ui_camera.get();
+    if usable.clone().any(|(camera, ..)| Some(camera) == default) {
+        return;
     }
+    let camera = match usable.max_by_key(|(camera, settings, _)| (settings.order, *camera)) {
+        Some((camera, ..)) => camera,
+        None => view.commands().spawn(Camera2d).id(),
+    };
+    view.insert(UiTargetCamera(camera));
 }
 
 /// The scale Bevy UI applies to this window: one logical UI pixel is this
@@ -193,8 +215,10 @@ fn present<S: RatatuiSource>(
                 let size = geometry.logical_size();
                 (px(size.x), px(size.y), texture.image().clone())
             }
-            // Not drawn yet, or failed: keep what is shown.
-            None => return,
+            // Not drawn yet, or failed: keep what is shown of this terminal,
+            // and nothing of one it replaced.
+            None if view.1.image == *texture.image() => return,
+            None => (Val::Auto, Val::Auto, ImageNode::default().image),
         },
         None => (Val::Auto, Val::Auto, ImageNode::default().image),
     };

@@ -44,9 +44,10 @@ scrolling-regions = ["ratatui/scrolling-regions"]
 timings = ["bevy_terminal/timings"]
 
 # `RatatuiWindowPlugin`: one terminal filling the primary window through Bevy
-# UI. Enables the Bevy features that takes; the application still chooses a
-# window backend (`bevy/bevy_winit` with `bevy/x11` or `bevy/wayland`).
-window = ["bevy/bevy_window", "bevy/bevy_ui", "bevy/bevy_ui_render", "bevy/bevy_core_pipeline"]
+# UI. Enables Bevy UI and its rendering, which bring the window and camera
+# types; the application still chooses a window backend (`bevy/bevy_winit`
+# with `bevy/x11` or `bevy/wayland`).
+window = ["bevy/bevy_ui", "bevy/bevy_ui_render"]
 
 [dependencies]
 bevy_terminal = { version = "0.11.1", path = "crates/bevy_terminal", default-features = false }

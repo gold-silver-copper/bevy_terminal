@@ -92,7 +92,7 @@ implement `TerminalSource` for it (its grid is `self.backend().grid()`) and add
 
 With the `window` feature, `RatatuiWindowPlugin` shows one terminal filling the
 primary window: it spawns the UI node (and a camera, unless the window has an
-active one), keeps the grid the largest that fits the window, rasterizes at the
+active one, which it then uses), keeps the grid the largest that fits the window, rasterizes at the
 window's scale factor times `UiScale`, and sizes the node to the texture.
 
 ```rust,ignore
@@ -117,9 +117,10 @@ every frame; the rest of `TerminalRenderConfig` is yours. Only the backend's
 grid is resized: Ratatui adopts the new size, and repaints, on its next draw,
 and the last frame stays on screen until then. It fits in `PreUpdate`
 (`RatatuiWindowSystems::Fit`), so a draw in `Update` is at this frame's size,
-and sizes the node in `PostUpdate` (`RatatuiWindowSystems::Present`). There
-must be exactly one entity with the source; the sections below are what it
-does, for layouts it does not cover (margins, several terminals, world space).
+and sizes the node in `PostUpdate` (`RatatuiWindowSystems::Present`). Add it
+before spawning the terminal. There must be exactly one entity with the source
+(otherwise the window shows no terminal); the sections below are what it does,
+for layouts it does not cover (margins, several terminals, world space).
 
 ## Output and resizing
 
@@ -223,8 +224,8 @@ update, which leaves the terminal `Loading`.
   explicit assets and avoiding host font discovery.
 - `timings` (opt-in): measure `TerminalStats::scene_ns`, which is zero otherwise.
 - `window` (adapter only, opt-in): `RatatuiWindowPlugin`, one terminal filling
-  the primary window. Enables Bevy's `bevy_window`, `bevy_ui`, `bevy_ui_render`
-  and `bevy_core_pipeline`; the application still chooses a window backend.
+  the primary window. Enables Bevy's `bevy_ui` and `bevy_ui_render`; the
+  application still chooses a window backend.
 - `scrolling-regions` (adapter only, opt-in): enable Ratatui's extended backend
   trait. Its methods become required of every backend in the build, so enable
   this whenever anything else enables `ratatui/scrolling-regions`, and leave it

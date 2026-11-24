@@ -253,18 +253,28 @@ fn a_fractional_scale_fills_every_column_that_fits() {
     assert_eq!(f32::from(geometry.grid().width), columns);
 }
 
+/// Whether the terminal was changed since the last frame.
+#[derive(Resource, Default)]
+struct Changed(bool);
+
 #[test]
 fn a_frame_drawn_once_survives_fitting_the_window() {
     let mut app = app();
     app.add_systems(
         Update,
-        |mut terminal: Single<&mut RatatuiTerminal>, mut drawn: Local<bool>| {
+        |mut terminal: Single<&mut RatatuiTerminal>,
+         mut drawn: Local<bool>,
+         mut changed: ResMut<Changed>| {
+            changed.0 = terminal.is_changed();
             if !std::mem::replace(&mut *drawn, true) {
                 terminal.draw(|frame| frame.render_widget("once", frame.area()));
             }
         },
-    );
+    )
+    .init_resource::<Changed>();
     frames(&mut app, 6);
+    let idle = !app.world().resource::<Changed>().0;
+    assert!(idle, "a fitted terminal is left alone, not drawn again");
     assert_ne!(
         ready(&mut app).grid(),
         GridSize::new(80, 24),
@@ -281,11 +291,14 @@ fn a_window_dragged_narrower_and_back_keeps_its_frame() {
     let whole = draw(&mut app, &line);
     assert!(!whole.ends_with(' '), "the line fills the row: {whole:?}");
     // Two resizes with no draw between them, as an application that draws on change sees.
+    let wide = ready(&mut app).grid().width;
     for width in [200, 640] {
         window(&mut app, |window| {
             window.resolution.set_physical_resolution(width, 400);
         });
         frames(&mut app, 1);
+        let narrowed = ready(&mut app).grid().width < wide;
+        assert_eq!(narrowed, width == 200, "the grid follows each resize");
     }
     assert_eq!(
         first_row(&mut app),
@@ -345,18 +358,51 @@ fn an_inactive_camera_does_not_stand_in_for_one_that_draws() {
 }
 
 #[test]
+fn a_default_ui_camera_on_another_window_does_not_take_the_terminal() {
+    let mut app = app();
+    let other = app.world_mut().spawn(Window::default()).id();
+    app.world_mut().spawn((
+        Camera2d,
+        IsDefaultUiCamera,
+        RenderTarget::Window(WindowRef::Entity(other)),
+    ));
+    let primary = app.world_mut().spawn(Camera2d).id();
+    frames(&mut app, 2);
+    assert_eq!(cameras(&mut app).len(), 2, "none is spawned");
+    assert_eq!(view(&mut app).2, Some(primary));
+}
+
+#[test]
+fn an_inactive_camera_does_not_hide_an_active_one_below_it() {
+    let mut app = app();
+    let inactive = Camera {
+        order: 1,
+        is_active: false,
+        ..default()
+    };
+    app.world_mut().spawn((Camera2d, inactive));
+    let active = app.world_mut().spawn(Camera2d).id();
+    frames(&mut app, 2);
+    assert_eq!(cameras(&mut app).len(), 2, "none is spawned");
+    assert_eq!(view(&mut app).2, Some(active));
+}
+
+fn terminal(app: &mut App) -> Entity {
+    app.world_mut()
+        .query_filtered::<Entity, With<RatatuiTerminal>>()
+        .single(app.world())
+        .expect("one terminal")
+}
+
+#[test]
 fn a_removed_terminal_is_no_longer_shown_and_a_new_one_is() {
     let mut app = app();
     frames(&mut app, 3);
     let first = image(&mut app);
     assert_eq!(view(&mut app).1, first);
 
-    let terminal = app
-        .world_mut()
-        .query_filtered::<Entity, With<RatatuiTerminal>>()
-        .single(app.world())
-        .expect("one terminal");
-    app.world_mut().despawn(terminal);
+    let removed = terminal(&mut app);
+    app.world_mut().despawn(removed);
     frames(&mut app, 2);
     let (node, shown, _) = view(&mut app);
     assert_eq!((node.width, shown), (Val::Auto, ImageNode::default().image));
@@ -364,21 +410,73 @@ fn a_removed_terminal_is_no_longer_shown_and_a_new_one_is() {
     app.world_mut().spawn(RatatuiTerminal::new(80, 24));
     frames(&mut app, 3);
     ready(&mut app);
-    assert_eq!(view(&mut app).1, image(&mut app));
+    let second = image(&mut app);
+    assert_eq!(view(&mut app).1, second);
+
+    // One replaced within a frame by a terminal that cannot be drawn is not
+    // left on screen.
+    let replaced = terminal(&mut app);
+    app.world_mut().despawn(replaced);
+    app.world_mut().spawn((
+        RatatuiTerminal::new(80, 24),
+        TerminalRenderConfig {
+            sizing: TerminalSizing::font(f32::NAN),
+            ..default()
+        },
+    ));
+    frames(&mut app, 2);
+    assert!(matches!(status(&mut app), TerminalStatus::Failed(_)));
+    assert_eq!(view(&mut app).1, ImageNode::default().image);
+}
+
+/// What systems ordered after the plugin's sets saw, each frame.
+#[derive(Resource, Default)]
+struct Seen {
+    /// The grid's width after `Fit`.
+    fitted: Vec<u16>,
+    /// Whether a texture that was measured was the image shown, after `Present`.
+    shown: Vec<bool>,
 }
 
 #[test]
-fn the_source_plugin_may_be_added_first_and_systems_ordered_against_the_sets() {
-    let mut app = App::new();
+fn the_source_plugin_may_be_added_before_or_after_and_systems_ordered_against_the_sets() {
+    let mut app = app();
+    // On either side of the window plugin, which `app()` added.
     app.add_plugins((
-        MinimalPlugins,
-        AssetPlugin::default(),
-        TextPlugin,
         RatatuiPlugin,
-        RatatuiWindowPlugin::<RatatuiTerminal>::default(),
+        RatatuiSourcePlugin::<RatatuiTerminal>::default(),
     ))
-    .init_asset::<Image>()
-    .add_systems(PreUpdate, (|| {}).after(RatatuiWindowSystems::Fit))
-    .add_systems(PostUpdate, (|| {}).after(RatatuiWindowSystems::Present));
-    frames(&mut app, 2);
+    .init_resource::<Seen>()
+    .add_systems(
+        PreUpdate,
+        (|terminal: Single<&RatatuiTerminal>, mut seen: ResMut<Seen>| {
+            seen.fitted.push(terminal.grid().size().width);
+        })
+        .after(RatatuiWindowSystems::Fit),
+    )
+    .add_systems(
+        PostUpdate,
+        (|texture: Single<&TerminalTexture>, view: Single<&ImageNode>, mut seen: ResMut<Seen>| {
+            if texture.measured().is_some() {
+                seen.shown.push(view.image == *texture.image());
+            }
+        })
+        .after(RatatuiWindowSystems::Present),
+    );
+    frames(&mut app, 3);
+    let wide = ready(&mut app).grid().width;
+    window(&mut app, |window| {
+        window.resolution.set_physical_resolution(200, 400);
+    });
+    frames(&mut app, 1);
+    let seen = app.world().resource::<Seen>();
+    assert!(
+        seen.fitted.last().is_some_and(|width| *width < wide),
+        "{:?}",
+        seen.fitted
+    );
+    assert!(
+        seen.shown.iter().all(|shown| *shown),
+        "shown the frame it is measured"
+    );
 }

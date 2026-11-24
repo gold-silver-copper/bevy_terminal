@@ -28,7 +28,8 @@ fn main() {
     // size of the window.
     app.add_plugins(RatatuiWindowPlugin::<RatatuiTerminal>::default())
         .add_systems(Startup, move |mut commands: Commands| {
-            commands.spawn((common::demo_terminal(), config.clone()));
+            // Not drawn here: `redraw_when_resized` draws it at each size.
+            commands.spawn((RatatuiTerminal::new(80, 24), config.clone()));
         })
         .add_systems(Update, redraw_when_resized)
         .run();
