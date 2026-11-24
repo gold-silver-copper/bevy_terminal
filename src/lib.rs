@@ -20,23 +20,17 @@
 )]
 
 mod backend;
-#[cfg(feature = "window")]
-mod window;
 
 pub use backend::{
     RatatuiBackend, RatatuiPlugin, RatatuiSource, RatatuiSourcePlugin, RatatuiTerminal,
 };
 /// The renderer crate used by this backend.
 pub use bevy_terminal;
-#[cfg(feature = "window")]
-pub use window::{RatatuiWindowPlugin, RatatuiWindowSystems};
 
 /// Common renderer and Ratatui adapter types.
 pub mod prelude {
     pub use crate::{
         RatatuiBackend, RatatuiPlugin, RatatuiSource, RatatuiSourcePlugin, RatatuiTerminal,
     };
-    #[cfg(feature = "window")]
-    pub use crate::{RatatuiWindowPlugin, RatatuiWindowSystems};
     pub use bevy_terminal::prelude::*;
 }

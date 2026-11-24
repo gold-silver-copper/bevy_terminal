@@ -18,7 +18,7 @@ allow_attributes_without_reason = "deny"
 
 [package]
 name = "bevy_terminal_ratatui"
-version = "0.11.1"
+version = "0.11.2"
 edition = "2024"
 rust-version = "1.97.1"
 description = "A Ratatui backend for the bevy_terminal Bevy terminal renderer"
@@ -43,14 +43,8 @@ scrolling-regions = ["ratatui/scrolling-regions"]
 # Measure CPU snapshot and scene construction time; counters remain available without this.
 timings = ["bevy_terminal/timings"]
 
-# `RatatuiWindowPlugin`: one terminal filling the primary window through Bevy
-# UI. Enables Bevy UI and its rendering, which bring the window and camera
-# types; the application still chooses a window backend (`bevy/bevy_winit`
-# with `bevy/x11` or `bevy/wayland`).
-window = ["bevy/bevy_ui", "bevy/bevy_ui_render"]
-
 [dependencies]
-bevy_terminal = { version = "0.11.1", path = "crates/bevy_terminal", default-features = false }
+bevy_terminal = { version = "0.11.2", path = "crates/bevy_terminal", default-features = false }
 # Only for the `Component` derive on `RatatuiTerminal`; the version is pinned by `bevy_terminal`.
 bevy = { version = "0.20", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["std", "underline-color"] }
@@ -62,14 +56,6 @@ bevy_image_export = "0.18.0"
 # Okhsv -> sRGB gamut math for the `colors_rgb` example port; upstream Ratatui
 # uses the same crate for that example.
 palette = "0.7"
-
-[[example]]
-name = "demo"
-required-features = ["window"]
-
-[[test]]
-name = "window"
-required-features = ["window"]
 
 [lints]
 workspace = true
