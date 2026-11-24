@@ -1046,6 +1046,8 @@ mod tests {
         // The renderer's own plugin for the source may come first.
         .add_plugins(TerminalSourcePlugin::<RatatuiTerminal>::default())
         .add_plugins(RatatuiPlugin)
+        // And the adapter's own may be added again, by another plugin that needs it.
+        .add_plugins(RatatuiSourcePlugin::<RatatuiTerminal>::default())
         // A system after `Sync` reads the pixels of the frame just measured.
         .init_resource::<SeenAfterSync>()
         .add_systems(
