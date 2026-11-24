@@ -12,11 +12,11 @@ grid; it does not emulate a terminal, manage a PTY, or forward input.
 | `bevy_terminal` | Terminal grid component, font measurement, rendering, output geometry |
 | `bevy_terminal_ratatui` | Ratatui backend and optional ergonomic terminal wrapper |
 
-Version 0.11.2 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.97.1 or newer (Bevy's minimum).
+Version 0.12.0 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.97.1 or newer (Bevy's minimum).
 
 ```toml
 [dependencies]
-bevy_terminal_ratatui = "0.11.2"
+bevy_terminal_ratatui = "0.12.0"
 ```
 
 ## Drawing and rendering
@@ -202,6 +202,16 @@ The adapter exports `RatatuiBackend`, `RatatuiTerminal`, `RatatuiPlugin`,
 Advanced renderer modules are accessed through `bevy_terminal_ratatui::bevy_terminal`,
 rather than mirrored across both crate roots.
 
+## Migrating from 0.11 to 0.12
+
+- The `window` feature and `RatatuiWindowPlugin` that 0.11.1 added are
+  removed (0.11.2 already dropped them): presenting a terminal stays with the
+  application. `examples/common/app.rs` shows how.
+- `RatatuiSourcePlugin<S>` may be added more than once, as plugins that each
+  need it do.
+
+Nothing else changes from 0.11.0.
+
 ## Migrating from 0.10 to 0.11
 
 - `FontFaces::default()` is Bevy's built-in font (ASCII, one face) instead of
@@ -215,13 +225,8 @@ rather than mirrored across both crate roots.
 - A terminal despawned while `Disabled` frees its atlas, and one enabled again
   draws what changed meanwhile.
 
-0.10.3, which had these changes, is yanked: the default font is a breaking
-change.
-
-0.11.2 lets `RatatuiSourcePlugin<S>` be added more than once, as plugins that
-each need it do. 0.11.1, which also added a `window` feature and a
-`RatatuiWindowPlugin`, is yanked: presenting a terminal stays with the
-application.
+0.10.3 has the same changes, released by mistake as a patch: prefer 0.11 or
+later.
 
 ## Migrating from 0.9 to 0.10
 
