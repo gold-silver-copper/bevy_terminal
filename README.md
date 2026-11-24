@@ -4,7 +4,8 @@ A Ratatui backend for the low-level `bevy_terminal` GPU renderer.
 
 The renderer turns terminal cells and configuration into an image, validated
 geometry, and status. Applications own UI layout, windows, cameras, raster scale,
-and 3D materials. The adapter translates Ratatui buffers into the neutral cell
+and 3D materials (or hand the common case, one terminal filling the window, to
+the adapter's opt-in `RatatuiWindowPlugin`). The adapter translates Ratatui buffers into the neutral cell
 grid; it does not emulate a terminal, manage a PTY, or forward input.
 
 | Crate | Responsibility |
@@ -12,11 +13,11 @@ grid; it does not emulate a terminal, manage a PTY, or forward input.
 | `bevy_terminal` | Terminal grid component, font measurement, rendering, output geometry |
 | `bevy_terminal_ratatui` | Ratatui backend and optional ergonomic terminal wrapper |
 
-Version 0.11.0 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.97.1 or newer (Bevy's minimum).
+Version 0.11.1 targets Bevy 0.20, Ratatui 0.30.2, and Rust 1.97.1 or newer (Bevy's minimum).
 
 ```toml
 [dependencies]
-bevy_terminal_ratatui = "0.11.0"
+bevy_terminal_ratatui = "0.11.1"
 ```
 
 ## Drawing and rendering
@@ -87,6 +88,39 @@ Terminals are drawn from entities. To render one owned by your own component,
 implement `TerminalSource` for it (its grid is `self.backend().grid()`) and add
 `TerminalSourcePlugin::<YourComponent>`.
 
+## Filling a window
+
+With the `window` feature, `RatatuiWindowPlugin` shows one terminal filling the
+primary window: it spawns the UI node (and a camera, unless the window has an
+active one), keeps the grid the largest that fits the window, rasterizes at the
+window's scale factor times `UiScale`, and sizes the node to the texture.
+
+```rust,ignore
+use bevy::prelude::*;
+use bevy_terminal_ratatui::prelude::*;
+
+fn main() {
+    App::new()
+        .add_plugins((DefaultPlugins, RatatuiWindowPlugin::<RatatuiTerminal>::default()))
+        .add_systems(Startup, |mut commands: Commands| {
+            commands.spawn(RatatuiTerminal::new(80, 24));
+        })
+        .add_systems(Update, |mut terminal: Single<&mut RatatuiTerminal>| {
+            terminal.draw(|frame| frame.render_widget("Hello from Ratatui", frame.area()));
+        })
+        .run();
+}
+```
+
+The plugin owns the grid's size and `RasterConfig.scale`, which it overwrites
+every frame; the rest of `TerminalRenderConfig` is yours. Only the backend's
+grid is resized: Ratatui adopts the new size, and repaints, on its next draw,
+and the last frame stays on screen until then. It fits in `PreUpdate`
+(`RatatuiWindowSystems::Fit`), so a draw in `Update` is at this frame's size,
+and sizes the node in `PostUpdate` (`RatatuiWindowSystems::Present`). There
+must be exactly one entity with the source; the sections below are what it
+does, for layouts it does not cover (margins, several terminals, world space).
+
 ## Output and resizing
 
 Read `TerminalTexture::measured()` after `TerminalSystems::Sync`. It returns the
@@ -138,8 +172,9 @@ Fractional logical cells remain available through measured geometry.
 
 `examples/common/app.rs` demonstrates single-window UI layout and DPI policy.
 `examples/world_quad.rs` binds the image to an application-owned material and
-sizes a rectangle to its aspect ratio. No library presentation feature is needed;
-enable the appropriate Bevy features in the application itself.
+sizes a rectangle to its aspect ratio. Neither needs a library feature; enable
+the appropriate Bevy features in the application itself. The `window` feature's
+`RatatuiWindowPlugin` is that policy ready-made for one terminal in one window.
 
 ## Sizing, colors, and fonts
 
@@ -187,6 +222,9 @@ update, which leaves the terminal `Loading`.
 - `system_fonts` (default): discover host fonts. Disable defaults when supplying
   explicit assets and avoiding host font discovery.
 - `timings` (opt-in): measure `TerminalStats::scene_ns`, which is zero otherwise.
+- `window` (adapter only, opt-in): `RatatuiWindowPlugin`, one terminal filling
+  the primary window. Enables Bevy's `bevy_window`, `bevy_ui`, `bevy_ui_render`
+  and `bevy_core_pipeline`; the application still chooses a window backend.
 - `scrolling-regions` (adapter only, opt-in): enable Ratatui's extended backend
   trait. Its methods become required of every backend in the build, so enable
   this whenever anything else enables `ratatui/scrolling-regions`, and leave it
@@ -197,7 +235,8 @@ update, which leaves the terminal `Loading`.
 zero on idle frames.
 
 The adapter exports `RatatuiBackend`, `RatatuiTerminal`, `RatatuiPlugin`,
-`RatatuiSource`, `RatatuiSourcePlugin`, the `bevy_terminal` crate, and a
+`RatatuiSource`, `RatatuiSourcePlugin`, with the `window` feature
+`RatatuiWindowPlugin` and `RatatuiWindowSystems`, the `bevy_terminal` crate, and a
 `prelude` that also re-exports the renderer's (including `grid_for`).
 Advanced renderer modules are accessed through `bevy_terminal_ratatui::bevy_terminal`,
 rather than mirrored across both crate roots.
@@ -217,6 +256,9 @@ rather than mirrored across both crate roots.
 
 0.10.3, which had these changes, is yanked: the default font is a breaking
 change.
+
+0.11.1 adds the `window` feature and `RatatuiWindowPlugin`, which shows one
+terminal filling the primary window.
 
 ## Migrating from 0.9 to 0.10
 

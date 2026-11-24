@@ -3,12 +3,10 @@
 
 mod common;
 
-use bevy::{prelude::*, window::PrimaryWindow};
+use bevy::prelude::*;
 use bevy_terminal_ratatui::prelude::{
-    RatatuiPlugin, RatatuiTerminal, TerminalRenderConfig, TerminalSizing, TerminalTexture,
+    GridSize, RatatuiTerminal, RatatuiWindowPlugin, TerminalRenderConfig, TerminalSizing,
 };
-
-const MARGIN: f32 = 20.0;
 
 fn main() {
     let config = TerminalRenderConfig {
@@ -26,27 +24,21 @@ fn main() {
     }));
     let fonts = common::fonts::load(&mut app);
     let config = fonts.configure(config);
-    app.add_plugins(RatatuiPlugin)
-        .add_plugins((common::app::presentation, common::app::window_scale))
+    // The plugin spawns the camera and the UI node, and keeps the grid the
+    // size of the window.
+    app.add_plugins(RatatuiWindowPlugin::<RatatuiTerminal>::default())
         .add_systems(Startup, move |mut commands: Commands| {
-            commands.spawn(Camera2d);
-            commands.spawn(common::app::ui_terminal(
-                common::demo_terminal(),
-                config.clone(),
-                Vec2::splat(MARGIN),
-            ));
+            commands.spawn((common::demo_terminal(), config.clone()));
         })
-        .add_systems(Update, fit_to_window)
+        .add_systems(Update, redraw_when_resized)
         .run();
 }
 
-/// Refits the grid whenever the window (or the measured cell) changes.
-fn fit_to_window(
-    mut terminal: Single<&mut RatatuiTerminal>,
-    textures: Query<&TerminalTexture>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-) {
-    if common::app::fit_grid_to_window(&mut terminal, &textures, &windows, MARGIN) {
+/// Draws the scene again at each new size the window gives the grid.
+fn redraw_when_resized(mut terminal: Single<&mut RatatuiTerminal>, mut drawn: Local<GridSize>) {
+    let size = terminal.grid().size();
+    if *drawn != size {
+        *drawn = size;
         common::draw_demo(&mut terminal);
     }
 }
